@@ -1,6 +1,6 @@
 {
   "name": "tiktok-live-recorder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "commonjs",
   "description": "Check TikTok live status, fetch stream URLs, and record live streams.",

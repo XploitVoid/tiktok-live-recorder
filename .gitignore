@@ -29,6 +29,7 @@ Thumbs.db
 
 # ── Agent skills (installed per-user) ──
 .agents/
+skills-lock.json
 
 # ── Logs & temp ──
 *.log

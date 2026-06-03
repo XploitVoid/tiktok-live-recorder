@@ -50,7 +50,7 @@ export function Header() {
         <Select value={lang} onValueChange={(v) => v && setLang(v as LangCode)}>
           <SelectTrigger
             size="sm"
-            className="w-[100px] gap-2 font-medium"
+            className="w-[115px] gap-2 font-medium"
             aria-label="Language"
           >
             <Globe className="w-4 h-4 text-muted-foreground" />

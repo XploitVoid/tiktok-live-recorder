@@ -336,7 +336,7 @@ type I18nContextType = {
 }
 
 const I18nContext = createContext<I18nContextType>({
-  lang: 'th',
+  lang: 'en',
   t: (k) => k,
   setLang: () => {},
   toggle: () => {},
@@ -353,7 +353,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     // Default to browser language if it matches a supported one.
     const browser = (navigator.language || '').toLowerCase().slice(0, 2)
     if (isSupported(browser)) return browser
-    return 'th'
+    return 'en'
   })
 
   const setLang = useCallback((code: LangCode) => {

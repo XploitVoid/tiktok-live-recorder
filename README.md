@@ -1,214 +1,143 @@
 # TikTok LIVE Tools
 
-เครื่องมือ Node.js + React สำหรับเช็คสถานะไลฟ์ TikTok ดูสตรีม จับแชท และบันทึกไลฟ์เป็นไฟล์ MP4 — ใช้งานบนเครื่องตัวเอง ไม่เป็นทางการ
+A Node.js + React toolkit for monitoring TikTok LIVE streams, capturing chat events, and recording broadcasts as MP4 files. Designed for personal, local usage. **Unofficial and unaffiliated with TikTok.**
 
-ใช้ไลบรารี [`tiktok-live-connector`](https://github.com/zerodytrash/TikTok-Live-Connector) (unofficial, ฟรี, ไม่ต้องใช้ API key) บวกกับ `ffmpeg` สำหรับบันทึก/ทรานสโค้ด
-
----
-
-## ฟีเจอร์
-
-### Web UI ที่ `http://localhost:3000`
-- 🔍 **เช็ค + ดูพรีวิว** ไลฟ์ของผู้ใช้คนใดก็ได้ พร้อม HLS/FLV ทุกความละเอียด (รวม HEVC/1080p)
-- 💬 **จับแชท + ของขวัญ + ไลก์ + ผู้เข้าร่วม** แบบเรียลไทม์ ผ่าน WebSocket — auto-reconnect
-- 🔴 **บันทึกไลฟ์** เป็น `.mp4` ผ่าน `ffmpeg` (ไม่ re-encode = เบามาก) พร้อม sidecar `.events.jsonl` ของแชท
-- 👁 **Watchlist** — เพิ่มผู้ใช้เข้าหน้าจอเฝ้าดู ระบบ poll ทุก N วินาที และ **อัดอัตโนมัติ** เมื่อขึ้นไลฟ์
-- 📺 **Live Grid** — ดูหลายสตรีมพร้อมกันแบบ multi-cam (เลือกจำนวนคอลัมน์ได้)
-- ▶ **Replay** — เปิดไฟล์ที่อัดไว้แล้วดูแชทย้อนเวลาตาม `currentTime` ของวิดีโอ
-- ⭐ **Auto-Highlight** — ระบบหาช่วงไฮไลต์อัตโนมัติจากแชท/ของขวัญที่พุ่งสูง พร้อมปุ่มตัดคลิป `.mp4` (stream-copy ไม่ re-encode = เร็วมาก)
-- 👤 **Multi-account** — เก็บหลาย session cookie สลับใช้ได้ + มี **Stealth Mode** สำหรับดูแบบ anonymous
-- 🎮 **Hardware-accelerated transcoding** — auto-detect NVENC / Quick Sync / AMF / libx264 (กรณีต้องทรานสโค้ด HEVC → H.264 ให้ browser เล่น)
-
-### CLI tools (ทางเลือก)
-- `check.js` — เช็คสถานะไลฟ์ของ user
-- `get-stream.js` — ดึง HLS/FLV pull URLs
-- `record.js` — บันทึกไลฟ์ผ่าน ffmpeg
+Powered by the excellent [`tiktok-live-connector`](https://github.com/zerodytrash/TikTok-Live-Connector) (unofficial, free, no API key required) and `ffmpeg` for recording and transcoding.
 
 ---
 
-## ติดตั้ง
+## 🌟 Features
 
-### สิ่งที่ต้องมี
-- **Node.js** ≥ 18 (แนะนำ 20+)
-- **ffmpeg** อยู่บน PATH (จำเป็นเฉพาะตอนบันทึก/ทรานสโค้ด)
-  - Windows: `winget install Gyan.FFmpeg` หรือดาวน์โหลดจาก https://ffmpeg.org/download.html
+### Web UI (runs at `http://localhost:3000`)
+- 🔍 **Check & Preview:** Search for any user and watch their live stream at any available quality (including HEVC/1080p).
+- 💬 **Real-time Chat:** Capture chat messages, gifts, likes, and viewers via WebSockets with auto-reconnect.
+- 🔴 **Record Streams:** Save streams directly to `.mp4` using `ffmpeg` (stream-copy, no re-encoding required = extremely lightweight). Includes a sidecar `.events.jsonl` file for chat replay.
+- 👁 **Watchlist & Auto-Record:** Monitor your favorite creators. The system polls every N seconds and can automatically start recording when they go live.
+- 📺 **Live Grid:** Watch multiple streams simultaneously in a multi-cam grid view.
+- ▶ **Replay Mode:** Play back recorded streams synchronized with the exact chat events from that specific timestamp.
+- ⭐ **Auto-Highlight:** Automatically detects spikes in chat activity or large gifts. One-click clip extraction (stream-copy, incredibly fast).
+- 👤 **Multi-Account Support:** Store multiple session cookies and switch between them. Includes a **Stealth Mode** for anonymous viewing.
+- 🎮 **Hardware-Accelerated Transcoding:** Auto-detects NVENC / Quick Sync / AMF / libx264 (used only if HEVC → H.264 transcoding is necessary for browser playback).
 
-### ติดตั้ง dependencies (server + client)
+### CLI Tools (Alternative usage)
+- `check.js` — Check if a user is live.
+- `get-stream.js` — Extract raw HLS/FLV pull URLs.
+- `record.js` — Record a live stream directly via CLI.
 
-```powershell
+---
+
+## 🚀 Installation
+
+### Prerequisites
+- **Node.js** ≥ 18 (20+ recommended)
+- **ffmpeg** must be installed and available in your system PATH.
+  - Windows: `winget install Gyan.FFmpeg` or download from [ffmpeg.org](https://ffmpeg.org/download.html).
+
+### Install Dependencies
+
+Run the all-in-one install script for both server and client:
+
+```bash
 npm run install:all
 ```
 
-หรือทำทีละตัว:
-
-```powershell
-npm install
-npm --prefix client install
-```
+*(Alternatively, run `npm install` in the root folder, and `npm install` inside the `client/` folder).*
 
 ---
 
-## ใช้งาน
+## 💻 Usage
 
-### โหมดที่ใช้บ่อยสุด: build + start
+### Standard Mode (Build + Start)
 
-```powershell
+The easiest way to run the app. This builds the React client and starts the Express server.
+
+```bash
 npm run build:start
 ```
+Once running, open your browser to **`http://localhost:3000`**.
 
-จะ build React client หนึ่งครั้งแล้วเปิด server ที่ `http://localhost:3000`
-
-### หลังจาก build แล้วครั้งหนึ่ง สั่ง start อย่างเดียว
-
-```powershell
+For subsequent runs (if you haven't changed the frontend code), just run:
+```bash
 npm start
 ```
 
-### โหมด Dev (hot reload)
+### Developer Mode (Hot Reload)
 
-เปิด 2 terminal:
+If you want to modify the code, run the backend and frontend separately:
 
-```powershell
-# Terminal 1: backend
+```bash
+# Terminal 1: Start the backend server
 npm start
 
-# Terminal 2: Vite dev server (hot reload)
+# Terminal 2: Start the Vite dev server
 npm run client:dev
 ```
+Then navigate to **`http://localhost:5173`**.
 
-แล้วใช้ที่ `http://localhost:5173` แทน
-
-หรือบน Windows ใช้สคริปต์สำเร็จรูป:
-
-```powershell
-.\dev.bat
-```
+*(On Windows, you can simply run `.\dev.bat`)*
 
 ---
 
-## CLI tools
+## 🛠 Configuration (`.env`)
 
-### เช็คว่ามี user live หรือไม่
+All configurations are optional. The system works perfectly fine for public rooms anonymously right out of the box.
 
-```powershell
-npm run check -- tv_asahi_news
-# หรือ
-node check.js tv_asahi_news
-```
-
-ผลลัพธ์เป็น JSON บน stdout — exit code: `0` = live, `1` = offline, `2` = error
-
-### ดึง stream URL
-
-```powershell
-node get-stream.js tv_asahi_news
-```
-
-ได้ JSON มี `streams.hls`, `streams.flv` (แยกตามคุณภาพ `origin` / `uhd` / `hd` / `sd` / `ld`) เอาไปเปิดด้วย VLC / mpv / hls.js / ffmpeg ได้เลย
-
-### บันทึกไลฟ์
-
-```powershell
-node record.js tv_asahi_news
-# ระบุโฟลเดอร์ปลายทาง (default: ./recordings)
-node record.js tv_asahi_news ./my-recordings
-```
-
-ไฟล์ตั้งชื่อ `<username>_YYYYMMDD_HHMMSS.mp4` กด **Ctrl+C** เพื่อหยุดอย่างปลอดภัย
-
----
-
-## ตั้งค่า (ไฟล์ `.env`)
-
-ทุกค่าเป็น optional — ระบบทำงานได้แบบ anonymous กับ public room ทันที
+Copy `.env.example` to `.env` to configure:
 
 ```ini
-# Session cookie (ใช้กับ user ที่ region/login-restricted)
-# วิธีหา: เปิด tiktok.com → F12 → Application → Cookies → tiktok.com
-TIKTOK_SESSIONID=
-TIKTOK_TT_TARGET_IDC=
+# --- Optional: TikTok session cookies ---
+# Required for region-locked or age-restricted streams.
+# Find them in your browser: F12 → Application → Cookies → tiktok.com
+TIKTOK_SESSIONID=your_sessionid_here
+TIKTOK_TT_TARGET_IDC=your_idc_here
 
-# Euler Stream signing key (กัน rate-limit ตอนต่อ chat WebSocket)
-# สมัครฟรี: https://www.eulerstream.com
-EULER_API_KEY=
+# --- Optional: Euler Stream API Key ---
+# Prevents rate-limiting when connecting to the chat WebSocket.
+# Free signup at: https://www.eulerstream.com
+EULER_API_KEY=your_key_here
 
-# Server config (ค่า default ตามนี้)
+# Server Port (Default: 3000)
 # PORT=3000
-# HOST=127.0.0.1     # ตั้งเป็น 0.0.0.0 ถ้าต้องการเข้าถึงจาก LAN
-# WATCH_POLL_SECONDS=30
 
-# Path ของ ffmpeg (ถ้า auto-detect ไม่เจอ)
-# FFMPEG_PATH=C:\path\to\ffmpeg.exe
-
-# ปิด auto-highlight detection หลังอัดเสร็จ (default = เปิด)
-# DISABLE_AUTO_HIGHLIGHTS=1
+# Bind Host (Default: 127.0.0.1)
+# Set to 0.0.0.0 if you want to access the UI from other devices on your LAN.
+# HOST=127.0.0.1
 ```
 
-> **หมายเหตุเรื่อง session:** ต้องตั้งทั้ง `TIKTOK_SESSIONID` และ `TIKTOK_TT_TARGET_IDC` คู่กันเสมอ ถ้าตั้งแค่ตัวเดียวระบบจะ ignore ทั้งคู่และเตือนใน console
+> [!IMPORTANT]
+> **Session Cookies:** If you use session cookies, you **MUST** provide both `TIKTOK_SESSIONID` and `TIKTOK_TT_TARGET_IDC`. If one is missing, the system will ignore them to prevent authentication errors.
 
-> นอกจาก `.env` ระบบยัง support **multi-account** ผ่าน UI — เก็บลง `accounts.json` (อยู่ใน `.gitignore`) สลับ active account ได้จากปุ่มใน Header
-
----
-
-## โครงสร้างโปรเจกต์
-
-```
-.
-├── server.js                # Express server + security middleware
-├── check.js / get-stream.js / record.js   # CLI tools
-├── lib/
-│   ├── room.js              # ห่อ tiktok-live-connector + extract stream URLs
-│   ├── recorder.js          # จัดการ ffmpeg jobs
-│   ├── chat.js              # WebSocket chat session + auto-reconnect
-│   ├── watcher.js           # Polling watchlist + auto-record
-│   ├── transcode.js         # HEVC→H.264 transcoding (auto encoder detection)
-│   ├── highlights.js        # Auto-detect chat/gift spikes + cut clips
-│   ├── accounts.js          # Multi-account credentials store
-│   ├── ffmpeg.js            # ffmpeg path resolver
-│   └── utils.js             # safeError, isAllowedCdnUrl, parseStartTimeFromName
-├── routes/
-│   ├── check.js             # /api/check  /api/stream
-│   ├── record.js            # /api/record/*  /api/recordings/*
-│   ├── chat.js              # /api/chat/*
-│   ├── watch.js             # /api/watch/*
-│   ├── proxy.js             # /api/proxy  /api/transcode (CDN proxy)
-│   ├── highlights.js        # /api/highlights/*
-│   └── accounts.js          # /api/accounts/*
-├── client/                  # React + Vite frontend
-│   └── src/
-│       ├── pages/           # HomePage / GridPage / ReplayPage
-│       ├── components/      # SearchSection, StreamPlayer, ChatPanel, …
-│       └── lib/             # api, i18n, types, history, format
-├── recordings/              # ไฟล์ที่อัดไว้ (สร้างอัตโนมัติ)
-│   └── highlights/          # คลิปไฮไลต์ที่ตัดจาก recordings (auto)
-├── accounts.json            # multi-account store (gitignored)
-├── watchlist.json           # watchlist persistence (gitignored)
-└── .env                     # secrets (gitignored)
-```
+> [!TIP]
+> You can also manage sessions directly via the Web UI using the **Multi-Account** feature without touching the `.env` file!
 
 ---
 
-## ความปลอดภัย / ข้อควรระวัง
+## ⚠️ Important Security & Usage Warnings
 
-- ไฟล์ `accounts.json`, `watchlist.json`, `.env`, และโฟลเดอร์ `recordings/` อยู่ใน `.gitignore` — **ห้าม commit**
-- Server bind ที่ `127.0.0.1` เป็น default ถ้าจะเปิดให้เครื่องอื่นใน LAN เข้าได้ ตั้ง `HOST=0.0.0.0` ใน `.env` (ระบบมี same-origin guard ป้องกัน CSRF อยู่แล้ว)
-- `tiktok-live-connector` เป็น **unofficial** TikTok เปลี่ยน endpoint ได้ตลอด ถ้าอยู่ๆ พังให้ลอง update package
-- ถ้าโดน rate-limit เวลาต่อ chat → ใส่ `EULER_API_KEY` (ฟรี)
-- ตรวจสอบ ToS ของ TikTok ก่อนใช้ในเชิงพาณิชย์ และเคารพเจ้าของไลฟ์
+> [!WARNING]
+> **Do NOT commit your personal data!** 
+> The `.gitignore` is pre-configured to ignore `.env`, `accounts.json`, `watchlist.json`, and the `recordings/` folder. Ensure these stay local.
 
----
-
-## Tips
-
-- **ภาษา UI** — สลับ TH ↔ EN ได้จากปุ่ม globe ใน Header (จำลง `localStorage`)
-- **Stealth Mode** — เปิดในเมนูบัญชี เพื่อให้ทุก request ออกแบบ anonymous (ไม่เปิดเผย session) สำหรับห้องที่ไม่อยากให้รู้ว่ามีใครเข้า
-- **HEVC/1080p** — TikTok บางห้องจะมี HEVC quality สูงกว่า H.264 เลือกจาก dropdown ใน player ระบบจะทรานสโค้ดเป็น H.264 ให้ browser เล่นโดยอัตโนมัติ (ใช้ GPU ถ้ามี)
-- **อัดอัตโนมัติ** — เพิ่ม user เข้า Watchlist แล้วเปิดเช็คบ็อกซ์ "auto-record" — เมื่อขึ้นไลฟ์ระบบจะเริ่มอัดให้เอง
-- **Replay** — ไฟล์ที่อัดมาพร้อม `.events.jsonl` จะมีปุ่ม "▶ Replay" → เปิดดูพร้อมแชทย้อนเวลา
-- **Auto-Highlight** — หลังอัดเสร็จระบบสแกน `.events.jsonl` หาช่วงที่ chat/gift พุ่งสูงกว่าค่าพื้นฐาน เปิดในหน้า Replay → กด **✂ ตัดคลิป** เพื่อ export `.mp4` (stream-copy ใช้ I/O เกือบศูนย์ คลิปออกมาในไม่กี่วินาที)
+- **LAN Access:** By default, the server binds to `127.0.0.1` (localhost only). If you change `HOST=0.0.0.0` to allow LAN access, ensure your network is trusted.
+- **API Stability:** This tool uses an **unofficial** API. TikTok frequently changes their internal endpoints. If the tool suddenly breaks, wait for an update to the `tiktok-live-connector` package.
+- **Chat Rate Limits:** Connecting to many chat rooms simultaneously may result in TikTok temporarily blocking your IP from the WebSocket servers. Use an `EULER_API_KEY` to mitigate this.
 
 ---
 
-## License / Disclaimer
+## 💡 Pro Tips
 
-โปรเจกต์ส่วนตัว — ใช้บนเครื่องตัวเองเท่านั้น โปรดเคารพ TikTok Terms of Service และเจ้าของคอนเทนต์
+- **Stealth Mode:** Toggle Stealth Mode from the Account Switcher in the UI. This strips your session cookies from requests, ensuring your view remains completely anonymous.
+- **HEVC Support:** TikTok often provides higher quality streams in HEVC (H.265). If your browser doesn't support HEVC, the app will automatically transcode it to H.264 on-the-fly (using GPU acceleration if available).
+- **Auto-Record:** Add creators to your Watchlist and check "Auto-record". The app will monitor their status and immediately start saving the stream when they go live.
+- **Clipping Highlights:** After a recording finishes, go to the **Replay** tab. The system analyzes the chat logs and suggests moments where chat/gift activity spiked. Click **"✂ Cut Clip"** to instantly extract that segment.
+
+---
+
+## 📝 Disclaimer & License
+
+**MIT License**
+
+This is a personal, educational project. It is not affiliated with, endorsed by, or connected to TikTok or ByteDance.
+
+> [!CAUTION]
+> Please respect the TikTok Terms of Service and the content creators. Do not use this tool for commercial purposes, mass scraping, or re-uploading copyrighted content without permission.

@@ -1,0 +1,38 @@
+# ── Dependencies ──
+node_modules/
+
+# ── Secrets / credentials ──
+.env
+.env.*
+!.env.example
+accounts.json
+accounts.json.tmp
+
+# ── User data ──
+watchlist.json
+watchlist.json.tmp
+recordings/
+
+# ── Build output ──
+client/dist/
+
+# ── Editor / IDE ──
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+
+# ── Agent skills (installed per-user) ──
+.agents/
+
+# ── Logs & temp ──
+*.log
+*.tmp
+
+# ── OS ──
+desktop.ini

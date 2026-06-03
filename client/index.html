@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TikTok LIVE Tools</title>
+    <!--
+      hls.js and flv.js are loaded on-demand from /src/lib/players.ts so the
+      initial JS payload doesn't include ~400KB of player libs that pages like
+      Dashboard / Watchlist never need. Pages that play video import the
+      loader and await it before constructing players.
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

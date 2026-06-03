@@ -1,0 +1,24 @@
+{
+  "name": "tiktok-live-tools",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Check TikTok live status, fetch stream URLs, and record live streams.",
+  "scripts": {
+    "check": "node check.js",
+    "stream": "node get-stream.js",
+    "record": "node record.js",
+    "web": "node server.js",
+    "start": "node server.js",
+    "build": "npm --prefix client run build",
+    "build:start": "npm --prefix client run build && node server.js",
+    "client:dev": "npm --prefix client run dev",
+    "install:all": "npm install && npm --prefix client install"
+  },
+  "dependencies": {
+    "compression": "^1.8.1",
+    "dotenv": "^17.4.2",
+    "express": "^4.21.0",
+    "tiktok-live-connector": "^2.1.1-beta1"
+  }
+}

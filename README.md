@@ -1,4 +1,4 @@
-# TikTok LIVE Tools
+# TikTok LIVE Recorder
 
 A local Node.js and React stack I put together to monitor TikTok LIVE streams, grab chat events, and record broadcasts straight to MP4. It runs locally and is completely unofficial.
 

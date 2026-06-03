@@ -1,0 +1,20 @@
+services:
+  recorder:
+    build: .
+    container_name: tiktok-live-recorder
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persist recordings to the host machine
+      - ./recordings:/app/recordings
+      
+      # Optional: Mount your local .env file for secrets
+      # - ./.env:/app/.env
+
+      # Optional: If you want to persist the watchlist and accounts across container rebuilds,
+      # create empty files on your host FIRST (touch watchlist.json accounts.json) then uncomment:
+      # - ./watchlist.json:/app/watchlist.json
+      # - ./accounts.json:/app/accounts.json
+    environment:
+      - HOST=0.0.0.0

@@ -1,5 +1,9 @@
 # TikTok LIVE Recorder
 
+![License](https://img.shields.io/github/license/XploitVoid/tiktok-live-recorder)
+![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green)
+![Docker](https://img.shields.io/badge/Docker-Supported-blue)
+
 A local Node.js and React stack I put together to monitor TikTok LIVE streams, grab chat events, and record broadcasts straight to MP4. It runs locally and is completely unofficial.
 
 Under the hood, it uses the [`tiktok-live-connector`](https://github.com/zerodytrash/TikTok-Live-Connector) library to pull data without needing an API key, and `ffmpeg` to handle the heavy lifting for video.
@@ -36,6 +40,15 @@ If you don't want to use the UI, you can just run the scripts directly:
 
 ### Setup
 
+**Option 1: Using Docker (Recommended)**
+If you have Docker installed, you don't even need Node.js or ffmpeg on your host machine.
+
+```bash
+docker-compose up -d
+```
+Then open **`http://localhost:3000`**. The videos will be saved in the `./recordings` folder.
+
+**Option 2: Running locally**
 Install the packages for both the backend and frontend. I made a shortcut script for it:
 
 ```bash

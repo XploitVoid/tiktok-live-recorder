@@ -50,18 +50,18 @@ export function Header() {
         <Select value={lang} onValueChange={(v) => v && setLang(v as LangCode)}>
           <SelectTrigger
             size="sm"
-            className="w-[110px] gap-1 font-semibold uppercase"
+            className="w-[100px] gap-2 font-medium"
             aria-label="Language"
           >
             <Globe className="w-4 h-4 text-muted-foreground" />
-            <SelectValue />
+            <SelectValue>
+              {SUPPORTED_LANGS.find(l => l.code === lang)?.name}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent align="end">
             {SUPPORTED_LANGS.map((l) => (
               <SelectItem key={l.code} value={l.code}>
-                <span className="mr-1.5">{l.flag}</span>
-                <span className="font-semibold mr-1">{l.label}</span>
-                <span className="text-xs text-muted-foreground">{l.name}</span>
+                {l.name}
               </SelectItem>
             ))}
           </SelectContent>

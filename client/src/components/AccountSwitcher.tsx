@@ -88,7 +88,8 @@ export function AccountSwitcher() {
     }
   }
 
-  const activePreview = data?.active?.sessionPreview || ''
+  const activeAcc = data?.accounts?.find(a => a.id === data?.active?.id)
+  const activeDisplay = activeAcc?.label || (data?.active?.hasSession ? 'Default (.env)' : '')
   const isStealth = data?.stealth ?? false
 
   return (
@@ -114,7 +115,7 @@ export function AccountSwitcher() {
       >
         <UserCircle className="w-3.5 h-3.5" />
         <span className="max-w-[100px] truncate">
-          {activePreview ? activePreview : t('accAnonymous')}
+          {activeDisplay ? activeDisplay : t('accAnonymous')}
         </span>
       </Button>
 

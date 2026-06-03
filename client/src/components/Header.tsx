@@ -18,7 +18,7 @@ export function Header() {
           🎬
         </div>
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground">TikTok LIVE Tools</h1>
+          <h1 className="text-xl font-bold tracking-tight text-foreground">TikTok LIVE Recorder</h1>
           <p className="text-xs text-muted-foreground">{t('localTag')}</p>
         </div>
       </div>

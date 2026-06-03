@@ -313,7 +313,7 @@ process.on('SIGTERM', shutdown);
 
 // ── Start server ──
 app.listen(PORT, HOST, () => {
-  console.log(`\n  TikTok LIVE Tools  →  http://localhost:${PORT}\n`);
+  console.log(`\n  TikTok LIVE Recorder  →  http://localhost:${PORT}\n`);
   console.log(`  ffmpeg: ${resolveFfmpeg()}`);
   const encoder = getEncoder();
   console.log(`  transcode encoder: ${ENCODER_LABELS[encoder] || encoder}`);

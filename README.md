@@ -10,12 +10,10 @@ Under the hood, it uses the [`tiktok-live-connector`](https://github.com/zerodyt
 
 > [!NOTE]
 > **🚀 Version 2.0.0 Coming Soon!**
-> - Stalled Stream Watchdog & Auto-Merge Split Parts
-> - Live Instant Clipping & Visual Timeline Trimmer
-> - PK 9:16 Split-Screen Clips & Fullscreen Chat Overlay
-> - Per-Channel Watchlist Settings & Priority Polling
-> - Recording Pin/Protect & Per-Channel Folder Organization
-> - Discord / Telegram Webhooks & Account Cookie Health Check
+> - Auto-Merge Split Parts (`_p1`, `_p2`)
+> - Live Instant Clipping (clip the last 30/60s while recording)
+> - Per-Channel Folder Organization (`@username/`) & Custom Filename Templates
+> - Account Cookie Health Check
 > - Local SQLite Search Index
 
 ---
@@ -39,13 +37,13 @@ Under the hood, it uses the [`tiktok-live-connector`](https://github.com/zerodyt
 
 ### The Web UI (`http://localhost:3000`)
 - **Watch & Preview:** Look up any user and watch their stream. It supports whatever quality TikTok throws at it (including HEVC/1080p).
-- **Chat Capture:** Pulls chat messages, gifts, likes, and viewer counts via WebSockets. It auto-reconnects if the connection drops.
-- **Recording:** Dumps the stream straight to `.mp4` using `ffmpeg`. Since it's just a stream-copy without re-encoding, it barely uses any CPU. It also saves a `.events.jsonl` file alongside the video so you have the chat logs.
-- **Watchlist:** Add creators you care about. The backend polls every few seconds and can trigger an auto-record the second they go live.
+- **Chat Capture:** Pulls chat messages, gifts, likes, PK battles, and viewer counts via WebSockets. It auto-reconnects if the connection drops.
+- **Recording & Recovery:** Dumps the stream straight to `.mp4` using `ffmpeg` (plus `.events.jsonl` chat logs), with in-band SPS/PPS handling for PK battles, a stalled-stream watchdog, auto-retry, `+faststart` remuxing, Force Audio-Only (`-vn`), configurable audio bitrates, and 720p compression.
+- **Watchlist & Alerts:** Add creators you care about with Priority Polling, per-channel schedules, minimum viewer thresholds, per-channel accounts, and Discord / Telegram webhook alerts.
+- **Library & Storage:** Pin/protect recordings from auto-cleanup, add custom titles/notes, and configure disk guard, retention limits, or proxy failover lists.
 - **Live Grid:** Basically a multi-cam view for watching multiple streams at once.
-- **Replay:** A custom player that loads your recorded `.mp4` and syncs the `.events.jsonl` chat log to the video's current timestamp.
-- **Auto-Highlight:** It scans the chat logs for spikes in activity or huge gifts and lets you extract those specific clips with one click.
-- **Multi-Account:** You can load in different session cookies and swap between them in the UI. There's also a "Stealth Mode" if you want to lurk anonymously.
+- **Replay & Clipping:** Synced chat replay with fullscreen chat overlay, mobile-friendly **Background Audio** mode (`MediaSession`), timeline sprite previews, visual In/Out trimmer with live FFmpeg progress, and one-click highlight/PK clips (`9:16` blur, crop, or top/bottom `PK Split`).
+- **Multi-Account:** Load multiple session cookies (encrypted at rest) and swap between them in the UI, or toggle "Stealth Mode" to lurk anonymously.
 - **Transcoding:** If you're on a browser that hates HEVC (looking at you, Chrome), the backend will auto-detect your GPU (NVENC/QuickSync/AMF) and transcode it to H.264 on the fly.
 
 ### CLI Tools

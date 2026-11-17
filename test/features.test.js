@@ -530,3 +530,65 @@ test('Pin/protect, notes/title, sprite sheet, faststart remux, pk-split 9:16, sc
     if (pkClipPath) fs.rmSync(pkClipPath, { force: true });
   }
 });
+
+test('Compressed _balanced/_compact recordings preserve startMs, highlights, and gift economy; ChatSession reconnect continues on failure', async () => {
+  const utils = require('../lib/utils');
+  const { analyzeRecording } = require('../lib/highlights');
+  const { buildGiftEconomy } = require('../lib/analytics');
+
+  const tBase = utils.parseStartTimeFromName('creator_20261117_120000.mp4');
+  const tBal = utils.parseStartTimeFromName('creator_20261117_120000_balanced.mp4');
+  const tComp = utils.parseStartTimeFromName('creator_20261117_120000_p2_compact.mp4');
+  assert.ok(tBase && tBase > 0);
+  assert.equal(tBal, tBase);
+  assert.equal(tComp, tBase);
+
+  const base = `compreplay${Date.now()}_20261117_120000_balanced`;
+  const mp4Path = path.join(storage.RECORDINGS_DIR, `${base}.mp4`);
+  const evPath = path.join(storage.RECORDINGS_DIR, `${base}.events.jsonl`);
+  const hlPath = path.join(storage.RECORDINGS_DIR, `${base}.highlights.json`);
+  try {
+    fs.writeFileSync(mp4Path, 'mp4');
+    const evs = [
+      { id: 1, ts: tBase + 1000, type: 'chat', user: { uniqueId: 'u1' }, comment: 'one' },
+      { id: 2, ts: tBase + 2000, type: 'chat', user: { uniqueId: 'u2' }, comment: 'two' },
+      { id: 3, ts: tBase + 3000, type: 'gift', user: { uniqueId: 'u1' }, giftName: 'Rose', diamondCount: 10, repeatCount: 2 },
+      { id: 4, ts: tBase + 4000, type: 'chat', user: { uniqueId: 'u3' }, comment: 'three' },
+      { id: 5, ts: tBase + 5000, type: 'chat', user: { uniqueId: 'u4' }, comment: 'four' },
+    ];
+    fs.writeFileSync(evPath, evs.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const hl = analyzeRecording(`${base}.mp4`);
+    assert.equal(hl.ok, true);
+    assert.ok(hl.candidates.length >= 1);
+
+    const ge = buildGiftEconomy(`${base}.mp4`);
+    assert.equal(ge.ok, true);
+    assert.equal(ge.totals.diamonds, 20);
+  } finally {
+    fs.rmSync(mp4Path, { force: true });
+    fs.rmSync(evPath, { force: true });
+    fs.rmSync(hlPath, { force: true });
+  }
+
+  // ChatSession._scheduleReconnect retries after failed connect() when consumers exist
+  const s = new ChatSession('retry_tester');
+  s.uiActive = true;
+  let attempts = 0;
+  s.connect = async () => {
+    attempts++;
+    if (attempts < 2) throw new Error('temp network error');
+    s.state = 'connected';
+  };
+  const origSetTimeout = global.setTimeout;
+  try {
+    global.setTimeout = (fn) => origSetTimeout(fn, 5);
+    s._scheduleReconnect();
+    await new Promise((r) => origSetTimeout(r, 60));
+    assert.equal(attempts, 2);
+    assert.equal(s.state, 'connected');
+  } finally {
+    global.setTimeout = origSetTimeout;
+    s.disconnect();
+  }
+});

@@ -118,17 +118,20 @@ router.get('/api/watch/live-streams', async (_req, res) => {
   }
 
   liveStreamsCache.inflight = (async () => {
-    const usernames = watcher.getWatchlistRaw().map((e) => e.username);
+    const entries = watcher.getWatchlistRaw().map((e) => ({
+      username: e.username,
+      accountId: e.accountId || undefined,
+    }));
     const out = [];
     let i = 0;
-    // Worker pool: process up to N usernames in parallel. Each call hits the
+    // Worker pool: process up to N entries in parallel. Each call hits the
     // shared apiCache in lib/room.js so duplicate queries within the TTL
     // window collapse into one upstream request.
     async function worker() {
-      while (i < usernames.length) {
-        const username = usernames[i++];
+      while (i < entries.length) {
+        const { username, accountId } = entries[i++];
         try {
-          const apiData = await fetchApiLive(username);
+          const apiData = await fetchApiLive(username, { accountId });
           if (!isLiveFromApi(apiData)) continue;
           const streams = extractStreamUrls(apiData);
           if (!hasStreamUrls(streams)) continue;
@@ -151,7 +154,7 @@ router.get('/api/watch/live-streams', async (_req, res) => {
       }
     }
     const workers = Array.from(
-      { length: Math.min(LIVE_STREAMS_CONCURRENCY, usernames.length) },
+      { length: Math.min(LIVE_STREAMS_CONCURRENCY, entries.length) },
       () => worker()
     );
     await Promise.all(workers);

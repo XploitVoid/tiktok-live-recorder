@@ -18,6 +18,7 @@ const {
   readMeta,
   updateRecordingMeta,
   ensureThumbnailAndMeta,
+  isMediaProbeCoolingDown,
   extractAudio,
   compressRecording,
 } = require('../lib/storage');
@@ -113,9 +114,13 @@ router.get('/api/recordings', (_req, res) => {
         const meta = readMeta(f);
         const isActive = activeFiles.has(fullPath);
         const needsMedia = !meta?.hasMeta || (!!meta.vcodec && !meta.hasThumb);
-        if (!isActive && needsMedia && st.size > 0) {
+        if (!isActive && needsMedia && st.size > 0 && !isMediaProbeCoolingDown(f)) {
           // Lazily kick off background thumbnail/probe generation for completed files
-          setImmediate(() => { ensureThumbnailAndMeta(f).then(() => invalidateRecordingsCache()).catch(() => {}); });
+          setImmediate(() => {
+            ensureThumbnailAndMeta(f)
+              .then((updated) => { if (updated?.hasMeta) invalidateRecordingsCache(); })
+              .catch(() => {});
+          });
         }
         return {
           name: f, sizeBytes: st.size, mtime: st.mtimeMs,
@@ -157,17 +162,17 @@ router.get('/api/recordings/:name', (req, res) => {
   try {
     if (fs.existsSync(eventsFile)) {
       eventsExists = true;
-      events = readEvents(eventsFile, { sort: false });
-      for (const ev of events) {
-        if (startMs && ev.ts) ev.t = (ev.ts - startMs) / 1000;
-      }
+      const rawEvents = readEvents(eventsFile, { sort: false });
+      events = startMs
+        ? rawEvents.map((ev) => (ev.ts ? { ...ev, t: (ev.ts - startMs) / 1000 } : ev))
+        : rawEvents;
     }
   } catch (e) {
     return res.status(500).json({ error: safeError(e) });
   }
 
-  // Derive username from filename: <user>_YYYYMMDD_HHMMSS[_pN].mp4
-  const userMatch = name.match(/^(.+)_\d{4}\d{2}\d{2}_\d{2}\d{2}\d{2}(?:_p\d+)?\.mp4$/i);
+  // Derive username from filename: <user>_YYYYMMDD_HHMMSS[_pN][_balanced|_compact].mp4
+  const userMatch = name.match(/^(.+)_\d{4}\d{2}\d{2}_\d{2}\d{2}\d{2}(?:_p\d+)?(?:_(?:balanced|compact))?\.mp4$/i);
   const username = userMatch ? userMatch[1] : null;
 
   const meta = readMeta(name);

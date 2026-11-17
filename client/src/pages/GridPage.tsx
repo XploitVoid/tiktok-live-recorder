@@ -27,6 +27,7 @@ const GRID_COLS: Record<number, string> = {
   const [streams, setStreams] = useState<CheckResult[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [maxTiles, setMaxTiles] = useState(6)
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
@@ -120,14 +121,24 @@ const GRID_COLS: Record<number, string> = {
             </Link>
           </div>
         ) : (
-          streams.map((entry) => (
-            <GridTile
-              key={entry.username}
-              entry={entry}
-              quality={quality}
-              muted={muted}
-            />
-          ))
+          <>
+            {streams.slice(0, maxTiles).map((entry) => (
+              <GridTile
+                key={entry.username}
+                entry={entry}
+                quality={quality}
+                muted={muted}
+                preferHls={Math.min(streams.length, maxTiles) >= 4}
+              />
+            ))}
+            {streams.length > maxTiles && (
+              <div className="col-span-full flex items-center justify-center py-4">
+                <Button variant="outline" size="sm" onClick={() => setMaxTiles((n) => n + 6)}>
+                  +{Math.min(6, streams.length - maxTiles)} more ({streams.length - maxTiles} hidden to save CPU/RAM)
+                </Button>
+              </div>
+            )}
+          </>
         )}
       </div>
 

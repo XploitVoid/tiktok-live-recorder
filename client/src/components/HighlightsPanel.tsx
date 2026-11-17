@@ -41,14 +41,12 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
   const [verticalMode, setVerticalMode] = useState<'none' | 'blur' | 'crop' | 'pk-split'>('none')
   const [burnSubtitles, setBurnSubtitles] = useState(false)
   const [trimIn, setTrimIn] = useState(0)
-  const [trimOut, setTrimOut] = useState(30)
+  const [trimOutRaw, setTrimOutRaw] = useState(30)
   const [hoverSec, setHoverSec] = useState<number | null>(null)
 
-  useEffect(() => {
-    if (durationSec && durationSec > 0) {
-      setTrimOut((prev) => Math.min(durationSec, Math.max(1, prev > durationSec ? Math.min(30, durationSec) : prev)))
-    }
-  }, [durationSec])
+  const trimOut = durationSec && durationSec > 0
+    ? Math.min(durationSec, Math.max(trimIn + 1, trimOutRaw > durationSec ? Math.min(30, durationSec) : trimOutRaw))
+    : trimOutRaw
 
   const sseHandlers = useMemo(() => ({
     cut_progress: (raw: unknown) => {
@@ -277,13 +275,13 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                 <Button size="xs" variant="outline" onClick={() => {
                   const v = Math.floor(currentTime)
                   setTrimIn(v)
-                  if (trimOut <= v) setTrimOut(Math.min(Math.floor(durationSec), v + 15))
+                  if (trimOut <= v) setTrimOutRaw(Math.min(Math.floor(durationSec), v + 15))
                 }}>
                   {t('trimmerSetIn')} ({fmtTimeSec(trimIn)})
                 </Button>
                 <Button size="xs" variant="outline" onClick={() => {
                   const v = Math.max(trimIn + 1, Math.ceil(currentTime))
-                  setTrimOut(Math.min(Math.floor(durationSec), v))
+                  setTrimOutRaw(Math.min(Math.floor(durationSec), v))
                 }}>
                   {t('trimmerSetOut')} ({fmtTimeSec(trimOut)})
                 </Button>
@@ -296,7 +294,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                 onChange={(e) => {
                   const v = Number(e.target.value)
                   setTrimIn(v)
-                  if (trimOut <= v) setTrimOut(Math.min(Math.floor(durationSec), v + 1))
+                  if (trimOut <= v) setTrimOutRaw(Math.min(Math.floor(durationSec), v + 1))
                 }}
                 className="w-24 accent-primary"
                 aria-label="Trim In"
@@ -306,7 +304,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                 min={Math.min(Math.floor(durationSec), trimIn + 1)}
                 max={Math.max(1, Math.floor(durationSec))}
                 value={trimOut}
-                onChange={(e) => setTrimOut(Math.max(trimIn + 1, Number(e.target.value)))}
+                onChange={(e) => setTrimOutRaw(Math.max(trimIn + 1, Number(e.target.value)))}
                 className="w-24 accent-primary"
                 aria-label="Trim Out"
               />

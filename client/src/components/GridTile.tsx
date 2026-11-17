@@ -11,6 +11,7 @@ interface GridTileProps {
   entry: CheckResult
   quality: string
   muted: boolean
+  preferHls?: boolean
 }
 
 interface PickedStream {
@@ -19,7 +20,10 @@ interface PickedStream {
   quality: string
 }
 
-function pickStream(entry: CheckResult, qPref: string): PickedStream | null {
+function pickStream(entry: CheckResult, qPref: string, preferHls = false): PickedStream | null {
+  if (preferHls && entry.streams?.hls) {
+    return { url: entry.streams.hls, kind: 'hls', quality: 'auto' }
+  }
   const f = entry.streams?.flv || {}
   const order = qPref === 'hd' ? ['hd', 'ld', 'origin', 'uhd', 'sd'] : ['ld', 'sd', 'hd', 'origin', 'uhd']
   for (const q of order) if (f[q]) return { url: f[q], kind: 'flv', quality: q }
@@ -27,7 +31,7 @@ function pickStream(entry: CheckResult, qPref: string): PickedStream | null {
   return null
 }
 
-export function GridTile({ entry, quality, muted }: GridTileProps) {
+export function GridTile({ entry, quality, muted, preferHls = false }: GridTileProps) {
   const { t } = useI18n()
   const videoRef = useRef<HTMLVideoElement>(null)
   const [mutedOverride, setMutedOverride] = useState<{ prop: boolean; val: boolean } | null>(null)
@@ -41,7 +45,7 @@ export function GridTile({ entry, quality, muted }: GridTileProps) {
   // Compute the picked stream once and use its URL as the effect dependency,
   // so we only recreate the player when the URL or quality actually changes
   // (not on every refresh that creates a new streams object reference).
-  const pick = pickStream(entry, quality)
+  const pick = pickStream(entry, quality, preferHls)
   const pickedUrl = pick?.url ?? ''
   const pickedKind = pick?.kind ?? ''
   const pickedQ = pick?.quality ?? ''

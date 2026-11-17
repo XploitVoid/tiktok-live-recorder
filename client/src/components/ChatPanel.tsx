@@ -45,6 +45,7 @@ export function ChatPanel({ username }: Props) {
   const [kwInput, setKwInput] = useState('')
   const [hideSpam, setHideSpam] = useState(false)
   const [pinnedMessage, setPinnedMessage] = useState<{ text: string; user: string } | null>(null)
+  const [connectSinceId, setConnectSinceId] = useState(0)
   const feedRef = useRef<HTMLDivElement>(null)
   const lastIdRef = useRef(0)
 
@@ -85,7 +86,17 @@ export function ChatPanel({ username }: Props) {
     setEventCount((prev) => prev + fresh.length)
   }, [])
 
-  const sseQuery = streaming ? `chat=${encodeURIComponent(username)}&sinceId=0` : null
+  useEffect(() => {
+    const onVis = () => {
+      if (document.hidden) {
+        setConnectSinceId(lastIdRef.current)
+      }
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
+
+  const sseQuery = streaming ? `chat=${encodeURIComponent(username)}&sinceId=${connectSinceId}` : null
   const sseHandlers = useMemo(() => ({
     chat_snapshot: (raw: unknown) => {
       const snap = raw as ChatPollResult
@@ -113,6 +124,7 @@ export function ChatPanel({ username }: Props) {
 
   const handleStart = async () => {
     lastIdRef.current = 0
+    setConnectSinceId(0)
     setEventCount(0)
     setEvents([])
     setPinnedMessage(null)

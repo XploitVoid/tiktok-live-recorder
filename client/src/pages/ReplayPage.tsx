@@ -126,9 +126,14 @@ export function ReplayPage() {
   useEffect(() => {
     const media = (audioMode ? audioRef.current : videoRef.current) as HTMLMediaElement | null
     if (!media) return
-    const handler = () => {
+    let lastWholeSec = -1
+    const handler = (ev: Event) => {
       syncToTime(media.currentTime)
-      setCurrentTime(media.currentTime)
+      const whole = Math.floor(media.currentTime)
+      if (ev.type === 'seeked' || whole !== lastWholeSec) {
+        lastWholeSec = whole
+        setCurrentTime(media.currentTime)
+      }
     }
     const meta = () => {
       if (Number.isFinite(media.duration) && media.duration > 0) {
@@ -259,8 +264,9 @@ export function ReplayPage() {
     shownIdsRef.current.clear()
     lastTimeRef.current = 0
     setShown([])
-    if (videoRef.current) {
-      syncToTime(videoRef.current.currentTime, value)
+    const media = audioMode ? audioRef.current : videoRef.current
+    if (media) {
+      syncToTime(media.currentTime, value)
     }
   }
 

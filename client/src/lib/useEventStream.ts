@@ -2,9 +2,137 @@ import { useEffect, useRef } from 'react'
 
 type SseHandlers = Record<string, (data: unknown) => void>
 
+interface Subscription {
+  query: string
+  handlersRef: { current: SseHandlers }
+  keepAlive: boolean
+}
+
+// Shared per-tab SSE multiplexer so multiple components (Watchlist, ActiveJobs,
+// SavedRecordings, ChatPanel, HighlightsPanel) share ONE EventSource connection
+// instead of exhausting the browser's 6-connection HTTP/1.1 limit.
+const subscribers = new Map<symbol, Subscription>()
+let sharedEs: EventSource | null = null
+let currentUrl: string | null = null
+let registeredEvents = new Set<string>()
+let syncTimer: ReturnType<typeof setTimeout> | null = null
+let visibilityBound = false
+
+function buildCombinedQuery(): { url: string | null; keepAlive: boolean } {
+  if (subscribers.size === 0) return { url: null, keepAlive: false }
+  const channels = new Set<string>()
+  let chat: string | null = null
+  let sinceId: string | null = null
+  let keepAlive = false
+
+  for (const sub of subscribers.values()) {
+    if (sub.keepAlive) keepAlive = true
+    const params = new URLSearchParams(sub.query)
+    const ch = params.get('channels')
+    if (ch) {
+      for (const c of ch.split(',').map((s) => s.trim()).filter(Boolean)) {
+        channels.add(c)
+      }
+    }
+    const chatParam = params.get('chat')
+    if (chatParam) {
+      chat = chatParam
+      sinceId = params.get('sinceId') ?? '0'
+    }
+  }
+
+  const out = new URLSearchParams()
+  if (channels.size > 0) {
+    out.set('channels', [...channels].sort().join(','))
+  }
+  if (chat) {
+    out.set('chat', chat)
+    if (sinceId !== null) out.set('sinceId', sinceId)
+  }
+  const qs = out.toString()
+  return { url: qs ? `/api/events/stream?${qs}` : null, keepAlive }
+}
+
+function dispatchSseEvent(ev: Event) {
+  const me = ev as MessageEvent
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(me.data)
+  } catch {
+    return
+  }
+  for (const sub of subscribers.values()) {
+    const fn = sub.handlersRef.current[ev.type]
+    if (fn) {
+      try { fn(parsed) } catch { /* ignore handler errors */ }
+    }
+  }
+}
+
+function syncEventListeners() {
+  if (!sharedEs) return
+  for (const sub of subscribers.values()) {
+    for (const eventName of Object.keys(sub.handlersRef.current)) {
+      if (!registeredEvents.has(eventName)) {
+        registeredEvents.add(eventName)
+        sharedEs.addEventListener(eventName, dispatchSseEvent)
+      }
+    }
+  }
+}
+
+function disconnectShared() {
+  if (sharedEs) {
+    sharedEs.close()
+    sharedEs = null
+  }
+  currentUrl = null
+  registeredEvents = new Set()
+}
+
+function applySharedConnection() {
+  const { url, keepAlive } = buildCombinedQuery()
+  if (!url || (typeof document !== 'undefined' && document.hidden && !keepAlive)) {
+    disconnectShared()
+    return
+  }
+  if (sharedEs && currentUrl === url) {
+    syncEventListeners()
+    return
+  }
+  disconnectShared()
+  currentUrl = url
+  sharedEs = new EventSource(url)
+  syncEventListeners()
+}
+
+function scheduleSync() {
+  if (syncTimer) clearTimeout(syncTimer)
+  // Coalesce multiple mounts/unmounts in the same render frame into one connection.
+  syncTimer = setTimeout(() => {
+    syncTimer = null
+    applySharedConnection()
+  }, 25)
+}
+
+function onVisibilityChange() {
+  scheduleSync()
+}
+
+function ensureVisibilityListener() {
+  if (typeof document === 'undefined') return
+  if (subscribers.size > 0 && !visibilityBound) {
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    visibilityBound = true
+  } else if (subscribers.size === 0 && visibilityBound) {
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+    visibilityBound = false
+  }
+}
+
 /**
- * Subscribe to Server-Sent Events (/api/events/stream) while enabled and tab is visible.
- * Automatically disconnects when hidden and reconnects when tab returns.
+ * Subscribe to Server-Sent Events (/api/events/stream) via a shared per-tab
+ * connection while enabled and tab is visible.
  */
 export function useEventStream(
   query: string | null,
@@ -16,48 +144,20 @@ export function useEventStream(
 
   useEffect(() => {
     handlersRef.current = handlers
+    syncEventListeners()
   }, [handlers])
 
   useEffect(() => {
     if (!enabled || !query) return
-    let es: EventSource | null = null
-    let closed = false
-
-    const connect = () => {
-      if (closed || (document.hidden && !keepAliveInBackground) || es) return
-      es = new EventSource(`/api/events/stream?${query}`)
-      for (const eventName of Object.keys(handlersRef.current)) {
-        es.addEventListener(eventName, (ev) => {
-          const fn = handlersRef.current[eventName]
-          if (!fn) return
-          try {
-            const parsed: unknown = JSON.parse((ev as MessageEvent).data)
-            fn(parsed)
-          } catch { /* ignore malformed payload */ }
-        })
-      }
-    }
-
-    const disconnect = () => {
-      if (es) {
-        es.close()
-        es = null
-      }
-    }
-
-    const onVisibility = () => {
-      if (keepAliveInBackground) return
-      if (document.hidden) disconnect()
-      else connect()
-    }
-
-    if (!document.hidden || keepAliveInBackground) connect()
-    document.addEventListener('visibilitychange', onVisibility)
+    const id = Symbol('sse-sub')
+    subscribers.set(id, { query, handlersRef, keepAlive: keepAliveInBackground })
+    ensureVisibilityListener()
+    scheduleSync()
 
     return () => {
-      closed = true
-      disconnect()
-      document.removeEventListener('visibilitychange', onVisibility)
+      subscribers.delete(id)
+      ensureVisibilityListener()
+      scheduleSync()
     }
   }, [query, enabled, keepAliveInBackground])
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import { RefreshCw, Tv } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -15,10 +16,20 @@ export function GridPage() {
   const [cols, setCols] = useState(3)
   const [quality, setQuality] = useState('ld')
   const [muted, setMuted] = useState(true)
+const GRID_COLS: Record<number, string> = {
+  1: 'grid-cols-1',
+  2: 'grid-cols-1 md:grid-cols-2',
+  3: 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3',
+  4: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4',
+  5: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5',
+}
+
   const [streams, setStreams] = useState<CheckResult[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
 
   const refresh = useCallback(async () => {
+    setRefreshing(true)
     try {
       const list = await getLiveStreams()
       setStreams(list)
@@ -26,12 +37,18 @@ export function GridPage() {
       console.error(e)
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }, [])
 
   useEffect(() => {
-    refresh()
-  }, [refresh])
+    let active = true
+    getLiveStreams()
+      .then((list) => { if (active) setStreams(list) })
+      .catch((e) => console.error(e))
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [])
 
   // Auto-refresh every 60s, but pause when the grid tab is hidden so we
   // don't keep fanning out TikTok lookups for nothing.
@@ -73,8 +90,8 @@ export function GridPage() {
           <span className="text-foreground/80">{t('muteAll')}</span>
         </label>
 
-        <Button variant="outline" size="xs" onClick={refresh}>
-          <RefreshCw className="w-3 h-3 mr-1" /> {t('btnRefresh')}
+        <Button variant="outline" size="xs" onClick={refresh} disabled={refreshing}>
+          <RefreshCw className={`w-3 h-3 mr-1 ${refreshing ? 'animate-spin' : ''}`} /> {t('btnRefresh')}
         </Button>
 
         {streams.length > 0 && (
@@ -85,19 +102,22 @@ export function GridPage() {
       </div>
 
       {/* Grid */}
-      <div
-        className="grid gap-4 auto-rows-fr"
-        style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
-      >
+      <div className={`grid gap-4 auto-rows-fr ${GRID_COLS[cols] || GRID_COLS[2]}`}>
         {loading ? (
-          <div className="col-span-full text-center py-20 rounded-2xl border border-dashed border-border">
-            <Tv className="w-12 h-12 mx-auto mb-3 opacity-40 text-muted-foreground" />
+          <div className="col-span-full text-center py-20 rounded-xl border border-dashed border-border">
+            <Tv className="w-10 h-10 mx-auto mb-3 opacity-40 text-muted-foreground" />
             <p className="text-muted-foreground text-sm">{t('loading')}</p>
           </div>
         ) : streams.length === 0 ? (
-          <div className="col-span-full text-center py-20 rounded-2xl border border-dashed border-border">
-            <div className="text-4xl mb-3 opacity-40">📺</div>
+          <div className="col-span-full text-center py-20 rounded-xl border border-dashed border-border space-y-3">
+            <Tv className="w-10 h-10 mx-auto opacity-40 text-muted-foreground" />
             <p className="text-muted-foreground text-sm">{t('noOneLive')}</p>
+            <Link
+              to="/"
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-secondary hover:bg-muted border border-border transition-colors"
+            >
+              {t('gridOpenHome')}
+            </Link>
           </div>
         ) : (
           streams.map((entry) => (

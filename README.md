@@ -35,8 +35,7 @@ If you don't want to use the UI, you can just run the scripts directly:
 
 ### Prerequisites
 - **Node.js** v18+ (I usually run it on 20)
-- **ffmpeg** needs to be installed and in your system PATH.
-  - On Windows: `winget install Gyan.FFmpeg`
+- **ffmpeg / ffprobe** are bundled automatically via `ffmpeg-static` and `ffprobe-static` when you run `npm install`. If you already have `ffmpeg` installed on your system `PATH` (or set `FFMPEG_PATH`), it will be preferred automatically.
 
 ### Setup
 

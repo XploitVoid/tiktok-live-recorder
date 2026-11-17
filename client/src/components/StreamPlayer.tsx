@@ -5,12 +5,13 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Input } from '@/components/ui/input'
-import { Copy, Check, AlertTriangle, Loader2, Circle, MessageSquare, PictureInPicture2 } from 'lucide-react'
+import { Copy, Check, AlertTriangle, Loader2, Circle, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react'
 import { useI18n } from '@/lib/i18n'
 import { startRecord as apiStartRecord } from '@/lib/api'
 import { loadPlayers } from '@/lib/players'
 import type { CheckResult, StreamData } from '@/lib/types'
 import { ChatPanel } from './ChatPanel'
+import { VideoPlayerBox } from './VideoPlayerBox'
 import { toast } from 'sonner'
 
 
@@ -21,14 +22,19 @@ interface Props {
 
 export function StreamPlayer({ data, onRecordStarted }: Props) {
   const { t } = useI18n()
+  const tRef = useRef(t)
+  useEffect(() => {
+    tRef.current = t
+  }, [t])
   const videoRef = useRef<HTMLVideoElement>(null)
   const videoColRef = useRef<HTMLDivElement>(null)
   const playersRef = useRef<{ destroy: () => void }[]>([])
   const [playerQuality, setPlayerQuality] = useState('auto')
-  const [recordQuality, setRecordQuality] = useState('')
+  const [recordQuality, setRecordQuality] = useState('auto')
   const [playerInfo, setPlayerInfo] = useState('')
   const [recording, setRecording] = useState(false)
   const [recordMsg, setRecordMsg] = useState('')
+  const [showUrls, setShowUrls] = useState(false)
   const [chatHeight, setChatHeight] = useState<number | undefined>(undefined)
 
   const s = data.streams!
@@ -38,6 +44,13 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
       try { p.destroy() } catch { /* ignore */ }
     }
     playersRef.current = []
+    const video = videoRef.current
+    if (video) {
+      video.onerror = null
+      try { video.pause() } catch { /* ignore */ }
+      video.removeAttribute('src')
+      try { video.load() } catch { /* ignore */ }
+    }
   }, [])
 
   const playStream = useCallback((streams: StreamData, quality: string) => {
@@ -75,7 +88,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
       p.on(flvjs!.Events.ERROR, () => {
         if (retries++ >= MAX_RETRIES) { setPlayerInfo('Stream error (gave up after retries)'); return }
         setTimeout(() => {
-          try { p.unload(); p.load(); p.play().catch(() => {}) } catch {}
+          try { p.unload(); p.load(); p.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
         }, 3000)
       })
     }
@@ -84,28 +97,83 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
         const data = args[1] as { fatal?: boolean } | undefined
         if (!data?.fatal) return
         if (retries++ >= MAX_RETRIES) { setPlayerInfo('Stream error (gave up after retries)'); return }
-        setTimeout(() => { try { h.recoverMediaError() } catch {} }, 3000)
+        setTimeout(() => { try { h.recoverMediaError() } catch { /* ignore */ } }, 3000)
       })
     }
 
+    const flvConfig = {
+      enableStashBuffer: true,
+      stashInitialSize: 512,
+      autoCleanupSourceBuffer: true,
+      autoCleanupMaxBackwardDuration: 20,
+      autoCleanupMinBackwardDuration: 10,
+      fixAudioTimestampGap: true,
+      lazyLoad: false,
+    }
+
     if (codec === 'hevc') {
-      const srcUrl = flvUrl || hlsUrl
-      if (!srcUrl) { setPlayerInfo('No HEVC stream URL available'); return }
+      // Prefer continuous FLV stream first (avoids 2-6s HLS segment pauses);
+      // fall back to HLS if FLV is unavailable or fails.
+      const candidates = [flvUrl, hlsUrl].filter((u): u is string => !!u)
+      if (candidates.length === 0) { setPlayerInfo('No HEVC stream URL available'); return }
       if (!flvjs || !flvjs.isSupported()) {
         setPlayerInfo('flv.js required for HEVC transcoding'); return
       }
-      const transcodeUrl = '/api/transcode?url=' + encodeURIComponent(srcUrl)
-      const p = flvjs.createPlayer({ type: 'flv', url: transcodeUrl, isLive: true, cors: true })
-      p.attachMediaElement(video); p.load(); p.play().catch(() => {})
-      attachFlvErrorHandler(p)
-      playersRef.current.push(p)
+
+      let candidateIdx = 0
+      let cancelled = false
+      const startHevc = (idx: number) => {
+        if (cancelled) return
+        const srcUrl = candidates[idx]
+        const transcodeUrl = '/api/transcode?url=' + encodeURIComponent(srcUrl)
+        const p = flvjs!.createPlayer({
+          type: 'flv',
+          url: transcodeUrl,
+          isLive: true,
+          cors: true,
+          hasAudio: true,
+          hasVideo: true,
+        }, flvConfig)
+        p.attachMediaElement(video)
+        p.load()
+        p.play().catch(() => {})
+        p.on(flvjs!.Events.ERROR, (_errType: unknown, _errDetail: unknown, info: unknown) => {
+          if (cancelled) return
+          const code = (info as { code?: number } | undefined)?.code
+          if (code === 503) {
+            setPlayerInfo('HEVC transcode unavailable: ffmpeg is not installed on the server')
+            toast.error(tRef.current('ffmpegRequiredTitle'), { description: tRef.current('ffmpegRequiredDesc') })
+            tearDown()
+            return
+          }
+          if (candidateIdx + 1 < candidates.length) {
+            candidateIdx++
+            try { p.destroy() } catch { /* ignore */ }
+            playersRef.current = playersRef.current.filter((x) => x !== p)
+            startHevc(candidateIdx)
+            return
+          }
+          if (retries++ >= MAX_RETRIES) {
+            setPlayerInfo('HEVC transcode failed (check server logs / ffmpeg)')
+            tearDown()
+            return
+          }
+          setTimeout(() => {
+            if (cancelled) return
+            try { p.unload(); p.load(); p.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
+          }, 3000)
+        })
+        playersRef.current.push(p)
+      }
+
+      startHevc(0)
       setPlayerInfo(`Transcode H.264 ← ${label} · ⚠ CPU intensive`)
-      return
+      return () => { cancelled = true }
     }
 
     if (flvUrl && flvjs && flvjs.isSupported()) {
       const proxied = '/api/proxy?url=' + encodeURIComponent(flvUrl)
-      const p = flvjs.createPlayer({ type: 'flv', url: proxied, isLive: true, cors: true })
+      const p = flvjs.createPlayer({ type: 'flv', url: proxied, isLive: true, cors: true }, flvConfig)
       p.attachMediaElement(video); p.load(); p.play().catch(() => {})
       attachFlvErrorHandler(p)
       playersRef.current.push(p)
@@ -121,7 +189,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
       video.src = '/api/proxy?url=' + encodeURIComponent(hlsUrl)
       video.onerror = () => {
         if (retries++ >= MAX_RETRIES) { setPlayerInfo('Stream error (gave up after retries)'); return }
-        setTimeout(() => { try { video.load(); video.play().catch(() => {}) } catch {} }, 3000)
+        setTimeout(() => { try { video.load(); video.play().catch(() => { /* ignore */ }) } catch { /* ignore */ } }, 3000)
       }
       setPlayerInfo(`HLS (native) · ${label} · via local proxy`)
     } else {
@@ -131,15 +199,17 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
 
   useEffect(() => {
     let cancelled = false
+    let cleanupHevc: (() => void) | undefined
     // Lazy-load hls.js and flv.js from CDN before constructing the player.
     loadPlayers().then(() => {
       if (cancelled) return
-      playStream(s, playerQuality)
+      const res = playStream(s, playerQuality)
+      if (typeof res === 'function') cleanupHevc = res
     }).catch((e) => {
       console.error('player libs failed to load:', e)
       setPlayerInfo('Player library failed to load')
     })
-    return () => { cancelled = true; tearDown() }
+    return () => { cancelled = true; cleanupHevc?.(); tearDown() }
   }, [s, playerQuality, playStream, tearDown])
 
   // Sync chat panel height with video column
@@ -183,12 +253,16 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
     if (q.sdkKey === 'ao') continue
     recordQualities.push({ value: `hevc:${q.sdkKey}`, label: `${q.name} (${q.sdkKey}) · HEVC` })
   }
+  if (s.flv?.ao || s.cmaf?.ao) {
+    recordQualities.push({ value: 'ao', label: 'Audio Only (ao)' })
+  }
 
   const handleRecord = async () => {
     setRecording(true)
     setRecordMsg('')
     try {
-      const result = await apiStartRecord(data.username, recordQuality || undefined)
+      const q = recordQuality && recordQuality !== 'auto' ? recordQuality : undefined
+      const result = await apiStartRecord(data.username, q)
       toast.success(result.reused ? 'Already recording' : `Recording @${data.username}`, {
         description: result.file,
       })
@@ -211,7 +285,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
   for (const [q, u] of Object.entries(s.hevc?.cmaf || {})) urlRows.push({ label: `hevc mpd/${q}`, url: u })
 
   return (
-    <Card className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+    <Card className="border-border/80">
       <CardContent className="pt-5 space-y-4">
         {/* Player + Chat */}
         <div className="grid md:grid-cols-3 gap-4 items-start">
@@ -245,28 +319,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
                 </SelectContent>
               </Select>
             </div>
-            <div className="relative">
-              <video ref={videoRef} controls muted playsInline className="w-full aspect-video bg-black rounded-lg" />
-              <Button
-                variant="secondary"
-                size="xs"
-                className="absolute top-2 right-2 opacity-70 hover:opacity-100 transition-opacity gap-1"
-                onClick={() => {
-                  const v = videoRef.current
-                  if (!v) return
-                  if (document.pictureInPictureElement) {
-                    document.exitPictureInPicture().catch(() => {})
-                  } else {
-                    v.requestPictureInPicture().catch(() =>
-                      toast.error('PiP not supported in this browser')
-                    )
-                  }
-                }}
-                title={t('pip')}
-              >
-                <PictureInPicture2 className="w-3 h-3" /> {t('pip')}
-              </Button>
-            </div>
+            <VideoPlayerBox videoRef={videoRef} muted />
             <p className="text-xs text-muted-foreground mt-1">{playerInfo}</p>
           </div>
           <div className="overflow-hidden" style={chatHeight ? { height: chatHeight } : undefined}>
@@ -276,28 +329,22 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
 
         <Separator />
 
-        {/* Stream URLs */}
-        <div>
-          <h2 className="font-semibold mb-2 text-foreground">{t('streamUrlsTitle')}</h2>
-          <div className="space-y-1.5">
-            {urlRows.map((row) => (
-              <UrlRow key={row.label} label={row.label} url={row.url} />
-            ))}
+        {/* Record controls (directly accessible below preview) */}
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold text-foreground">{t('recordTitle')}</h2>
+            <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+              <MessageSquare className="w-3 h-3" /> {t('chatRecHint')}
+            </span>
           </div>
-        </div>
-
-        <Separator />
-
-        {/* Record */}
-        <div>
-          <h2 className="font-semibold mb-2 text-foreground">{t('recordTitle')}</h2>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm text-muted-foreground">{t('qualityLabel')}</span>
+            <span className="text-xs text-muted-foreground">{t('recQualityLabel')}</span>
             <Select value={recordQuality} onValueChange={(v) => v !== null && setRecordQuality(v)}>
               <SelectTrigger className="w-[200px] h-8 text-xs">
                 <SelectValue placeholder={t('qAuto')} />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="auto">{t('qAuto')}</SelectItem>
                 {recordQualities.map(q => (
                   <SelectItem key={q.value} value={q.value}>{q.label}</SelectItem>
                 ))}
@@ -306,17 +353,42 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
             <Button
               onClick={handleRecord}
               disabled={recording}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white border-0"
+              size="sm"
+              className="bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer"
             >
-              {recording ? <Loader2 className="w-4 h-4 animate-spin mr-1.5" /> : <Circle className="w-3 h-3 mr-1.5 fill-current" />}
+              {recording ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Circle className="w-3 h-3 mr-1.5 fill-current" />}
               {t('btnStartRec')}
             </Button>
-            {recordMsg && <span className="text-xs text-muted-foreground">{recordMsg}</span>}
+            {recordMsg && (
+              <span className="text-xs font-mono text-emerald-400 truncate max-w-xs">{recordMsg}</span>
+            )}
           </div>
-          <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1.5">
-            <MessageSquare className="w-3 h-3" /> {t('chatRecHint')}
-          </p>
         </div>
+
+        {/* Collapsible direct stream URLs */}
+        {urlRows.length > 0 && (
+          <div className="pt-1 border-t border-border/60">
+            <button
+              type="button"
+              onClick={() => setShowUrls((v) => !v)}
+              aria-expanded={showUrls}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors py-1 cursor-pointer"
+            >
+              {showUrls ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              <span>{showUrls ? t('streamUrlsHide') : t('streamUrlsShow')}</span>
+              <Badge variant="secondary" className="text-[10px] font-mono tabular-nums px-1.5 py-0">
+                {urlRows.length}
+              </Badge>
+            </button>
+            {showUrls && (
+              <div className="space-y-1.5 mt-2">
+                {urlRows.map((row) => (
+                  <UrlRow key={row.label} label={row.label} url={row.url} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -325,7 +397,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
 export function BlockedStreams({ data }: { data: CheckResult }) {
   const { t } = useI18n()
   return (
-    <Card className="border-amber-700/50 animate-in fade-in slide-in-from-bottom-2 duration-300">
+    <Card className="border-amber-700/50">
       <CardContent className="pt-5">
         <div className="p-4 bg-amber-900/20 border border-amber-700/40 rounded-lg">
           <h2 className="font-semibold text-amber-300 mb-1 flex items-center gap-2">
@@ -346,9 +418,31 @@ function UrlRow({ label, url }: { label: string; url: string }) {
   const [copied, setCopied] = useState(false)
 
   const copy = async () => {
-    await navigator.clipboard.writeText(url)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1200)
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url)
+      } else {
+        throw new Error('clipboard unavailable')
+      }
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1200)
+    } catch {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = url
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        const ok = document.execCommand('copy')
+        ta.remove()
+        if (!ok) throw new Error('execCommand failed')
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1200)
+      } catch {
+        toast.error('Copy failed (clipboard requires HTTPS or localhost)')
+      }
+    }
   }
 
   return (

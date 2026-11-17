@@ -8,7 +8,7 @@
 const { Router } = require('express');
 const fs = require('fs');
 const path = require('path');
-const { safeFilename, safeError } = require('../lib/utils');
+const { resolveInsideDir, safeError } = require('../lib/utils');
 const {
   CLIPS_DIR,
   analyzeRecording,
@@ -27,12 +27,10 @@ const RECORDINGS_DIR = path.resolve(__dirname, '..', 'recordings');
 // Validate that the requested recording name corresponds to an actual mp4
 // inside RECORDINGS_DIR — prevents path traversal and pointing at random files.
 function resolveRecording(rawName) {
-  const name = safeFilename(rawName || '');
-  if (!name.endsWith('.mp4')) return null;
-  const full = path.join(RECORDINGS_DIR, name);
-  if (!full.startsWith(RECORDINGS_DIR)) return null;
-  if (!fs.existsSync(full)) return null;
-  return name;
+  const resolved = resolveInsideDir(RECORDINGS_DIR, rawName, '.mp4');
+  if (!resolved) return null;
+  if (!fs.existsSync(resolved.full)) return null;
+  return resolved.name;
 }
 
 router.get('/api/highlights/:recording', (req, res) => {
@@ -71,9 +69,11 @@ router.post('/api/highlights/cut', async (req, res) => {
   if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
     return res.status(400).json({ error: 'invalid startSec/endSec' });
   }
+  const vertical = ['crop', 'blur'].includes(req.body?.vertical) ? req.body.vertical : 'none';
+  const burnSubtitles = !!req.body?.burnSubtitles;
   try {
-    const out = await cutClip(name, startSec, endSec);
-    console.log(`[audit] highlight cut: ${name} [${startSec}-${endSec}s] -> ${out.name}`);
+    const out = await cutClip(name, startSec, endSec, { vertical, burnSubtitles });
+    console.log(`[audit] highlight cut: ${name} [${startSec}-${endSec}s v=${vertical} sub=${burnSubtitles}] -> ${out.name}`);
     res.json({ ok: true, clip: out });
   } catch (e) {
     const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'BAD_RANGE' ? 400 : 500;
@@ -83,14 +83,12 @@ router.post('/api/highlights/cut', async (req, res) => {
 
 router.delete('/api/highlights/clip/:name', (req, res) => {
   try {
-    const name = safeFilename(req.params.name);
-    if (!name.endsWith('.mp4')) return res.status(400).json({ error: 'bad name' });
-    const full = path.join(CLIPS_DIR, name);
-    if (!full.startsWith(CLIPS_DIR) || !fs.existsSync(full)) {
+    const resolved = resolveInsideDir(CLIPS_DIR, req.params.name, '.mp4');
+    if (!resolved || !fs.existsSync(resolved.full)) {
       return res.status(404).json({ error: 'clip not found' });
     }
-    deleteClip(name);
-    console.log(`[audit] highlight clip deleted: ${name}`);
+    deleteClip(resolved.name);
+    console.log(`[audit] highlight clip deleted: ${resolved.name}`);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: safeError(e) });
@@ -163,7 +161,9 @@ router.post('/api/bookmarks', (req, res) => {
 router.delete('/api/bookmarks/:recording/:id', (req, res) => {
   const name = resolveRecording(req.params.recording);
   if (!name) return res.status(404).json({ error: 'recording not found' });
-  const ok = removeBookmark(name, req.params.id);
+  const id = String(req.params.id || '');
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return res.status(400).json({ error: 'invalid bookmark id' });
+  const ok = removeBookmark(name, id);
   if (!ok) return res.status(404).json({ error: 'bookmark not found' });
   res.json({ ok: true });
 });
@@ -173,6 +173,7 @@ router.delete('/api/bookmarks/:recording/:id', (req, res) => {
 router.get('/api/search/chat', (req, res) => {
   const q = String(req.query.q || '').trim();
   if (q.length < 2) return res.status(400).json({ error: 'query too short (min 2 chars)' });
+  if (q.length > 100) return res.status(400).json({ error: 'query too long (max 100 chars)' });
   try {
     const results = searchChat(q);
     res.json({ query: q, results });

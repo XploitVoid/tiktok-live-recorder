@@ -1,10 +1,13 @@
 // routes/proxy.js — /api/proxy (HLS/CDN proxy) and /api/transcode endpoints.
 
 const { Router } = require('express');
+const http = require('http');
+const https = require('https');
 const { Readable } = require('stream');
 const { spawn } = require('child_process');
-const { resolveFfmpeg } = require('../lib/ffmpeg');
-const { isAllowedCdnUrl, safeError } = require('../lib/utils');
+const { resolveFfmpeg, isFfmpegAvailable } = require('../lib/ffmpeg');
+const { isAllowedCdnUrl, assertPublicDns, safeError } = require('../lib/utils');
+const { getProxyAgent } = require('../lib/proxy-config');
 const {
   MAX_CONCURRENT_TRANSCODES,
   transcodeProcs,
@@ -17,49 +20,145 @@ const router = Router();
 // ── HLS / CDN proxy ──
 // Browsers block tiktokcdn.com due to CORS; this lets <video> play it.
 
-// Simple counter-based rate limiter for proxy requests (O(1) per check).
+// Per-IP counter-based rate limiter for proxy requests.
 // Sized for grid mode: each tile may fetch 1 manifest + ~3 segments every
-// few seconds. 5 tiles × ~4 req/3s × 10s = ~70 req/10s baseline. We allow
-// ~5x headroom for refresh bursts and multiple browser tabs.
-let proxyHitCount = 0;
-let proxyWindowStart = Date.now();
+// few seconds. 5 tiles × ~4 req/3s × 10s = ~70 req/10s baseline.
+const proxyHitsByIp = new Map(); // ip -> { count, resetAt }
 const PROXY_RATE_WINDOW = 10_000; // 10 seconds
-const PROXY_RATE_LIMIT = 800;     // max requests per window
+const PROXY_RATE_LIMIT = 800;     // max requests per IP per window
+const UPSTREAM_TIMEOUT_MS = 15_000;
+const MAX_MANIFEST_BYTES = 2 * 1024 * 1024; // 2 MB cap for m3u8 playlists
+const MAX_TRANSCODES_PER_IP = 3;
+
+const transcodeCountByIp = new Map();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, b] of proxyHitsByIp) {
+    if (b.resetAt < now) proxyHitsByIp.delete(ip);
+  }
+}, 60_000).unref();
+
+const SAFE_RESPONSE_HEADERS = new Set([
+  'content-type',
+  'content-range',
+  'accept-ranges',
+  'cache-control',
+  'etag',
+  'last-modified',
+]);
+
+const BLOCKED_CONTENT_TYPES = /^(?:text\/html|application\/xhtml\+xml|image\/svg\+xml|application\/javascript|text\/javascript|application\/x-javascript)/i;
+
+function requestViaAgent(target, headers, agent, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(target);
+    const mod = parsed.protocol === 'http:' ? http : https;
+    const req = mod.request(parsed, { method: 'GET', headers, agent }, (res) => {
+      const hdrs = {
+        get: (name) => {
+          const v = res.headers[name.toLowerCase()];
+          return Array.isArray(v) ? v.join(', ') : (v ?? null);
+        },
+        forEach: (cb) => {
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (v !== undefined) cb(Array.isArray(v) ? v.join(', ') : String(v), k);
+          }
+        },
+      };
+      resolve({
+        status: res.statusCode || 502,
+        headers: hdrs,
+        nodeStream: res,
+        cancelBody: () => { try { res.destroy(); } catch {} },
+        readBuffer: (maxBytes) => new Promise((resBuf, rejBuf) => {
+          const chunks = [];
+          let total = 0;
+          res.on('data', (c) => {
+            total += c.length;
+            if (total > maxBytes) {
+              res.destroy();
+              return rejBuf(new Error('manifest too large'));
+            }
+            chunks.push(c);
+          });
+          res.on('end', () => resBuf(Buffer.concat(chunks)));
+          res.on('error', rejBuf);
+        }),
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('upstream timeout'));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 // Manually follow redirects so each hop is re-validated against the CDN
-// allowlist. Without this, an open-redirect on any allowed CDN would let an
-// attacker pivot the server into fetching arbitrary URLs (including
-// 169.254.169.254 cloud metadata or internal services bound to localhost).
+// allowlist AND DNS-resolved to public IPs (defending against DNS rebinding).
 async function safeFetch(target, init = {}, hops = 0) {
   if (hops > 4) throw new Error('too many redirects');
   if (!isAllowedCdnUrl(target)) throw new Error('redirect to disallowed host');
-  const res = await fetch(target, { ...init, redirect: 'manual' });
+  const parsed = new URL(target);
+  await assertPublicDns(parsed.hostname);
+
+  const agent = getProxyAgent();
+  let upstream;
+  if (agent) {
+    upstream = await requestViaAgent(target, init.headers || {}, agent, UPSTREAM_TIMEOUT_MS);
+  } else {
+    const res = await fetch(target, {
+      ...init,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    });
+    upstream = {
+      status: res.status,
+      headers: res.headers,
+      nodeStream: res.body ? Readable.fromWeb(res.body) : null,
+      cancelBody: async () => { try { await res.body?.cancel(); } catch {} },
+      readBuffer: async (maxBytes) => {
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.byteLength > maxBytes) throw new Error('manifest too large');
+        return buf;
+      },
+    };
+  }
+
   // Manual redirect handling — surface 3xx + Location to validate.
-  if (res.status >= 300 && res.status < 400) {
-    const loc = res.headers.get('location');
-    if (!loc) return res;
+  if (upstream.status >= 300 && upstream.status < 400) {
+    const loc = upstream.headers.get('location');
+    if (!loc) return upstream;
     let next;
-    try { next = new URL(loc, target).toString(); } catch { return res; }
+    try { next = new URL(loc, target).toString(); } catch { return upstream; }
+    await upstream.cancelBody();
     return safeFetch(next, init, hops + 1);
   }
-  return res;
+  return upstream;
+}
+
+function checkProxyRate(ip) {
+  const now = Date.now();
+  let bucket = proxyHitsByIp.get(ip);
+  if (!bucket || bucket.resetAt < now) {
+    bucket = { count: 0, resetAt: now + PROXY_RATE_WINDOW };
+    proxyHitsByIp.set(ip, bucket);
+  }
+  bucket.count++;
+  return bucket.count <= PROXY_RATE_LIMIT;
 }
 
 router.get('/api/proxy', async (req, res) => {
   const target = req.query.url;
-  if (!target || !isAllowedCdnUrl(target)) {
+  if (typeof target !== 'string' || !isAllowedCdnUrl(target)) {
     return res.status(400).send('invalid url');
   }
-  // Rate limit
-  const now = Date.now();
-  if (now - proxyWindowStart >= PROXY_RATE_WINDOW) {
-    proxyHitCount = 0;
-    proxyWindowStart = now;
-  }
-  if (proxyHitCount >= PROXY_RATE_LIMIT) {
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  if (!checkProxyRate(ip)) {
     return res.status(429).send('proxy rate limit exceeded');
   }
-  proxyHitCount++;
+
   try {
     const upstream = await safeFetch(target, {
       headers: {
@@ -69,37 +168,52 @@ router.get('/api/proxy', async (req, res) => {
         'Referer': 'https://www.tiktok.com/',
       },
     });
+
+    const ct = upstream.headers.get('content-type') || '';
+    if (BLOCKED_CONTENT_TYPES.test(ct)) {
+      await upstream.cancelBody();
+      return res.status(502).type('text/plain').send('disallowed upstream content-type');
+    }
+
     res.status(upstream.status);
     upstream.headers.forEach((v, k) => {
       const lk = k.toLowerCase();
-      if (['content-encoding', 'content-length', 'transfer-encoding', 'connection'].includes(lk)) return;
-      // Block any Set-Cookie / auth-bearing headers leaking back to the
-      // browser — the proxy's purpose is media bytes, not session state.
-      if (['set-cookie', 'www-authenticate', 'authorization'].includes(lk)) return;
-      res.setHeader(k, v);
+      if (SAFE_RESPONSE_HEADERS.has(lk)) {
+        res.setHeader(lk, v);
+      }
     });
 
-    const ct = upstream.headers.get('content-type') || '';
     // Rewrite m3u8 manifests so segments also go through this proxy.
     if (/mpegurl|m3u8/i.test(ct) || /\.m3u8(\?|$)/i.test(target)) {
-      const text = await upstream.text();
+      const contentLen = Number(upstream.headers.get('content-length') || 0);
+      if (contentLen > MAX_MANIFEST_BYTES) {
+        await upstream.cancelBody();
+        return res.status(502).type('text/plain').send('manifest too large');
+      }
+      const buf = await upstream.readBuffer(MAX_MANIFEST_BYTES);
+      const text = buf.toString('utf8');
       const baseUrl = new URL(target);
+      const rewriteProxyUri = (rawUri) => {
+        const abs = new URL(rawUri, baseUrl).toString();
+        if (!isAllowedCdnUrl(abs)) return null;
+        return `/api/proxy?url=${encodeURIComponent(abs)}`;
+      };
       const rewritten = text
         .split('\n')
         .map((line) => {
           const trimmed = line.trim();
           if (!trimmed || trimmed.startsWith('#')) {
             // Rewrite URI="..." inside tags too
-            return line.replace(/URI="([^"]+)"/g, (_, u) => {
+            return line.replace(/URI="([^"]+)"/g, (full, u) => {
               try {
-                const abs = new URL(u, baseUrl).toString();
-                return `URI="/api/proxy?url=${encodeURIComponent(abs)}"`;
-              } catch { return _; }
+                const proxied = rewriteProxyUri(u);
+                return proxied ? `URI="${proxied}"` : full;
+              } catch { return full; }
             });
           }
           try {
-            const abs = new URL(trimmed, baseUrl).toString();
-            return `/api/proxy?url=${encodeURIComponent(abs)}`;
+            const proxied = rewriteProxyUri(trimmed);
+            return proxied || '# disallowed segment skipped';
           } catch { return line; }
         })
         .join('\n');
@@ -107,13 +221,23 @@ router.get('/api/proxy', async (req, res) => {
       return res.send(rewritten);
     }
 
-    if (upstream.body) {
-      Readable.fromWeb(upstream.body).pipe(res);
+    if (upstream.nodeStream) {
+      const nodeStream = upstream.nodeStream;
+      nodeStream.on('error', () => {
+        if (!res.headersSent) res.status(502).end();
+        else res.end();
+      });
+      res.on('close', () => {
+        if (!nodeStream.destroyed) nodeStream.destroy();
+      });
+      nodeStream.pipe(res);
     } else {
       res.end();
     }
   } catch (e) {
-    res.status(502).send(safeError(e));
+    if (!res.headersSent) {
+      res.status(502).type('text/plain').send(safeError(e));
+    }
   }
 });
 
@@ -121,12 +245,29 @@ router.get('/api/proxy', async (req, res) => {
 // Pipes ffmpeg output as FLV (H.264 + AAC) so flv.js can play it.
 // Used when the browser cannot decode HEVC natively.
 
-router.get('/api/transcode', (req, res) => {
+router.get('/api/transcode', async (req, res) => {
   const target = req.query.url;
-  if (!target || !isAllowedCdnUrl(target)) {
+  if (typeof target !== 'string' || !isAllowedCdnUrl(target)) {
     return res.status(400).send('invalid url');
   }
-  if (transcodeProcs.size >= MAX_CONCURRENT_TRANSCODES) {
+  if (!isFfmpegAvailable()) {
+    return res.status(503).json({ error: 'ffmpeg is not installed on the server (required for HEVC/1080p transcode)' });
+  }
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  const ipActive = transcodeCountByIp.get(ip) || 0;
+  if (ipActive >= MAX_TRANSCODES_PER_IP || transcodeProcs.size >= MAX_CONCURRENT_TRANSCODES) {
+    return res.status(429).send('max concurrent transcodes reached');
+  }
+
+  try {
+    await assertPublicDns(new URL(target).hostname);
+  } catch (e) {
+    return res.status(400).send(safeError(e));
+  }
+
+  // Re-check limits after async DNS lookup to close race condition
+  const ipActiveAfter = transcodeCountByIp.get(ip) || 0;
+  if (ipActiveAfter >= MAX_TRANSCODES_PER_IP || transcodeProcs.size >= MAX_CONCURRENT_TRANSCODES) {
     return res.status(429).send('max concurrent transcodes reached');
   }
 
@@ -135,6 +276,7 @@ router.get('/api/transcode', (req, res) => {
   const args = buildTranscodeArgs(target, encoder);
   const proc = spawn(ffmpegBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   transcodeProcs.add(proc);
+  transcodeCountByIp.set(ip, ipActiveAfter + 1);
   console.log(`[transcode] start enc=${encoder} (${transcodeProcs.size}/${MAX_CONCURRENT_TRANSCODES})`);
 
   res.setHeader('content-type', 'video/x-flv');
@@ -152,8 +294,17 @@ router.get('/api/transcode', (req, res) => {
       try { proc.kill('SIGKILL'); } catch {}
     }
     transcodeProcs.delete(proc);
+    const cur = transcodeCountByIp.get(ip) || 1;
+    if (cur <= 1) transcodeCountByIp.delete(ip);
+    else transcodeCountByIp.set(ip, cur - 1);
     console.log(`[transcode] end (${transcodeProcs.size}/${MAX_CONCURRENT_TRANSCODES})`);
   };
+  proc.on('error', (err) => {
+    console.warn('[transcode] ffmpeg spawn error:', err?.message || err);
+    cleanup();
+    if (!res.headersSent) res.status(502).end();
+    else res.end();
+  });
   proc.on('exit', (code) => {
     if (code !== 0 && code !== null) console.warn('[transcode] ffmpeg exit', code, stderrTail);
     cleanup();

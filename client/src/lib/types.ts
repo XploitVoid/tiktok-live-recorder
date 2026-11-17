@@ -44,15 +44,29 @@ export interface RecordJob {
   exitedAt?: number
   exitCode?: number
   sizeBytes?: number
+  retryCount?: number
+  part?: number
+  stats?: {
+    outTime: string | null
+    bitrate: string | null
+    speed: string | null
+    fps: number | null
+  } | null
   lastErr?: string
 }
 
 export interface RecordingFile {
   name: string
   sizeBytes: number
+  mtime?: number
   hasEvents: boolean
   highlightCount?: number
   clipCount?: number
+  durationSec?: number | null
+  width?: number | null
+  height?: number | null
+  fps?: number | null
+  thumbUrl?: string | null
 }
 
 export interface WatchEntry {
@@ -120,6 +134,38 @@ export interface ChatEvent {
   displayDuration?: number | null
   // Rank update
   updates?: { rankType: string | null; ownerRank: string | null; showAnimation: boolean }[]
+  // New Schema v3 events
+  joined?: boolean
+  pollId?: string | null
+  title?: string
+  ended?: boolean
+  options?: { text: string; votes: number }[]
+  productNumber?: number | null
+  price?: string
+}
+
+export interface AppSettings {
+  minFreeGb: number
+  maxRecordingsGb: number
+  retentionDays: number
+  segmentMinutes: number
+  autoRetryRecord: boolean
+  hasProxy: boolean
+  proxyPreview: string
+}
+
+export interface DiskStatus {
+  freeBytes: number | null
+  totalBytes: number | null
+  recordingsBytes: number
+  minFreeBytes: number
+  maxRecordingsBytes: number | null
+  lowSpace: boolean
+}
+
+export interface SettingsResponse {
+  settings: AppSettings
+  disk: DiskStatus
 }
 
 export interface ChatPollResult {

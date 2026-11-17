@@ -9,19 +9,9 @@ const {
   hasStreamUrls,
 } = require('../lib/room');
 const watcher = require('../lib/watcher');
-const { safeError } = require('../lib/utils');
+const { safeError, sanitizeQuality } = require('../lib/utils');
 
 const router = Router();
-
-// Whitelist of accepted quality strings (h264 keys + hevc:keys + auto/null).
-// Keeps stored watchlist sane and prevents arbitrary user input from flowing
-// into ffmpeg arguments via the recorder.
-const QUALITY_RE = /^(?:hevc:)?(?:origin|uhd|hd|sd|ld|md|ao)$/;
-function sanitizeQuality(q) {
-  if (q == null || q === '' || q === 'auto') return null;
-  if (typeof q !== 'string') return null;
-  return QUALITY_RE.test(q) ? q : null;
-}
 
 router.get('/api/watch', (_req, res) => {
   res.json(watcher.getWatchlist());
@@ -84,6 +74,21 @@ let liveStreamsCache = { ts: 0, data: null, inflight: null };
 const LIVE_STREAMS_TTL_MS = 8000;
 const LIVE_STREAMS_CONCURRENCY = 4;
 
+function invalidateLiveStreamsCache() {
+  liveStreamsCache = { ts: 0, data: null, inflight: null };
+}
+watcher.watchEventsEmitter.on('list', invalidateLiveStreamsCache);
+
+function extractAvatarThumb(user) {
+  if (!user) return undefined;
+  if (typeof user.profilePictureUrl === 'string' && user.profilePictureUrl) return user.profilePictureUrl;
+  const list = user.avatarThumb?.urlList || user.avatarMedium?.urlList || user.avatarLarge?.urlList;
+  if (Array.isArray(list) && list.length > 0) {
+    return list.find((u) => typeof u === 'string' && u.startsWith('https:')) || list[0];
+  }
+  return undefined;
+}
+
 router.get('/api/watch/live-streams', async (_req, res) => {
   const now = Date.now();
   if (liveStreamsCache.data && now - liveStreamsCache.ts < LIVE_STREAMS_TTL_MS) {
@@ -115,10 +120,15 @@ router.get('/api/watch/live-streams', async (_req, res) => {
           if (!hasStreamUrls(streams)) continue;
           out.push({
             username,
+            live: true,
             title: apiData?.liveRoom?.title || null,
             viewerCount: apiData?.liveRoom?.liveRoomStats?.userCount ?? null,
             coverUrl: apiData?.liveRoom?.coverUrl || null,
-            nickname: apiData?.user?.nickname || null,
+            owner: apiData?.user ? {
+              nickname: apiData.user.nickname || undefined,
+              uniqueId: apiData.user.uniqueId || undefined,
+              avatarThumb: extractAvatarThumb(apiData.user),
+            } : undefined,
             streams: { hls: streams.hls, flv: streams.flv },
           });
         } catch {
@@ -146,3 +156,4 @@ router.get('/api/watch/live-streams', async (_req, res) => {
 });
 
 module.exports = router;
+module.exports.invalidateLiveStreamsCache = invalidateLiveStreamsCache;

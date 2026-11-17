@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Activity, Users, Gem, MessageSquare, Radio, Filter } from 'lucide-react'
+import { Activity, Users, Gem, MessageSquare, Radio, Filter, Clock, RefreshCw, AlertTriangle } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Header } from '@/components/Header'
-import { Avatar } from '@/components/Avatar'
+import { ChatEventRow } from '@/components/ChatEventRow'
 import { useI18n } from '@/lib/i18n'
-import { usePoll } from '@/lib/usePoll'
+import { useEventStream } from '@/lib/useEventStream'
 import { fmtTime } from '@/lib/format'
 import type { ChatEvent } from '@/lib/types'
 
@@ -49,7 +49,6 @@ type UnifiedChatEvent = ChatEvent & { _username?: string }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const REFRESH_INTERVAL_MS = 3000
 const STALE_THRESHOLD_MS = 30_000
 
 const STREAM_COLORS: StreamColor[] = [
@@ -72,9 +71,9 @@ function getStreamColor(username: string, allUsernames: string[]): StreamColor {
   return STREAM_COLORS[index >= 0 ? index % STREAM_COLORS.length : 0]
 }
 
-function formatUptime(lastConnectedAt: number | null): string {
+function formatUptime(lastConnectedAt: number | null, now: number): string {
   if (!lastConnectedAt) return '0s'
-  const seconds = Math.round((Date.now() - lastConnectedAt) / 1000)
+  const seconds = Math.max(0, Math.round((now - lastConnectedAt) / 1000))
   if (seconds > 3600) {
     const hours = Math.floor(seconds / 3600)
     const minutes = Math.floor((seconds % 3600) / 60)
@@ -87,9 +86,9 @@ function formatUptime(lastConnectedAt: number | null): string {
   return `${seconds}s`
 }
 
-function isStreamStale(health: StreamHealth | null | undefined): boolean {
+function isStreamStale(health: StreamHealth | null | undefined, now: number): boolean {
   if (!health?.lastEventAt) return false
-  return Date.now() - health.lastEventAt > STALE_THRESHOLD_MS
+  return now - health.lastEventAt > STALE_THRESHOLD_MS
 }
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
@@ -108,16 +107,16 @@ function StatCard({ icon, value, label }: { icon: React.ReactNode; value: number
   )
 }
 
-function StreamCard({ stream, allUsernames }: { stream: DashboardStream; allUsernames: string[] }) {
+function StreamCard({ stream, allUsernames, now }: { stream: DashboardStream; allUsernames: string[]; now: number }) {
   const { t } = useI18n()
   const color = getStreamColor(stream.username, allUsernames)
   const { health } = stream
-  const stale = isStreamStale(health)
+  const stale = isStreamStale(health, now)
   const hasIssues = health && (health.reconnectCount > 0 || health.errorsCount > 0 || stale)
 
   const statusColor = stale ? 'bg-red-500' : hasIssues ? 'bg-amber-500' : 'bg-emerald-500'
   const statusTitle = stale ? t('dashStale') : hasIssues ? t('dashUnstable') : t('dashHealthy')
-  const uptimeStr = formatUptime(health?.lastConnectedAt ?? null)
+  const uptimeStr = formatUptime(health?.lastConnectedAt ?? null, now)
 
   return (
     <Card className="border-border/50">
@@ -138,31 +137,37 @@ function StreamCard({ stream, allUsernames }: { stream: DashboardStream; allUser
         </div>
 
         {/* Stats grid */}
-        <div className="grid grid-cols-3 gap-2 text-xs">
+        <div className="grid grid-cols-3 gap-2 text-xs tabular-nums">
           <div className="text-center">
             <div className="font-mono font-semibold text-sky-300">{stream.viewerCount.toLocaleString()}</div>
-            <div className="text-muted-foreground">👁 viewers</div>
+            <div className="text-muted-foreground inline-flex items-center gap-1 justify-center">
+              <Users className="w-3 h-3" /> {t('viewersLabel')}
+            </div>
           </div>
           <div className="text-center">
-            <div className="font-mono font-semibold text-pink-300">{stream.recentDiamonds.toLocaleString()}</div>
-            <div className="text-muted-foreground">💎 recent</div>
+            <div className="font-mono font-semibold text-primary">{stream.recentDiamonds.toLocaleString()}</div>
+            <div className="text-muted-foreground inline-flex items-center gap-1 justify-center">
+              <Gem className="w-3 h-3" /> {t('lbDiamonds')}
+            </div>
           </div>
           <div className="text-center">
             <div className="font-mono font-semibold text-amber-300">{stream.eventCount.toLocaleString()}</div>
-            <div className="text-muted-foreground">📊 events</div>
+            <div className="text-muted-foreground inline-flex items-center gap-1 justify-center">
+              <MessageSquare className="w-3 h-3" /> {t('dashEvents')}
+            </div>
           </div>
         </div>
 
         {/* Health indicators */}
-        <div className="flex items-center gap-2 mt-2 text-[10px] text-muted-foreground">
-          <span>⏱ {uptimeStr}</span>
+        <div className="flex items-center gap-2.5 mt-2 text-[10px] text-muted-foreground font-mono tabular-nums">
+          <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3" /> {uptimeStr}</span>
           {health && health.reconnectCount > 0 && (
-            <span className="text-amber-300">🔄 {health.reconnectCount}</span>
+            <span className="inline-flex items-center gap-1 text-amber-300"><RefreshCw className="w-3 h-3" /> {health.reconnectCount}</span>
           )}
           {health && health.errorsCount > 0 && (
-            <span className="text-red-300">❌ {health.errorsCount}</span>
+            <span className="inline-flex items-center gap-1 text-destructive"><AlertTriangle className="w-3 h-3" /> {health.errorsCount}</span>
           )}
-          {stale && <span className="text-red-400 font-semibold">{t('dashStale')}</span>}
+          {stale && <span className="text-destructive font-semibold">{t('dashStale')}</span>}
         </div>
       </CardContent>
     </Card>
@@ -222,10 +227,9 @@ function FilterChips({
 }
 
 function UnifiedChatLine({ event, color }: { event: UnifiedChatEvent; color: StreamColor }) {
-  const name = event.user?.nickname || event.user?.uniqueId || '?'
-  const time = <span className="text-muted-foreground">{fmtTime(event.ts)}</span>
-  const avatar = <Avatar url={event.user?.profilePictureUrl} name={name} size={20} className="mt-0.5" />
-
+  if (event.type === 'roomUser' || event.type === 'connected' || event.type === 'pkUpdate') {
+    return null
+  }
   const streamBadge = event._username ? (
     <span className={`inline-flex items-center gap-0.5 px-1.5 py-0 rounded text-[9px] font-mono font-semibold ${color.badge} border`}>
       <span className={`w-1.5 h-1.5 rounded-full ${color.bg}`} />
@@ -233,74 +237,7 @@ function UnifiedChatLine({ event, color }: { event: UnifiedChatEvent; color: Str
     </span>
   ) : null
 
-  switch (event.type) {
-    case 'chat':
-      return (
-        <div className="flex items-start gap-1.5 py-0.5">
-          {avatar}
-          <span className="flex-1 min-w-0 leading-snug break-words">
-            {time} {streamBadge} <strong className="text-sky-400">{name}</strong>:{' '}
-            <span className="text-foreground/90">{event.comment}</span>
-          </span>
-        </div>
-      )
-    case 'gift':
-      return (
-        <div className="flex items-center gap-1.5 py-0.5">
-          {avatar}
-          <span className="min-w-0 break-words">
-            {time} {streamBadge} 🎁 <strong className="text-amber-400">{name}</strong> sent{' '}
-            <em className="not-italic text-amber-300">{event.giftName}</em> ×{event.repeatCount || 1}{' '}
-            <span className="text-amber-200">({event.diamondCount || 0}💎)</span>
-          </span>
-        </div>
-      )
-    case 'like':
-      return (
-        <div className="flex items-center gap-1.5 py-0.5">
-          {avatar}
-          <span>
-            {time} {streamBadge} ❤️ <strong className="text-rose-400">{name}</strong> ×{event.likeCount || 1}
-          </span>
-        </div>
-      )
-    case 'subscribe':
-      return (
-        <div className="py-0.5">
-          {time} {streamBadge} ⭐ <strong className="text-yellow-400">{name}</strong> subscribed!
-        </div>
-      )
-    case 'pkStart':
-      return (
-        <div className="py-0.5">
-          {time} {streamBadge} <span className="text-fuchsia-400">⚔ PK started</span>
-        </div>
-      )
-    case 'pkEnd':
-      return (
-        <div className="py-0.5">
-          {time} {streamBadge} <span className="text-fuchsia-400">🏁 PK ended</span>
-        </div>
-      )
-    case 'member':
-    case 'follow':
-    case 'social':
-      return (
-        <div className="text-foreground/50 py-0.5">
-          {time} {streamBadge} 👋 {name}
-        </div>
-      )
-    case 'roomUser':
-    case 'connected':
-    case 'pkUpdate':
-      return null
-    default:
-      return (
-        <div className="text-foreground/40 py-0.5">
-          {time} {streamBadge} {event.type}
-        </div>
-      )
-  }
+  return <ChatEventRow event={event} timeText={fmtTime(event.ts)} prefix={streamBadge} />
 }
 
 // ─── Main Page ───────────────────────────────────────────────────────────────
@@ -310,24 +247,27 @@ export function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<Set<string>>(new Set())
+  const [now, setNow] = useState(() => Date.now())
   const feedRef = useRef<HTMLDivElement>(null)
 
-  const refresh = useCallback(async () => {
-    try {
-      const response = await fetch('/api/chat/dashboard')
-      if (!response.ok) return
-      const json: DashboardData = await response.json()
-      setData(json)
-    } catch {
-      // Network errors are silently ignored — dashboard will retry on next interval
-    } finally {
+  const sseHandlers = useMemo(() => ({
+    dashboard: (json: unknown) => {
+      setData(json as DashboardData)
+      setNow(Date.now())
       setLoading(false)
-    }
-  }, [])
+    },
+  }), [])
 
-  // Poll only while the tab is visible — Dashboard refreshes were eating
-  // server CPU on dozens of background tabs otherwise.
-  usePoll(refresh, REFRESH_INTERVAL_MS)
+  useEventStream('channels=dashboard', sseHandlers, true)
+
+  // Periodically refresh local clock so uptime counters & stale indicators stay current
+  useEffect(() => {
+    if (!data?.streams.length) return
+    const id = setInterval(() => {
+      if (!document.hidden) setNow(Date.now())
+    }, 5000)
+    return () => clearInterval(id)
+  }, [data?.streams.length])
 
   // Auto-scroll feed to bottom on new messages
   useEffect(() => {
@@ -390,7 +330,7 @@ export function DashboardPage() {
       {data && data.streams.length > 0 && (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {data.streams.map((stream) => (
-            <StreamCard key={stream.username} stream={stream} allUsernames={allUsernames} />
+            <StreamCard key={stream.username} stream={stream} allUsernames={allUsernames} now={now} />
           ))}
         </div>
       )}
@@ -414,7 +354,7 @@ export function DashboardPage() {
             ref={feedRef}
             className="h-[400px] bg-secondary/50 border border-border rounded-lg p-2 overflow-y-auto text-xs space-y-0.5"
           >
-            {loading && !data && <p className="text-muted-foreground">— loading —</p>}
+            {loading && !data && <p className="text-muted-foreground">{t('loading')}</p>}
             {data && filteredFeed.length === 0 && (
               <p className="text-muted-foreground">{t('dashNoChat')}</p>
             )}

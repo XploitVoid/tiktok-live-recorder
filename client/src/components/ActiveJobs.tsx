@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback, useRef, useImperativeHandle, forwardRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useImperativeHandle, forwardRef, useMemo } from 'react'
 import { Circle, RefreshCw, Square } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/lib/i18n'
-import { usePoll } from '@/lib/usePoll'
+import { useEventStream } from '@/lib/useEventStream'
 import { fmtBytes, fmtDuration, fmtTime } from '@/lib/format'
 import { getJobs, stopRecord } from '@/lib/api'
 import type { RecordJob } from '@/lib/types'
@@ -18,27 +18,36 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
   const { t } = useI18n()
   const [jobs, setJobs] = useState<RecordJob[]>([])
   const jobsRef = useRef<RecordJob[]>([])
-  const [, setTick] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
 
   const refresh = useCallback(async () => {
     try {
       const data = await getJobs()
       setJobs(data)
       jobsRef.current = data
+      setNow(Date.now())
     } catch { /* ignore */ }
   }, [])
 
   useImperativeHandle(ref, () => ({ refresh }), [refresh])
 
-  // Pause polling when the tab is hidden so we don't keep hitting /api/record/jobs
-  // while the user is on another tab.
-  usePoll(refresh, 3000)
+  const sseHandlers = useMemo(() => ({
+    jobs: (data: unknown) => {
+      if (Array.isArray(data)) {
+        setJobs(data as RecordJob[])
+        jobsRef.current = data as RecordJob[]
+        setNow(Date.now())
+      }
+    },
+  }), [])
+
+  useEventStream('channels=jobs', sseHandlers, true)
 
   // Re-render durations every second for active jobs (only while visible)
   useEffect(() => {
     const id = setInterval(() => {
       if (document.hidden) return
-      if (jobsRef.current.some(j => !j.exited)) setTick(n => n + 1)
+      if (jobsRef.current.some((j) => !j.exited)) setNow(Date.now())
     }, 1000)
     return () => clearInterval(id)
   }, [])
@@ -47,13 +56,11 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
     try {
       await stopRecord(id)
       toast.info('Recording stopped')
-      refresh()
+      void refresh()
     } catch (e: unknown) {
       toast.error('Stop failed', { description: e instanceof Error ? e.message : String(e) })
     }
   }
-
-  const now = Date.now()
 
   return (
     <Card>
@@ -75,18 +82,40 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
               const elapsed = (j.exited ? (j.exitedAt || now) : now) - j.startedAt
               return (
                 <div key={j.id}>
-                  <div className="flex items-center gap-2 bg-secondary rounded-lg px-2 py-1.5">
+                  <div className="flex items-center gap-2 flex-wrap bg-secondary/70 border border-border/50 rounded-lg px-2.5 py-1.5">
                     <Badge
                       variant={j.exited ? 'secondary' : 'default'}
-                      className={j.exited ? 'text-[10px]' : 'bg-emerald-600 text-white text-[10px] border-0'}
+                      className={j.exited ? 'text-[10px]' : 'bg-primary text-primary-foreground text-[10px] border-0 gap-1'}
                     >
-                      {j.exited ? `EXITED ${j.exitCode ?? ''}` : '● REC'}
+                      {j.exited ? (
+                        `EXITED ${j.exitCode ?? ''}`
+                      ) : (
+                        <>
+                          <Circle className="w-2 h-2 fill-current" />
+                          <span>REC</span>
+                        </>
+                      )}
                     </Badge>
-                    <span className="font-medium">@{j.username}</span>
-                    <span className="text-xs text-muted-foreground">{j.kind}/{j.quality}</span>
+                    <span className="font-medium font-mono text-sm">@{j.username}</span>
+                    <span className="text-xs text-muted-foreground font-mono">{j.kind}/{j.quality}</span>
+                    {!!j.part && j.part > 1 && (
+                      <Badge variant="outline" className="text-[10px]">part {j.part}</Badge>
+                    )}
+                    {!!j.retryCount && j.retryCount > 0 && (
+                      <Badge variant="outline" className="text-[10px] text-amber-300 border-amber-500/40">
+                        retry #{j.retryCount}
+                      </Badge>
+                    )}
                     <span className={`text-xs font-mono ${j.exited ? 'text-muted-foreground' : 'text-emerald-400'}`}>
                       {fmtDuration(elapsed)}
                     </span>
+                    {!j.exited && j.stats && (
+                      <span className="text-[11px] font-mono text-sky-300/90">
+                        {j.stats.fps ? `${j.stats.fps}fps` : ''}
+                        {j.stats.bitrate ? ` · ${j.stats.bitrate}` : ''}
+                        {j.stats.speed ? ` · ${j.stats.speed}` : ''}
+                      </span>
+                    )}
                     <span className="text-xs text-muted-foreground flex-1 truncate">{j.file}</span>
                     <span className="text-xs text-muted-foreground">{fmtBytes(j.sizeBytes)}</span>
                     <span className="text-xs text-muted-foreground">{fmtTime(j.startedAt)}</span>

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, Link } from 'react-router-dom'
+import { MessageSquare, Play, AlertTriangle, ArrowLeft } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -10,13 +11,13 @@ import { LeaderboardPanel } from '@/components/LeaderboardPanel'
 import { GiftEconomyPanel } from '@/components/GiftEconomyPanel'
 import { WordCloudPanel } from '@/components/WordCloudPanel'
 import { BookmarksPanel } from '@/components/BookmarksPanel'
+import { ChatEventRow } from '@/components/ChatEventRow'
+import { VideoPlayerBox } from '@/components/VideoPlayerBox'
 import { useI18n } from '@/lib/i18n'
 import { getReplayData } from '@/lib/api'
 import { fmtTimeSec } from '@/lib/format'
 import type { ChatEvent } from '@/lib/types'
 import { getKeywords } from '@/lib/chatHighlight'
-import { HighlightText } from '@/components/HighlightText'
-import { Avatar } from '@/components/Avatar'
 
 type ReplayEvent = ChatEvent & { t?: number }
 
@@ -31,6 +32,7 @@ export function ReplayPage() {
   const [autoScroll, setAutoScroll] = useState(true)
   const [info, setInfo] = useState({ start: '', events: '', size: '' })
   const [hasEvents, setHasEvents] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [durationSec, setDurationSec] = useState<number | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
 
@@ -42,18 +44,24 @@ export function ReplayPage() {
   const pointerRef = useRef(0)
   const shownIdsRef = useRef(new Set<number>())
   const lastTimeRef = useRef(0)
+  const filterRef = useRef(filter)
 
-  const passesFilter = useCallback((ev: ReplayEvent) => {
-    if (filter === 'all') return true
-    if (filter === 'chat') return ev.type === 'chat'
-    if (filter === 'gift') return ev.type === 'gift'
-    if (filter === 'like') return ev.type === 'like'
-    if (filter === 'member') return ev.type === 'member' || ev.type === 'follow' || ev.type === 'social'
-    // PK events always show in 'all', never in specific filters (they're system events)
-    return true
+  useEffect(() => {
+    filterRef.current = filter
   }, [filter])
 
-  const syncToTime = useCallback((time: number) => {
+  const passesFilter = useCallback((ev: ReplayEvent, activeFilter: string) => {
+    if (activeFilter === 'all') return true
+    if (activeFilter === 'chat') return ev.type === 'chat'
+    if (activeFilter === 'gift') return ev.type === 'gift'
+    if (activeFilter === 'like') return ev.type === 'like'
+    if (activeFilter === 'member') return ev.type === 'member' || ev.type === 'follow' || ev.type === 'social'
+    // PK events always show in 'all', never in specific filters (they're system events)
+    return false
+  }, [])
+
+  const syncToTime = useCallback((time: number, overrideFilter?: string) => {
+    const activeFilter = overrideFilter ?? filterRef.current
     if (time + 0.5 < lastTimeRef.current) {
       pointerRef.current = 0
       shownIdsRef.current.clear()
@@ -66,7 +74,7 @@ export function ReplayPage() {
       if (ev.t == null || ev.t < 0) continue
       if (shownIdsRef.current.has(ev.id)) continue
       shownIdsRef.current.add(ev.id)
-      if (passesFilter(ev)) newItems.push(ev)
+      if (passesFilter(ev, activeFilter)) newItems.push(ev)
     }
 
     if (newItems.length > 0) {
@@ -80,9 +88,10 @@ export function ReplayPage() {
     const load = async () => {
       try {
         const data = await getReplayData(file)
+        setLoadError(null)
         setInfo({
-          start: data.startMs ? `▶ started ${new Date(data.startMs).toLocaleString()}` : '',
-          events: data.eventsExists ? `💬 ${data.eventCount} events` : '⚠ no chat sidecar',
+          start: data.startMs ? new Date(data.startMs).toLocaleString() : '',
+          events: data.eventsExists ? `${data.eventCount} events` : 'No chat sidecar',
           size: data.sizeBytes ? `${(data.sizeBytes / 1024 / 1024).toFixed(1)} MB` : '',
         })
         setHasEvents(!!data.eventsExists)
@@ -91,7 +100,7 @@ export function ReplayPage() {
           .sort((a, b) => (a.t ?? 0) - (b.t ?? 0))
         setEvents(sorted)
       } catch (e) {
-        console.error(e)
+        setLoadError(e instanceof Error ? e.message : '__load_fail__')
       }
     }
     load()
@@ -175,23 +184,34 @@ export function ReplayPage() {
   }, [])
 
   const handleFilterChange = (value: string) => {
+    filterRef.current = value
     setFilter(value)
     pointerRef.current = 0
     shownIdsRef.current.clear()
     lastTimeRef.current = 0
     setShown([])
     if (videoRef.current) {
-      syncToTime(videoRef.current.currentTime)
+      syncToTime(videoRef.current.currentTime, value)
     }
   }
 
-  if (!file) {
+  if (!file || loadError) {
     return (
       <div className="max-w-6xl mx-auto p-4 md:p-6 space-y-4">
         <Header />
-        <Card>
-          <CardContent className="pt-5">
-            <p className="text-destructive">missing ?file=...</p>
+        <Card className="border-border/80">
+          <CardContent className="pt-6 pb-6 flex flex-col items-start gap-3">
+            <div className="flex items-center gap-2 text-destructive font-medium text-sm">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{loadError === '__load_fail__' ? t('replayLoadFail') : (loadError || t('replayNotFound'))}</span>
+            </div>
+            <Link
+              to="/"
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-secondary hover:bg-muted border border-border transition-colors"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>{t('replayBackHome')}</span>
+            </Link>
           </CardContent>
         </Card>
       </div>
@@ -207,11 +227,8 @@ export function ReplayPage() {
         {/* Video */}
         <Card ref={videoCardRef} className="md:col-span-2">
           <CardContent className="pt-4">
-            <video
-              ref={videoRef}
-              controls
-              playsInline
-              className="w-full aspect-video bg-black rounded-lg"
+            <VideoPlayerBox
+              videoRef={videoRef}
               src={`/files/${encodeURIComponent(file)}`}
             />
             <div className="text-xs text-muted-foreground mt-2 px-1 flex flex-wrap gap-x-4 gap-y-1">
@@ -229,8 +246,9 @@ export function ReplayPage() {
         >
           <CardContent className="pt-4 flex-1 min-h-0 flex flex-col">
             <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-              <h2 className="font-semibold flex items-center gap-2 text-foreground">
-                <span className="text-pink-400">💬</span> {t('chatSync')}
+              <h2 className="font-semibold text-sm flex items-center gap-2 text-foreground">
+                <MessageSquare className="w-4 h-4 text-muted-foreground" />
+                <span>{t('chatSync')}</span>
               </h2>
               <div className="flex items-center gap-2 text-xs">
                 <label className="flex items-center gap-1.5 cursor-pointer">
@@ -254,9 +272,18 @@ export function ReplayPage() {
 
             <div ref={feedRef} className="flex-1 min-h-0 bg-secondary/50 border border-border rounded-lg p-2 overflow-y-auto text-xs space-y-1">
               {shown.length === 0 ? (
-                <p className="text-muted-foreground">▶ press play on the video</p>
+                <p className="text-muted-foreground inline-flex items-center gap-1.5">
+                  <Play className="w-3 h-3" /> Press play to sync chat
+                </p>
               ) : (
-                shown.map((ev) => <ReplayLine key={ev.id} event={ev} keywords={keywords} />)
+                shown.map((ev) => (
+                  <ChatEventRow
+                    key={ev.id}
+                    event={ev}
+                    timeText={fmtTimeSec(ev.t ?? 0)}
+                    keywords={keywords}
+                  />
+                ))
               )}
             </div>
 
@@ -289,80 +316,9 @@ export function ReplayPage() {
 
       <BookmarksPanel recording={file} currentTime={currentTime} onJump={jumpTo} />
 
-      <footer className="text-center text-xs text-muted-foreground pt-4">
-        แชทจะแสดงตามเวลาของวิดีโอโดยเทียบ <code className="bg-secondary px-1 rounded">video.currentTime</code> กับ <code className="bg-secondary px-1 rounded">event.t</code>
+      <footer className="text-center text-xs text-muted-foreground pt-4 border-t border-border/50">
+        {t('footerText')}
       </footer>
     </div>
   )
-}
-
-function ReplayLine({ event: ev, keywords }: { event: ReplayEvent; keywords: string[] }) {
-  const time = <span className="text-muted-foreground font-mono">{fmtTimeSec(ev.t ?? 0)}</span>
-  const u = ev.user?.nickname || ev.user?.uniqueId || '?'
-  const avatar = (
-    <Avatar url={ev.user?.profilePictureUrl} name={u} size={24} className="mt-0.5" />
-  )
-
-  switch (ev.type) {
-    case 'chat':
-      return <div className="flex items-start gap-1.5 py-0.5">{avatar}<span className="flex-1 min-w-0 leading-snug break-words">{time} <strong className="text-sky-400">{u}</strong>: <HighlightText text={ev.comment || ''} keywords={keywords} className="text-foreground/90" /></span></div>
-    case 'gift':
-      return <div className="flex items-center gap-1.5 py-0.5">{avatar}<span className="min-w-0 break-words">{time} 🎁 <strong className="text-amber-400">{u}</strong> sent <em className="not-italic text-amber-300">{ev.giftName}</em> ×{ev.repeatCount || 1} <span className="text-amber-200">({ev.diamondCount || 0}💎)</span></span></div>
-    case 'like':
-      return <div className="flex items-center gap-1.5 py-0.5">{avatar}<span className="min-w-0 break-words">{time} ❤️ <strong className="text-rose-400">{u}</strong> liked ×{ev.likeCount || 1}</span></div>
-    case 'member':
-      return <div className="flex items-center gap-1.5 py-0.5">{avatar}<span className="min-w-0 break-words text-foreground/70">{time} 👋 {u} joined</span></div>
-    case 'social': case 'follow':
-      return <div className="flex items-center gap-1.5 py-0.5">{avatar}<span className="min-w-0 break-words">{time} ➕ <strong className="text-emerald-400">{u}</strong> <span className="text-foreground/70">{ev.label || 'followed'}</span></span></div>
-    case 'share':
-      return <div className="flex items-center gap-1.5 py-0.5">{avatar}<span className="min-w-0 break-words">{time} ↗ <strong className="text-cyan-400">{u}</strong> shared</span></div>
-    case 'connected':
-      return <div>{time} <span className="text-emerald-500">✓ connected room {ev.roomId || ''}</span></div>
-    case 'pkStart': {
-      const opps = (ev.battleUsers || [])
-        .map((u) => u.nickname || u.uniqueId)
-        .filter(Boolean)
-        .join(' vs ')
-      return <div>{time} <span className="text-fuchsia-400">⚔ PK started{opps ? ` — ${opps}` : ''}</span></div>
-    }
-    case 'pkUpdate': {
-      const score = (ev.teams || []).map((tm) => tm.score).join(' : ')
-      return <div className="text-fuchsia-300/70 text-[11px]">{time} <span>⚔ {score}{ev.totalDiamondCount ? ` · ${ev.totalDiamondCount} 💎` : ''}</span></div>
-    }
-    case 'pkEnd': {
-      const score = (ev.teams || []).map((tm) => tm.score).join(' : ')
-      return <div>{time} <span className="text-fuchsia-400">🏁 PK ended{score ? ` — ${score}` : ''}</span></div>
-    }
-    case 'subscribe':
-      return <div className="flex items-center gap-1.5 py-0.5">{avatar}<span className="min-w-0 break-words">{time} ⭐ <strong className="text-yellow-400">{u}</strong> subscribed!</span></div>
-    case 'envelope':
-      return <div>{time} <span className="text-red-400">🧧 Treasure box / Red envelope!</span></div>
-    case 'question':
-      return <div className="flex items-start gap-1.5 py-0.5">{avatar}<span className="flex-1 min-w-0 leading-snug break-words">{time} ❓ <strong className="text-violet-400">{u}</strong>: <span className="text-foreground/90 italic">{ev.comment || ''}</span></span></div>
-    case 'liveIntro':
-      return <div>{time} <span className="text-indigo-400">📢 {ev.introText || 'Live intro'}</span></div>
-    case 'emote': {
-      const emoteImgs = (ev.emotes || []).map((em, i) => (
-        em.imageUrl
-          ? <img key={i} src={em.imageUrl} alt="emote" className="inline-block w-6 h-6 mx-0.5" loading="lazy" referrerPolicy="no-referrer" />
-          : <span key={i} className="text-muted-foreground">[emote]</span>
-      ))
-      return <div className="flex items-center gap-1.5 py-0.5">{avatar}<span className="min-w-0 break-words">{time} <strong className="text-purple-400">{u}</strong> {emoteImgs}</span></div>
-    }
-    case 'caption':
-      return <div className="py-0.5 text-foreground/60 italic">{time} <span className="text-cyan-400/70">🎙</span> {ev.text}</div>
-    case 'roomPin':
-      if (ev.action === 'unpin') return <div className="text-muted-foreground">{time} 📌 unpinned</div>
-      return <div>{time} <span className="text-indigo-400">📌 pinned: <strong>{ev.pinnedUser?.nickname || '?'}</strong>: {ev.pinnedText || ''}</span></div>
-    case 'rankUpdate':
-      return <div className="text-amber-400/70">{time} 🏆 {(ev.updates || []).map((u) => `rank ${u.ownerRank}`).join(', ')}</div>
-    case 'streamEnd':
-      return <div>{time} <span className="text-amber-500">⏹ stream ended</span></div>
-    case 'error':
-      return <div>{time} <span className="text-destructive">! {ev.error}</span></div>
-    case 'roomUser':
-      return null
-    default:
-      return <div>{time} <span className="text-muted-foreground">{ev.type}</span></div>
-  }
 }

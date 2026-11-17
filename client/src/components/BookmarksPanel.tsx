@@ -27,10 +27,16 @@ export function BookmarksPanel({ recording, currentTime, onJump }: Props) {
     } catch { /* ignore */ }
   }, [recording])
 
-  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => {
+    let active = true
+    getBookmarks(recording)
+      .then((data) => { if (active) setBookmarks(data.bookmarks || []) })
+      .catch(() => { /* ignore */ })
+    return () => { active = false }
+  }, [recording])
 
   const handleAdd = async () => {
-    if (currentTime <= 0) return
+    if (currentTime < 0) return
     setLoading(true)
     try {
       await addBookmark(recording, currentTime, note)
@@ -72,7 +78,7 @@ export function BookmarksPanel({ recording, currentTime, onJump }: Props) {
             placeholder={t('bmNotePlaceholder')}
             className="h-7 text-xs flex-1"
           />
-          <Button size="xs" onClick={handleAdd} disabled={loading || currentTime <= 0}>
+          <Button size="xs" onClick={handleAdd} disabled={loading || currentTime < 0}>
             <Plus className="w-3 h-3 mr-1" /> {t('bmAdd')}
           </Button>
         </div>

@@ -3,12 +3,16 @@ services:
     build: .
     container_name: tiktok-live-recorder
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     ports:
-      - "3000:3000"
+      # Bind to localhost by default. To expose on LAN, change to "3000:3000"
+      # and set APP_TOKEN in .env.
+      - "127.0.0.1:3000:3000"
     volumes:
       # Persist recordings to the host machine
       - ./recordings:/app/recordings
-      
+
       # Optional: Mount your local .env file for secrets
       # - ./.env:/app/.env
 
@@ -18,3 +22,5 @@ services:
       # - ./accounts.json:/app/accounts.json
     environment:
       - HOST=0.0.0.0
+      # Recommended whenever exposing beyond localhost:
+      # - APP_TOKEN=change-me-to-a-long-random-secret

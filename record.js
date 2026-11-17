@@ -17,6 +17,8 @@ const {
   pickPreferredStream,
 } = require('./lib/room');
 const { resolveFfmpeg } = require('./lib/ffmpeg');
+const { isValidStreamUrl } = require('./lib/utils');
+const { getFfmpegProxyArgs } = require('./lib/proxy-config');
 
 function timestamp() {
   const d = new Date();
@@ -46,6 +48,10 @@ async function main() {
     console.error('Could not extract a stream URL from API response.');
     process.exit(2);
   }
+  if (!isValidStreamUrl(pick.url)) {
+    console.error('Stream URL has invalid protocol.');
+    process.exit(2);
+  }
 
   const outFile = path.join(outDir, `${username}_${timestamp()}.mp4`);
   const ffmpegBin = resolveFfmpeg();
@@ -60,10 +66,13 @@ async function main() {
     '-hide_banner',
     '-loglevel', 'warning',
     '-stats',
+    '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+    '-headers', 'Referer: https://www.tiktok.com/\r\n',
+    ...getFfmpegProxyArgs(),
     '-fflags', '+genpts',
     '-i', pick.url,
     '-c', 'copy',
-    '-bsf:a', 'aac_adtstoasc',
+    ...(pick.quality === 'ao' ? ['-vn'] : ['-bsf:a', 'aac_adtstoasc']),
     // Fragmented MP4 so the file is playable even if killed mid-recording.
     '-movflags', '+empty_moov+default_base_moof+frag_keyframe',
     '-frag_duration', '2000000',

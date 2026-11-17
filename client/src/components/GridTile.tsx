@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Users, VolumeX, Volume2, ArrowUpRight } from 'lucide-react'
 import { fmtViewers } from '@/lib/format'
 import { useI18n } from '@/lib/i18n'
 import { loadPlayers } from '@/lib/players'
+import { safeImageUrl } from '@/lib/utils'
 import type { CheckResult } from '@/lib/types'
 
 interface GridTileProps {
@@ -27,13 +30,9 @@ function pickStream(entry: CheckResult, qPref: string): PickedStream | null {
 export function GridTile({ entry, quality, muted }: GridTileProps) {
   const { t } = useI18n()
   const videoRef = useRef<HTMLVideoElement>(null)
-  const [localMuted, setLocalMuted] = useState(muted)
+  const [mutedOverride, setMutedOverride] = useState<{ prop: boolean; val: boolean } | null>(null)
   const [avatarFailed, setAvatarFailed] = useState(false)
-
-  // Mute sync — runs separately so toggling mute doesn't recreate the player.
-  useEffect(() => {
-    setLocalMuted(muted)
-  }, [muted])
+  const localMuted = mutedOverride && mutedOverride.prop === muted ? mutedOverride.val : muted
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.muted = localMuted
@@ -99,7 +98,7 @@ export function GridTile({ entry, quality, muted }: GridTileProps) {
           if (cancelled || retries++ >= MAX_RETRIES) return
           setTimeout(() => {
             if (cancelled) return
-            try { video.load(); video.play().catch(() => {}) } catch {}
+            try { video.load(); video.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
           }, 3000)
         }
       }
@@ -107,19 +106,19 @@ export function GridTile({ entry, quality, muted }: GridTileProps) {
 
     return () => {
       cancelled = true
-      for (const p of players) { try { p.destroy() } catch { /* */ } }
-      try { video.removeAttribute('src'); video.load() } catch {}
+      for (const p of players) { try { p.destroy() } catch { /* ignore */ } }
+      try { video.removeAttribute('src'); video.load() } catch { /* ignore */ }
     }
   }, [pickedUrl, pickedKind, pickedQ])
 
   const toggleMute = () => {
-    setLocalMuted((value) => !value)
+    setMutedOverride({ prop: muted, val: !localMuted })
   }
 
   // Match original behavior: hide tile entirely if no playable stream exists.
   if (!pick) return null
 
-  const avatarUrl = entry.owner?.avatarThumb || entry.coverUrl || ''
+  const avatarUrl = safeImageUrl(entry.owner?.avatarThumb || entry.coverUrl) || ''
   const showAvatar = avatarUrl && !avatarFailed
 
   return (
@@ -142,28 +141,28 @@ export function GridTile({ entry, quality, muted }: GridTileProps) {
           )}
         </div>
         <div className="absolute top-2 right-2 z-10">
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-black/50 backdrop-blur-sm text-slate-300">
-            👁 {fmtViewers(entry.viewerCount)}
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono tabular-nums bg-black/65 backdrop-blur-sm text-zinc-200 border border-white/10">
+            <Users className="w-2.5 h-2.5" /> {fmtViewers(entry.viewerCount)}
           </span>
         </div>
-        <div className="absolute inset-0 flex items-end p-3 z-10 opacity-0 hover:opacity-100 transition-opacity bg-gradient-to-t from-black/60 to-transparent">
+        <div className="absolute inset-0 flex items-end p-2.5 z-10 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-gradient-to-t from-black/70 via-transparent to-transparent">
           <div className="flex items-center gap-2 w-full">
             <button
+              type="button"
               onClick={(e) => { e.stopPropagation(); toggleMute() }}
-              className="w-6 h-6 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur flex items-center justify-center text-sm transition-colors text-white"
+              className="w-7 h-7 rounded-md bg-black/60 hover:bg-black/80 border border-white/15 backdrop-blur flex items-center justify-center transition-colors text-white cursor-pointer"
               aria-label="Toggle mute"
             >
-              {localMuted ? '🔇' : '🔊'}
+              {localMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
             </button>
             <div className="flex-1" />
-            <a
-              href={`/?u=${encodeURIComponent(entry.username)}`}
-              target="_blank"
-              rel="noreferrer"
-              className="px-3 py-1 rounded-full bg-pink-600/80 hover:bg-pink-500 backdrop-blur text-[11px] font-semibold transition-colors text-white"
+            <Link
+              to={`/?u=${encodeURIComponent(entry.username)}`}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary hover:bg-primary/90 text-[11px] font-medium transition-colors text-primary-foreground"
             >
-              Open →
-            </a>
+              <span>{t('dashLink')}</span>
+              <ArrowUpRight className="w-3 h-3" />
+            </Link>
           </div>
         </div>
       </div>
@@ -172,6 +171,7 @@ export function GridTile({ entry, quality, muted }: GridTileProps) {
           <img
             src={avatarUrl}
             alt={entry.username}
+            referrerPolicy="no-referrer"
             onError={() => setAvatarFailed(true)}
             className="w-6 h-6 rounded-full object-cover flex-shrink-0 ring-1 ring-pink-500/30"
           />

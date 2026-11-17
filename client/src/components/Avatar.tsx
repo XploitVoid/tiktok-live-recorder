@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { safeImageUrl } from '@/lib/utils'
 
 interface Props {
   url?: string
@@ -25,13 +26,14 @@ function initialOf(name: string): string {
 
 export function Avatar({ url, name = '', size = 18, className = '' }: Props) {
   const [errored, setErrored] = useState(false)
-  const showImg = url && !errored
+  const safeUrl = safeImageUrl(url)
+  const showImg = safeUrl && !errored
   const px = `${size}px`
 
   if (showImg) {
     return (
       <img
-        src={url}
+        src={safeUrl}
         alt={name}
         loading="lazy"
         decoding="async"

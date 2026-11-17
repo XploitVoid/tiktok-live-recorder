@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Trophy, Gem, MessageSquare, Heart, UserPlus, RefreshCw } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { Trophy, Gem, MessageSquare, Heart, UserPlus, RefreshCw, Gift, Star } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/lib/i18n'
@@ -57,7 +58,14 @@ export function LeaderboardPanel({ recording, hasEvents }: Props) {
     }
   }, [recording, hasEvents])
 
-  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => {
+    if (!hasEvents) return
+    let active = true
+    getLeaderboard(recording)
+      .then((d) => { if (active) setData(d) })
+      .catch((e) => console.error('getLeaderboard:', e))
+    return () => { active = false }
+  }, [recording, hasEvents])
 
   if (!hasEvents) {
     return (
@@ -97,11 +105,11 @@ export function LeaderboardPanel({ recording, hasEvents }: Props) {
 
         {/* Stream-wide totals */}
         {data && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-            <Stat icon="💎" label={t('lbDiamonds')} value={data.totals.diamonds.toLocaleString()} color="text-pink-300" />
-            <Stat icon="🎁" label={t('lbGiftsTotal')} value={data.totals.gifts.toLocaleString()} color="text-amber-300" />
-            <Stat icon="💬" label={t('lbChatsTotal')} value={data.totals.chats.toLocaleString()} color="text-sky-300" />
-            <Stat icon="❤️" label={t('lbLikesTotal')} value={data.totals.likes.toLocaleString()} color="text-rose-300" />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs tabular-nums">
+            <Stat icon={<Gem className="w-3.5 h-3.5 text-primary" />} label={t('lbDiamonds')} value={data.totals.diamonds.toLocaleString()} color="text-foreground" />
+            <Stat icon={<Gift className="w-3.5 h-3.5 text-amber-400" />} label={t('lbGiftsTotal')} value={data.totals.gifts.toLocaleString()} color="text-foreground" />
+            <Stat icon={<MessageSquare className="w-3.5 h-3.5 text-sky-400" />} label={t('lbChatsTotal')} value={data.totals.chats.toLocaleString()} color="text-foreground" />
+            <Stat icon={<Heart className="w-3.5 h-3.5 text-rose-400" />} label={t('lbLikesTotal')} value={data.totals.likes.toLocaleString()} color="text-foreground" />
           </div>
         )}
 
@@ -116,7 +124,7 @@ export function LeaderboardPanel({ recording, hasEvents }: Props) {
                 <span
                   key={g.name}
                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-amber-500/10 text-amber-200 border border-amber-500/20"
-                  title={`${g.diamonds.toLocaleString()} 💎`}
+                  title={`${g.diamonds.toLocaleString()} diamonds`}
                 >
                   {g.name} ×{g.count}
                 </span>
@@ -146,7 +154,7 @@ export function LeaderboardPanel({ recording, hasEvents }: Props) {
         {/* List */}
         <div className="space-y-1 max-h-[320px] overflow-y-auto">
           {loading && !data ? (
-            <p className="text-xs text-muted-foreground">— loading —</p>
+            <p className="text-xs text-muted-foreground">{t('loading')}</p>
           ) : list.length === 0 ? (
             <p className="text-xs text-muted-foreground">{t('lbEmpty')}</p>
           ) : (
@@ -160,14 +168,14 @@ export function LeaderboardPanel({ recording, hasEvents }: Props) {
   )
 }
 
-function Stat({ icon, label, value, color }: { icon: string; label: string; value: string; color: string }) {
+function Stat({ icon, label, value, color }: { icon: ReactNode; label: string; value: string; color: string }) {
   return (
-    <div className="bg-secondary/60 rounded-lg px-2 py-1.5 border border-border">
-      <div className="flex items-center gap-1">
-        <span>{icon}</span>
-        <span className={`font-mono font-semibold ${color}`}>{value}</span>
+    <div className="bg-secondary/60 rounded-lg px-2.5 py-2 border border-border/70">
+      <div className="flex items-center gap-1.5">
+        {icon}
+        <span className={`font-mono font-semibold tabular-nums ${color}`}>{value}</span>
       </div>
-      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className="text-[10px] text-muted-foreground mt-0.5">{label}</div>
     </div>
   )
 }
@@ -194,27 +202,28 @@ function UserRow({
     rank === 2 ? 'bg-slate-400/10 border-slate-400/30' :
     rank === 3 ? 'bg-orange-700/10 border-orange-700/30' :
     'bg-secondary/40 border-border'
-  const rankIcon =
-    rank === 1 ? '🥇' :
-    rank === 2 ? '🥈' :
-    rank === 3 ? '🥉' :
-    `#${rank}`
+  const rankLabel = `#${rank}`
+  const rankBadgeClass =
+    rank === 1 ? 'text-amber-300 font-semibold' :
+    rank === 2 ? 'text-zinc-300 font-semibold' :
+    rank === 3 ? 'text-orange-300 font-semibold' :
+    'text-muted-foreground'
 
   return (
     <div className={`flex items-center gap-2 rounded-lg px-2 py-1.5 border ${medalBg}`}>
-      <span className="w-7 text-center text-xs font-mono text-foreground/70">{rankIcon}</span>
+      <span className={`w-7 text-center text-xs font-mono tabular-nums ${rankBadgeClass}`}>{rankLabel}</span>
       <Avatar url={user.avatar || undefined} name={user.nickname} size={28} />
       <div className="flex-1 min-w-0">
         <div className="text-xs font-semibold truncate text-foreground/90">{user.nickname}</div>
-        <div className="text-[10px] text-muted-foreground flex flex-wrap gap-x-2 gap-y-0">
-          {user.diamonds > 0 && <span>💎 {user.diamonds.toLocaleString()}</span>}
-          {user.chats > 0 && <span>💬 {user.chats}</span>}
-          {user.gifts > 0 && <span>🎁 {user.gifts}</span>}
-          {user.likes > 0 && <span>❤️ {user.likes}</span>}
-          {user.follows > 0 && <span>➕ {user.follows}</span>}
+        <div className="text-[10px] text-muted-foreground flex flex-wrap gap-x-2.5 gap-y-0 items-center tabular-nums">
+          {user.diamonds > 0 && <span className="inline-flex items-center gap-0.5"><Gem className="w-2.5 h-2.5 text-primary" /> {user.diamonds.toLocaleString()}</span>}
+          {user.chats > 0 && <span className="inline-flex items-center gap-0.5"><MessageSquare className="w-2.5 h-2.5 text-sky-400" /> {user.chats}</span>}
+          {user.gifts > 0 && <span className="inline-flex items-center gap-0.5"><Gift className="w-2.5 h-2.5 text-amber-400" /> {user.gifts}</span>}
+          {user.likes > 0 && <span className="inline-flex items-center gap-0.5"><Heart className="w-2.5 h-2.5 text-rose-400" /> {user.likes}</span>}
+          {user.follows > 0 && <span className="inline-flex items-center gap-0.5"><UserPlus className="w-2.5 h-2.5 text-emerald-400" /> {user.follows}</span>}
           {user.topGiftName && (
-            <span className="text-amber-300/80" title={`${user.topGiftName.count}×`}>
-              ★ {user.topGiftName.name}
+            <span className="inline-flex items-center gap-0.5 text-amber-300/80" title={`${user.topGiftName.count}×`}>
+              <Star className="w-2.5 h-2.5" /> {user.topGiftName.name}
             </span>
           )}
         </div>

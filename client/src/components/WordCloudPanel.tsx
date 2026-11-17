@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { Hash } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { useI18n } from '@/lib/i18n'
@@ -13,22 +13,17 @@ interface Props {
 export function WordCloudPanel({ recording, hasEvents }: Props) {
   const { t } = useI18n()
   const [data, setData] = useState<WordFrequencyData | null>(null)
-  const [loading, setLoading] = useState(false)
 
-  const refresh = useCallback(async () => {
+  useEffect(() => {
     if (!hasEvents) return
-    setLoading(true)
-    try {
-      const d = await getWordFrequency(recording)
-      setData(d)
-    } catch (e) {
-      console.error('getWordFrequency:', e)
-    } finally {
-      setLoading(false)
-    }
+    let active = true
+    getWordFrequency(recording)
+      .then((d) => { if (active) setData(d) })
+      .catch((e) => console.error('getWordFrequency:', e))
+    return () => { active = false }
   }, [recording, hasEvents])
 
-  useEffect(() => { refresh() }, [refresh])
+  const loading = hasEvents && !data
 
   if (!hasEvents) return null
 
@@ -48,7 +43,7 @@ export function WordCloudPanel({ recording, hasEvents }: Props) {
           )}
         </div>
 
-        {loading && !data && <p className="text-xs text-muted-foreground">— loading —</p>}
+        {loading && !data && <p className="text-xs text-muted-foreground">{t('loading')}</p>}
 
         {/* Word cloud (sized by frequency) */}
         {phrases.length > 0 && (

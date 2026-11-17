@@ -7,29 +7,7 @@ const chat = require('../lib/chat');
 
 const router = Router();
 
-router.post('/api/chat/start', async (req, res) => {
-  const username = normalizeUsername(req.body?.username);
-  if (!username) return res.status(400).json({ error: 'missing username' });
-  try {
-    const s = await chat.ensureSession(username);
-    res.json(s.info());
-  } catch (e) {
-    res.status(500).json({ error: safeError(e) });
-  }
-});
-
-router.post('/api/chat/stop', (req, res) => {
-  const username = normalizeUsername(req.body?.username);
-  if (!username) return res.status(400).json({ error: 'missing username' });
-  res.json({ ok: chat.closeSession(username) });
-});
-
-router.get('/api/chat/sessions', (_req, res) => {
-  res.json(chat.listSessions());
-});
-
-// Aggregated dashboard stats across all active chat sessions.
-router.get('/api/chat/dashboard', (_req, res) => {
+function buildDashboardData() {
   const sessions = chat.listSessions();
   const connected = sessions.filter((s) => s.state === 'connected');
   let totalViewers = 0;
@@ -39,10 +17,8 @@ router.get('/api/chat/dashboard', (_req, res) => {
   for (const s of connected) {
     totalViewers += s.viewerCount || 0;
     totalEvents += s.eventCount || 0;
-    // Get recent events for unified feed
     const session = chat.getSession(s.username);
     const recentEvents = session ? session.snapshot(Math.max(0, session.nextId - 50)) : [];
-    // Count diamonds in recent events
     let recentDiamonds = 0;
     for (const ev of recentEvents) {
       if (ev.type === 'gift') recentDiamonds += (Number(ev.diamondCount) || 0) * (Number(ev.repeatCount) || 1);
@@ -58,7 +34,6 @@ router.get('/api/chat/dashboard', (_req, res) => {
     });
   }
 
-  // Unified feed: last 100 events across all sessions, sorted by ts
   const allEvents = [];
   for (const s of connected) {
     const session = chat.getSession(s.username);
@@ -71,13 +46,39 @@ router.get('/api/chat/dashboard', (_req, res) => {
   allEvents.sort((a, b) => (a.ts || 0) - (b.ts || 0));
   const unifiedFeed = allEvents.slice(-100);
 
-  res.json({
+  return {
     totalStreams: connected.length,
     totalViewers,
     totalEvents,
     streams: streams.sort((a, b) => (b.viewerCount || 0) - (a.viewerCount || 0)),
     unifiedFeed,
-  });
+  };
+}
+
+router.post('/api/chat/start', async (req, res) => {
+  const username = normalizeUsername(req.body?.username);
+  if (!username) return res.status(400).json({ error: 'missing username' });
+  try {
+    const s = await chat.ensureSession(username, { source: 'ui' });
+    res.json(s.info());
+  } catch (e) {
+    res.status(500).json({ error: safeError(e) });
+  }
+});
+
+router.post('/api/chat/stop', (req, res) => {
+  const username = normalizeUsername(req.body?.username);
+  if (!username) return res.status(400).json({ error: 'missing username' });
+  const closed = chat.closeSession(username, { force: false });
+  res.json({ ok: true, closed, recordingActive: !closed && !!chat.getSession(username) });
+});
+
+router.get('/api/chat/sessions', (_req, res) => {
+  res.json(chat.listSessions());
+});
+
+router.get('/api/chat/dashboard', (_req, res) => {
+  res.json(buildDashboardData());
 });
 
 router.get('/api/chat/events', (req, res) => {
@@ -96,3 +97,4 @@ router.get('/api/chat/events', (req, res) => {
 });
 
 module.exports = router;
+module.exports.buildDashboardData = buildDashboardData;

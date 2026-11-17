@@ -1,230 +1,282 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { UserCircle, Plus, Trash2, Check, LogOut, EyeOff, Eye } from 'lucide-react'
+import { User, UserCheck, Plus, Trash2, Check, ShieldAlert, EyeOff, Eye } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useI18n } from '@/lib/i18n'
+import { ConfirmButton } from '@/components/ConfirmButton'
 import { getAccounts, addAccount, deleteAccount, switchAccount, toggleStealth } from '@/lib/api'
 import type { AccountInfo, AccountsResponse } from '@/lib/api'
+import { useI18n } from '@/lib/i18n'
 import { toast } from 'sonner'
 
 export function AccountSwitcher() {
   const { t } = useI18n()
-  const [open, setOpen] = useState(false)
   const [data, setData] = useState<AccountsResponse | null>(null)
-  const [showAdd, setShowAdd] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [adding, setAdding] = useState(false)
   const [label, setLabel] = useState('')
   const [sessionId, setSessionId] = useState('')
   const [ttTargetIdc, setTtTargetIdc] = useState('')
+  const [saving, setSaving] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
 
   const refresh = useCallback(async () => {
     try {
-      const d = await getAccounts()
-      setData(d)
-    } catch (e) {
-      console.error('accounts:', e)
-    }
+      const res = await getAccounts()
+      setData(res)
+    } catch { /* ignore */ }
   }, [])
 
   useEffect(() => {
-    refresh()
-  }, [refresh])
+    let active = true
+    getAccounts()
+      .then((res) => { if (active) setData(res) })
+      .catch(() => { /* ignore */ })
+    return () => { active = false }
+  }, [])
 
-  // Close on outside click
   useEffect(() => {
     if (!open) return
-    const handler = (e: MouseEvent) => {
+    const handleClick = (e: MouseEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         setOpen(false)
       }
     }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    window.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      window.removeEventListener('keydown', handleKey)
+    }
   }, [open])
 
-  const handleAdd = async () => {
-    if (!sessionId.trim()) return
+  const handleToggleStealth = async () => {
+    if (!data) return
+    const next = !data.stealth
     try {
-      const res = await addAccount(label.trim(), sessionId.trim(), ttTargetIdc.trim())
-      toast.success('Account added', { description: res.label })
-      setLabel('')
-      setSessionId('')
-      setTtTargetIdc('')
-      setShowAdd(false)
-      refresh()
-    } catch (e: unknown) {
-      toast.error('Failed', { description: e instanceof Error ? e.message : String(e) })
+      await toggleStealth(next)
+      await refresh()
+      toast(next ? t('accStealthEnabled') : t('accStealthDisabled'), {
+        description: next ? t('accStealthToastNote') : undefined,
+      })
+    } catch (e) {
+      toast.error((e as Error).message)
     }
   }
 
   const handleSwitch = async (id?: string) => {
     try {
       await switchAccount(id)
-      toast.success(id ? 'Switched account' : 'Switched to anonymous')
-      refresh()
-    } catch (e: unknown) {
-      toast.error('Switch failed', { description: e instanceof Error ? e.message : String(e) })
+      await refresh()
+      toast.success(id ? t('accSwitched') : t('accAnonSwitched'))
+      setOpen(false)
+    } catch (e) {
+      toast.error((e as Error).message)
     }
   }
 
-  const handleStealth = async () => {
+  const handleAdd = async () => {
+    if (!sessionId.trim()) {
+      toast.error(t('accEnterSession'))
+      return
+    }
+    setSaving(true)
     try {
-      const res = await toggleStealth(!data?.stealth)
-      toast.success(res.stealth ? t('stealthOn') : t('stealthOff'))
-      refresh()
-    } catch (e: unknown) {
-      toast.error('Stealth toggle failed', { description: e instanceof Error ? e.message : String(e) })
+      await addAccount(label.trim() || 'Account', sessionId.trim(), ttTargetIdc.trim() || undefined)
+      setLabel('')
+      setSessionId('')
+      setTtTargetIdc('')
+      setAdding(false)
+      await refresh()
+      toast.success(t('accSaved'))
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setSaving(false)
     }
   }
 
-  const handleDelete = async (acc: AccountInfo) => {
-    if (!confirm(`Delete "${acc.label}"?`)) return
+  const handleDelete = async (id: string) => {
     try {
-      await deleteAccount(acc.id)
-      toast.info('Deleted', { description: acc.label })
-      refresh()
-    } catch (e: unknown) {
-      toast.error('Delete failed', { description: e instanceof Error ? e.message : String(e) })
+      await deleteAccount(id)
+      await refresh()
+    } catch (e) {
+      toast.error((e as Error).message)
     }
   }
 
-  const activeAcc = data?.accounts?.find(a => a.id === data?.active?.id)
-  const activeDisplay = activeAcc?.label || (data?.active?.hasSession ? 'Default (.env)' : '')
+  const activeAcc = data?.accounts.find((a) => a.id === data.active.id)
   const isStealth = data?.stealth ?? false
+  const hasSession = data?.active.hasSession ?? false
 
   return (
-    <div className="relative" ref={panelRef}>
-      {/* Stealth toggle button */}
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={handleStealth}
-        className={`gap-1 mr-1 ${isStealth ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20' : ''}`}
-        title={isStealth ? t('stealthOn') : t('stealthOff')}
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <button
+        type="button"
+        onClick={handleToggleStealth}
+        title={isStealth ? t('stealthOnDesc') : t('stealthOffDesc')}
+        className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium border transition-colors cursor-pointer ${
+          isStealth
+            ? 'bg-amber-500/15 text-amber-300 border-amber-500/40 hover:bg-amber-500/20'
+            : 'bg-secondary/70 border-border/80 text-muted-foreground hover:text-foreground'
+        }`}
       >
         {isStealth ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-        {t('stealthLabel')} {isStealth ? 'ON' : 'OFF'}
-      </Button>
+        <span>{isStealth ? t('stealthOn') : t('stealthOff')}</span>
+      </button>
 
-      {/* Account button */}
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => setOpen(!open)}
-        className="gap-1"
-      >
-        <UserCircle className="w-3.5 h-3.5" />
-        <span className="max-w-[100px] truncate">
-          {activeDisplay ? activeDisplay : t('accAnonymous')}
-        </span>
-      </Button>
-
-      {open && (
-        <div className="absolute z-50 top-full mt-1 right-0 w-80 bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl shadow-black/50 overflow-hidden">
-          {/* Stealth banner */}
-          <div
-            onClick={handleStealth}
-            className={`flex items-center gap-2 px-3 py-2.5 cursor-pointer transition-colors ${isStealth ? 'bg-emerald-900/40 hover:bg-emerald-900/60' : 'bg-zinc-800 hover:bg-zinc-700/50'}`}
-          >
-            {isStealth ? <EyeOff className="w-4 h-4 text-emerald-400" /> : <Eye className="w-4 h-4 text-zinc-500" />}
-            <div className="flex-1">
-              <div className={`text-sm font-medium ${isStealth ? 'text-emerald-300' : 'text-zinc-300'}`}>
-                {t('stealthLabel')}
-              </div>
-              <div className="text-[10px] text-zinc-500">
-                {isStealth ? t('stealthOnDesc') : t('stealthOffDesc')}
-              </div>
-            </div>
-            <div className={`w-8 h-4 rounded-full transition-colors relative ${isStealth ? 'bg-emerald-500' : 'bg-zinc-600'}`}>
-              <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isStealth ? 'translate-x-4' : 'translate-x-0.5'}`} />
-            </div>
-          </div>
-
-          {/* Header */}
-          <div className="px-3 py-2 text-[10px] uppercase tracking-wider text-zinc-400 font-semibold bg-zinc-800 flex items-center gap-1.5">
-            <UserCircle className="w-3 h-3" />
-            {t('accTitle')}
-          </div>
-
-          {/* Anonymous option */}
-          <div
-            onClick={() => handleSwitch()}
-            className="flex items-center gap-2 px-3 py-2 hover:bg-zinc-800 cursor-pointer transition-colors border-b border-zinc-800"
-          >
-            <LogOut className="w-3.5 h-3.5 text-zinc-500" />
-            <span className="flex-1 text-sm text-zinc-300">{t('accAnonymous')}</span>
-            {!data?.active?.hasSession && <Check className="w-3.5 h-3.5 text-emerald-400" />}
-          </div>
-
-          {/* Account list */}
-          {data?.accounts.map((acc) => (
-            <div
-              key={acc.id}
-              className="flex items-center gap-2 px-3 py-2 hover:bg-zinc-800 cursor-pointer group transition-colors"
-            >
-              <span
-                className="flex-1 text-sm text-white truncate"
-                onClick={() => handleSwitch(acc.id)}
-              >
-                {acc.label}
-                <span className="text-xs text-zinc-500 ml-2">{acc.sessionPreview}</span>
-              </span>
-              {data?.active?.id === acc.id && data?.active?.hasSession && (
-                <Check className="w-3.5 h-3.5 text-emerald-400" />
-              )}
-              <button
-                onClick={() => handleDelete(acc)}
-                className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 transition-all"
-              >
-                <Trash2 className="w-3 h-3" />
-              </button>
-            </div>
-          ))}
-
-          {/* Add form */}
-          {showAdd ? (
-            <div className="p-3 border-t border-zinc-800 space-y-2">
-              <Input
-                placeholder={t('accLabel')}
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                className="h-7 text-xs bg-zinc-800 border-zinc-700"
-              />
-              <Input
-                placeholder="sessionid cookie *"
-                value={sessionId}
-                onChange={(e) => setSessionId(e.target.value)}
-                className="h-7 text-xs bg-zinc-800 border-zinc-700 font-mono"
-              />
-              <Input
-                placeholder="tt_target_idc (optional)"
-                value={ttTargetIdc}
-                onChange={(e) => setTtTargetIdc(e.target.value)}
-                className="h-7 text-xs bg-zinc-800 border-zinc-700 font-mono"
-              />
-              <div className="flex gap-1.5">
-                <Button size="xs" onClick={handleAdd} className="flex-1 bg-pink-600 hover:bg-pink-500 text-white border-0">
-                  {t('btnSave')}
-                </Button>
-                <Button size="xs" variant="secondary" onClick={() => setShowAdd(false)}>
-                  {t('btnCancel')}
-                </Button>
-              </div>
-            </div>
+      <div className="relative" ref={panelRef}>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium border transition-colors cursor-pointer ${
+            hasSession && !isStealth
+              ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/15'
+              : 'bg-secondary/70 border-border/80 text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          {hasSession && !isStealth ? (
+            <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
           ) : (
-            <div className="p-2 border-t border-zinc-800">
-              <Button
-                size="xs"
-                variant="ghost"
-                className="w-full justify-center gap-1 text-zinc-400 hover:text-white"
-                onClick={() => setShowAdd(true)}
-              >
-                <Plus className="w-3 h-3" /> {t('accAdd')}
-              </Button>
-            </div>
+            <User className="w-3.5 h-3.5" />
           )}
-        </div>
-      )}
+          <span className="max-w-[110px] truncate">
+            {isStealth
+              ? t('accAnonymous')
+              : activeAcc
+                ? activeAcc.label
+                : hasSession
+                  ? 'Session'
+                  : t('accAnonymous')}
+          </span>
+        </button>
+
+        {open && (
+          <div className="fixed right-4 top-16 sm:absolute sm:right-0 sm:top-full sm:mt-1.5 w-80 max-w-[calc(100vw-2rem)] rounded-lg bg-popover border border-border shadow-xl z-50 p-3 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold">{t('accTitle')}</span>
+              {isStealth && (
+                <span className="inline-flex items-center gap-1 text-[10px] text-amber-400">
+                  <ShieldAlert className="w-3 h-3" /> {t('stealthOn')}
+                </span>
+              )}
+            </div>
+
+            <div className="space-y-1 max-h-48 overflow-y-auto">
+              <button
+                type="button"
+                onClick={() => handleSwitch(undefined)}
+                className={`w-full flex items-center justify-between px-2.5 py-2 rounded-md text-xs transition-colors cursor-pointer text-left ${
+                  !data?.active.id && !hasSession
+                    ? 'bg-secondary font-medium text-foreground'
+                    : 'hover:bg-secondary/60 text-muted-foreground'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <User className="w-3.5 h-3.5 shrink-0" />
+                  <span>{t('accAnonymous')}</span>
+                </div>
+                {!data?.active.id && !hasSession && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+              </button>
+
+              {data?.accounts.map((acc: AccountInfo) => {
+                const active = data.active.id === acc.id
+                return (
+                  <div
+                    key={acc.id}
+                    className={`flex items-center justify-between gap-1 px-2 py-1.5 rounded-md text-xs transition-colors ${
+                      active
+                        ? 'bg-secondary font-medium text-foreground'
+                        : 'hover:bg-secondary/60 text-muted-foreground'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleSwitch(acc.id)}
+                      className="flex-1 flex items-center gap-2 min-w-0 text-left cursor-pointer"
+                    >
+                      <UserCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span className="truncate">{acc.label}</span>
+                      <span className="text-[10px] font-mono text-muted-foreground/70 shrink-0 tabular-nums">
+                        {acc.sessionPreview}
+                      </span>
+                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {active && <Check className="w-3.5 h-3.5 text-emerald-400" />}
+                      <ConfirmButton
+                        onConfirm={() => handleDelete(acc.id)}
+                        confirmLabel={t('confirm')}
+                        cancelLabel={t('cancel')}
+                        title={t('accDelete')}
+                        className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </ConfirmButton>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            {adding ? (
+              <div className="space-y-2 pt-2 border-t border-border">
+                <Input
+                  placeholder={t('accNamePlaceholder')}
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  className="h-8 text-xs"
+                />
+                <Input
+                  type="password"
+                  placeholder={t('accSessionPlaceholder')}
+                  value={sessionId}
+                  onChange={(e) => setSessionId(e.target.value)}
+                  className="h-8 text-xs font-mono"
+                />
+                <Input
+                  placeholder={t('accTargetIdcPlaceholder')}
+                  value={ttTargetIdc}
+                  onChange={(e) => setTtTargetIdc(e.target.value)}
+                  className="h-8 text-xs font-mono"
+                />
+                <div className="flex gap-1.5">
+                  <Button
+                    size="xs"
+                    onClick={handleAdd}
+                    disabled={saving || !sessionId.trim()}
+                    className="flex-1"
+                  >
+                    {saving ? t('loading') : t('btnSave')}
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => { setAdding(false); setTtTargetIdc('') }}
+                  >
+                    {t('btnCancel')}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setAdding(true)}
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-md border border-dashed border-border hover:border-foreground/30 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>{t('accAdd')}</span>
+              </button>
+            )}
+
+            <p className="text-[11px] text-muted-foreground/80 leading-relaxed">
+              {hasSession && !isStealth ? t('accHintAuth') : t('accHintAnon')}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

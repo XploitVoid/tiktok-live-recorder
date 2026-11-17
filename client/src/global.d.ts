@@ -9,7 +9,7 @@ interface FlvPlayer {
 
 interface FlvJs {
   isSupported: () => boolean
-  createPlayer: (config: Record<string, unknown>) => FlvPlayer
+  createPlayer: (mediaDataSource: Record<string, unknown>, config?: Record<string, unknown>) => FlvPlayer
   Events: Record<string, string>
 }
 

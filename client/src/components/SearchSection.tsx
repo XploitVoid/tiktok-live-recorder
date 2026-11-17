@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { Search, Loader2, Star, Clock, X, Trash2 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { useI18n } from '@/lib/i18n'
 import { checkStream } from '@/lib/api'
+import { cleanUsernameInput } from '@/lib/utils'
 import {
   getHistory, addHistory, removeHistory, clearHistory,
   getFavorites, addFavorite, removeFavorite, isFavorite,
@@ -14,47 +15,64 @@ import type { CheckResult } from '@/lib/types'
 
 interface Props {
   onLoading?: () => void
-  onResult: (data: CheckResult) => void
-  onError: (err: string) => void
+  onResult?: (data: CheckResult) => void
+  onError?: (msg: string) => void
   initialUsername?: string
 }
 
 export function SearchSection({ onLoading, onResult, onError, initialUsername }: Props) {
   const { t } = useI18n()
   const [username, setUsername] = useState(initialUsername || '')
-  const [loading, setLoading] = useState(false)
-  const [favorites, setFavorites] = useState(getFavorites())
+  const [checking, setChecking] = useState(false)
   const [history, setHistory] = useState(getHistory())
+  const [favorites, setFavorites] = useState(getFavorites())
+  const autoCheckedRef = useRef<string | null>(null)
 
   const refreshLists = useCallback(() => {
-    setFavorites(getFavorites())
     setHistory(getHistory())
+    setFavorites(getFavorites())
   }, [])
 
-  const doCheck = useCallback(async (overrideUser?: string) => {
-    const u = (overrideUser || username).trim().replace(/^@/, '')
+  const doCheck = useCallback(async (targetUser?: string) => {
+    const raw = (targetUser ?? username).trim()
+    if (!raw) return
+    const u = cleanUsernameInput(raw)
     if (!u) return
-    setLoading(true)
+    autoCheckedRef.current = u
+    setUsername(u)
+    setChecking(true)
     onLoading?.()
     try {
       const data = await checkStream(u)
       addHistory(u)
       refreshLists()
-      if (overrideUser) setUsername(u)
-      onResult(data)
-    } catch (e: unknown) {
-      onError(e instanceof Error ? e.message : String(e))
+      onResult?.(data)
+    } catch (e) {
+      onError?.((e as Error).message)
     } finally {
-      setLoading(false)
+      setChecking(false)
     }
   }, [username, onLoading, onResult, onError, refreshLists])
 
-  const toggleFavorite = useCallback((user: string) => {
-    if (isFavorite(user)) {
-      removeFavorite(user)
-    } else {
-      addFavorite(user)
+  useEffect(() => {
+    if (!initialUsername) return
+    const normalized = cleanUsernameInput(initialUsername)
+    if (!normalized || autoCheckedRef.current === normalized) return
+    autoCheckedRef.current = normalized
+    let cancelled = false
+    Promise.resolve().then(() => {
+      if (!cancelled) void doCheck(normalized)
+    })
+    return () => {
+      cancelled = true
     }
+  }, [initialUsername, doCheck])
+
+  const handleToggleFav = useCallback((user: string) => {
+    const u = cleanUsernameInput(user)
+    if (!u) return
+    if (isFavorite(u)) removeFavorite(u)
+    else addFavorite(u)
     refreshLists()
   }, [refreshLists])
 
@@ -68,112 +86,140 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
     refreshLists()
   }, [refreshLists])
 
-  // Filter history to exclude items already in favorites
+  const cleanedInput = cleanUsernameInput(username)
   const filteredHistory = history.filter((e) => !favorites.includes(e.username))
 
   return (
-    <Card>
-      <CardContent className="pt-5">
-        <Label className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-2 block">
+    <Card className="border-border/80">
+      <CardContent className="pt-5 space-y-3.5">
+        <Label
+          htmlFor="uInput"
+          className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground block"
+        >
           {t('usernameLabel')}
         </Label>
-        <div className="flex gap-2">
-          <div className="flex flex-1 items-center bg-secondary rounded-lg overflow-hidden border border-border focus-within:border-primary/70 focus-within:ring-2 ring-primary/30 transition">
-            <span className="inline-flex items-center px-3 text-muted-foreground font-medium">@</span>
+
+        <div className="flex flex-col sm:flex-row gap-2">
+          <div className="relative flex-1 flex items-center">
+            <span className="absolute left-3 text-muted-foreground font-mono text-sm select-none">@</span>
             <Input
+              id="uInput"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && doCheck()}
-              placeholder="tv_asahi_news"
-              className="border-0 bg-transparent shadow-none focus-visible:ring-0 px-1"
+              placeholder="username / tiktok.com/@user"
               autoComplete="off"
-              spellCheck={false}
+              className="pl-7 pr-9 h-10 bg-background/70 border-border focus-visible:border-primary/60 text-sm font-mono"
             />
-            {username && (
+            {cleanedInput && (
               <button
-                onClick={() => toggleFavorite(username.trim().replace(/^@/, ''))}
-                className="px-2 text-muted-foreground hover:text-amber-400 transition-colors"
-                title={isFavorite(username.trim().replace(/^@/, '')) ? 'Remove from favorites' : 'Add to favorites'}
+                type="button"
+                onClick={() => handleToggleFav(username)}
+                className="absolute right-2.5 text-muted-foreground hover:text-amber-400 transition-colors cursor-pointer p-1"
+                title={isFavorite(cleanedInput) ? 'Remove from favorites' : 'Add to favorites'}
+                aria-label="Toggle favorite"
               >
-                <Star className={`w-4 h-4 ${isFavorite(username.trim().replace(/^@/, '')) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                <Star className={`w-4 h-4 ${isFavorite(cleanedInput) ? 'fill-amber-400 text-amber-400' : ''}`} />
               </button>
             )}
           </div>
           <Button
             onClick={() => doCheck()}
-            disabled={loading}
-            className="bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white shadow-lg shadow-pink-600/20 border-0"
+            disabled={checking || !cleanedInput}
+            className="h-10 px-5 font-medium shrink-0 cursor-pointer"
           >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4 mr-1.5" />}
-            {t('btnCheck')}
+            {checking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+            <span>{t('btnCheck')}</span>
           </Button>
         </div>
 
-        {/* Favorites — always visible chips */}
         {favorites.length > 0 && (
-          <div className="flex items-center gap-1.5 flex-wrap mt-3">
-            <span className="text-[10px] uppercase tracking-wider text-amber-400/70 font-semibold flex items-center gap-1">
+          <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-400/90 mr-1">
               <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-              {t('favorites')}
+              <span>{t('favorites')}</span>
             </span>
             {favorites.map((user) => (
-              <button
+              <div
                 key={`fav-${user}`}
-                onClick={() => { setUsername(user); doCheck(user) }}
-                className="group inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-300 border border-amber-500/20 hover:bg-amber-500/20 hover:border-amber-500/40 transition-all"
+                className="inline-flex items-center rounded-md text-xs font-medium bg-amber-500/10 text-amber-200 border border-amber-500/25 hover:border-amber-500/45 transition-colors overflow-hidden"
               >
-                @{user}
-                <span
-                  onClick={(e) => { e.stopPropagation(); toggleFavorite(user) }}
-                  className="opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity ml-0.5"
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsername(user)
+                    void doCheck(user)
+                  }}
+                  className="px-2 py-1 hover:bg-amber-500/15 transition-colors cursor-pointer font-mono"
+                >
+                  @{user}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleToggleFav(user)}
+                  aria-label={`Remove ${user} from favorites`}
+                  className="px-1.5 py-1 text-amber-300/60 hover:text-destructive hover:bg-amber-500/15 transition-colors cursor-pointer"
                 >
                   <X className="w-3 h-3" />
-                </span>
-              </button>
+                </button>
+              </div>
             ))}
           </div>
         )}
 
-        {/* Recent searches — always visible chips */}
         {filteredHistory.length > 0 && (
-          <div className="flex items-center gap-1.5 flex-wrap mt-2">
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground mr-1">
               <Clock className="w-3 h-3" />
-              {t('recentSearch')}
+              <span>{t('recentSearch')}</span>
             </span>
             {filteredHistory.slice(0, 8).map((entry) => (
-              <button
+              <div
                 key={`hist-${entry.username}`}
-                onClick={() => { setUsername(entry.username); doCheck(entry.username) }}
-                className="group inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs text-zinc-300 bg-zinc-800/50 border border-zinc-700/50 hover:bg-zinc-700/50 hover:border-zinc-600 transition-all"
+                className="inline-flex items-center rounded-md text-xs bg-secondary/70 text-foreground/85 border border-border/70 hover:border-border transition-colors overflow-hidden"
               >
-                @{entry.username}
-                <span
-                  onClick={(e) => { e.stopPropagation(); toggleFavorite(entry.username) }}
-                  className="opacity-0 group-hover:opacity-100 hover:text-amber-400 transition-opacity"
-                  title="Add to favorites"
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsername(entry.username)
+                    void doCheck(entry.username)
+                  }}
+                  className="px-2 py-1 hover:bg-secondary transition-colors cursor-pointer font-mono"
+                >
+                  @{entry.username}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleToggleFav(entry.username)}
+                  title="Pin to favorites"
+                  aria-label={`Pin ${entry.username} to favorites`}
+                  className="p-1 text-muted-foreground/70 hover:text-amber-400 transition-colors cursor-pointer"
                 >
                   <Star className={`w-3 h-3 ${isFavorite(entry.username) ? 'fill-amber-400 text-amber-400' : ''}`} />
-                </span>
-                <span
-                  onClick={(e) => { e.stopPropagation(); handleRemoveHistory(entry.username) }}
-                  className="opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity"
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRemoveHistory(entry.username)}
+                  aria-label={`Remove ${entry.username} from history`}
+                  className="pr-1.5 pl-0.5 py-1 text-muted-foreground/60 hover:text-destructive transition-colors cursor-pointer"
                 >
                   <X className="w-3 h-3" />
-                </span>
-              </button>
+                </button>
+              </div>
             ))}
             <button
+              type="button"
               onClick={handleClearHistory}
-              className="inline-flex items-center gap-0.5 px-2 py-1 rounded-full text-[10px] text-zinc-500 hover:text-red-400 transition-colors"
+              className="inline-flex items-center gap-1 text-[11px] text-muted-foreground/70 hover:text-destructive ml-1 transition-colors cursor-pointer"
             >
-              <Trash2 className="w-2.5 h-2.5" /> {t('clearHistory')}
+              <Trash2 className="w-3 h-3" />
+              <span>{t('clearHistory')}</span>
             </button>
           </div>
         )}
 
         {favorites.length === 0 && history.length === 0 && (
-          <p className="text-xs text-muted-foreground mt-2">{t('hintText')}</p>
+          <p className="text-xs text-muted-foreground">{t('hintText')}</p>
         )}
       </CardContent>
     </Card>

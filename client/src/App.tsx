@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { I18nProvider } from '@/lib/i18n'
+import { AuthGate } from '@/components/AuthGate'
 import { Header } from '@/components/Header'
 import { HomePage } from '@/pages/HomePage'
 
@@ -36,14 +37,16 @@ function App() {
       <I18nProvider>
         <TooltipProvider>
           <div className="dark min-h-screen bg-background text-foreground">
-            <Suspense fallback={<PageFallback />}>
-              <Routes>
-                <Route path="/" element={<Layout><HomePage /></Layout>} />
-                <Route path="/grid" element={<GridPage />} />
-                <Route path="/replay" element={<ReplayPage />} />
-                <Route path="/dashboard" element={<DashboardPage />} />
-              </Routes>
-            </Suspense>
+            <AuthGate>
+              <Suspense fallback={<PageFallback />}>
+                <Routes>
+                  <Route path="/" element={<Layout><HomePage /></Layout>} />
+                  <Route path="/grid" element={<GridPage />} />
+                  <Route path="/replay" element={<ReplayPage />} />
+                  <Route path="/dashboard" element={<DashboardPage />} />
+                </Routes>
+              </Suspense>
+            </AuthGate>
             <Toaster position="top-right" richColors closeButton />
           </div>
         </TooltipProvider>

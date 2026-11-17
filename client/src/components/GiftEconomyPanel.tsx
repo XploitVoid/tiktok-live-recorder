@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Gem, BarChart3 } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import type { ReactNode } from 'react'
+import { Gem, BarChart3, MessageSquare, Flame, Gift } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/lib/i18n'
@@ -16,23 +17,18 @@ interface Props {
 export function GiftEconomyPanel({ recording, hasEvents, onJump }: Props) {
   const { t } = useI18n()
   const [data, setData] = useState<GiftEconomyData | null>(null)
-  const [loading, setLoading] = useState(false)
   const [mode, setMode] = useState<'gifts' | 'chat'>('gifts')
 
-  const refresh = useCallback(async () => {
+  useEffect(() => {
     if (!hasEvents) return
-    setLoading(true)
-    try {
-      const d = await getGiftEconomy(recording)
-      setData(d)
-    } catch (e) {
-      console.error('getGiftEconomy:', e)
-    } finally {
-      setLoading(false)
-    }
+    let active = true
+    getGiftEconomy(recording)
+      .then((d) => { if (active) setData(d) })
+      .catch((e) => console.error('getGiftEconomy:', e))
+    return () => { active = false }
   }, [recording, hasEvents])
 
-  useEffect(() => { refresh() }, [refresh])
+  const loading = hasEvents && !data
 
   if (!hasEvents) {
     return (
@@ -64,9 +60,9 @@ export function GiftEconomyPanel({ recording, hasEvents, onJump }: Props) {
               variant={mode === 'gifts' ? 'default' : 'ghost'}
               size="xs"
               onClick={() => setMode('gifts')}
-              className={mode === 'gifts' ? 'bg-pink-600 hover:bg-pink-500 text-white border-0' : ''}
+              className={mode === 'gifts' ? 'bg-primary text-primary-foreground border-0' : ''}
             >
-              💎 {t('geGifts')}
+              <Gem className="w-3 h-3 mr-1" /> {t('geGifts')}
             </Button>
             <Button
               variant={mode === 'chat' ? 'default' : 'ghost'}
@@ -74,18 +70,18 @@ export function GiftEconomyPanel({ recording, hasEvents, onJump }: Props) {
               onClick={() => setMode('chat')}
               className={mode === 'chat' ? 'bg-sky-600 hover:bg-sky-500 text-white border-0' : ''}
             >
-              💬 {t('geChat')}
+              <MessageSquare className="w-3 h-3 mr-1" /> {t('geChat')}
             </Button>
           </div>
         </div>
 
         {/* Stats row */}
         {data && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-            <StatBox icon="💎" value={data.totals.diamonds.toLocaleString()} label={t('geTotalDiamonds')} color="text-pink-300" />
-            <StatBox icon="📊" value={String(data.totals.avgDiamondPerMin)} label={t('geAvgPerMin')} color="text-amber-300" />
-            <StatBox icon="🔥" value={`${data.totals.peakDiamonds} 💎`} label={`${t('gePeak')} @ ${fmtTimeSec(data.totals.peakMomentSec)}`} color="text-rose-300" />
-            <StatBox icon="🎁" value={data.totals.gifts.toLocaleString()} label={t('geTotalGifts')} color="text-amber-200" />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs tabular-nums">
+            <StatBox icon={<Gem className="w-3.5 h-3.5 text-primary" />} value={data.totals.diamonds.toLocaleString()} label={t('geTotalDiamonds')} color="text-foreground" />
+            <StatBox icon={<BarChart3 className="w-3.5 h-3.5 text-amber-400" />} value={String(data.totals.avgDiamondPerMin)} label={t('geAvgPerMin')} color="text-foreground" />
+            <StatBox icon={<Flame className="w-3.5 h-3.5 text-rose-400" />} value={`${data.totals.peakDiamonds}`} label={`${t('gePeak')} @ ${fmtTimeSec(data.totals.peakMomentSec)}`} color="text-foreground" />
+            <StatBox icon={<Gift className="w-3.5 h-3.5 text-amber-300" />} value={data.totals.gifts.toLocaleString()} label={t('geTotalGifts')} color="text-foreground" />
           </div>
         )}
 
@@ -111,7 +107,7 @@ export function GiftEconomyPanel({ recording, hasEvents, onJump }: Props) {
                     onClick={() => onJump?.(sec)}
                     className={`flex-1 min-w-[2px] rounded-t transition-all hover:brightness-125 ${color}`}
                     style={{ height: `${height}%` }}
-                    title={`${fmtTimeSec(sec)}: ${val}${mode === 'gifts' ? ' 💎' : ' msgs'}`}
+                    title={`${fmtTimeSec(sec)}: ${val}${mode === 'gifts' ? ' diamonds' : ' msgs'}`}
                   />
                 )
               })}
@@ -129,30 +125,33 @@ export function GiftEconomyPanel({ recording, hasEvents, onJump }: Props) {
               {data.giftBreakdown.map((g) => (
                 <span
                   key={g.name}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-pink-500/10 text-pink-200 border border-pink-500/20"
-                  title={`${g.diamonds.toLocaleString()} 💎`}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] bg-secondary/80 text-foreground/85 border border-border/70 tabular-nums"
+                  title={`${g.diamonds.toLocaleString()} diamonds`}
                 >
-                  {g.name} ×{g.count} <span className="text-pink-400/70">({g.diamonds}💎)</span>
+                  {g.name} ×{g.count}{' '}
+                  <span className="inline-flex items-center gap-0.5 text-muted-foreground">
+                    ({g.diamonds}<Gem className="w-2.5 h-2.5 text-primary" />)
+                  </span>
                 </span>
               ))}
             </div>
           </div>
         )}
 
-        {loading && !data && <p className="text-xs text-muted-foreground">— loading —</p>}
+        {loading && !data && <p className="text-xs text-muted-foreground">{t('loading')}</p>}
       </CardContent>
     </Card>
   )
 }
 
-function StatBox({ icon, value, label, color }: { icon: string; value: string; label: string; color: string }) {
+function StatBox({ icon, value, label, color }: { icon: ReactNode; value: string; label: string; color: string }) {
   return (
-    <div className="bg-secondary/60 rounded-lg px-2 py-1.5 border border-border">
-      <div className="flex items-center gap-1">
-        <span>{icon}</span>
-        <span className={`font-mono font-semibold ${color}`}>{value}</span>
+    <div className="bg-secondary/60 rounded-lg px-2.5 py-2 border border-border/70">
+      <div className="flex items-center gap-1.5">
+        {icon}
+        <span className={`font-mono font-semibold tabular-nums ${color}`}>{value}</span>
       </div>
-      <div className="text-[10px] text-muted-foreground truncate">{label}</div>
+      <div className="text-[10px] text-muted-foreground truncate mt-0.5">{label}</div>
     </div>
   )
 }

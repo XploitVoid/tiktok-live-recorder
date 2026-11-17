@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Eye, Plus, Bell, Loader2, X, RefreshCw, Save } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { Eye, Plus, Bell, Loader2, X, RefreshCw, Save, Users, Radio, CircleOff, Circle, AlertCircle } from 'lucide-react'
+import { ConfirmButton } from '@/components/ConfirmButton'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -8,8 +9,9 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { useI18n } from '@/lib/i18n'
-import { usePoll } from '@/lib/usePoll'
+import { useEventStream } from '@/lib/useEventStream'
 import { fmtTime } from '@/lib/format'
+import { cleanUsernameInput } from '@/lib/utils'
 import * as api from '@/lib/api'
 import type { WatchData, WatchEvent } from '@/lib/types'
 import { toast } from 'sonner'
@@ -28,9 +30,44 @@ export function Watchlist({ onJobsChanged }: Props) {
   const [adding, setAdding] = useState(false)
   const [pollSeconds, setPollSeconds] = useState(30)
   const [polling, setPolling] = useState(false)
-  const [notifsEnabled, setNotifsEnabled] = useState(false)
-  const notifsRef = useRef(false)
+  const [notifsEnabled, setNotifsEnabled] = useState(
+    () => typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted',
+  )
+  const notifsRef = useRef(notifsEnabled)
   const lastEventIdRef = useRef(0)
+
+  useEffect(() => {
+    notifsRef.current = notifsEnabled
+  }, [notifsEnabled])
+
+  const mergeWatchEvents = useCallback((incoming: WatchEvent[]) => {
+    if (!incoming.length) return
+    setEvents((prev) => {
+      const seen = new Set(prev.map((e) => e.id))
+      const next = [...prev]
+      for (const ev of incoming) {
+        if (!ev || !ev.id) continue
+        lastEventIdRef.current = Math.max(lastEventIdRef.current, ev.id)
+        if (!seen.has(ev.id)) {
+          seen.add(ev.id)
+          next.push(ev)
+        }
+      }
+      next.sort((a, b) => a.id - b.id)
+      return next.slice(-50)
+    })
+  }, [])
+
+  const syncMissedEvents = useCallback(async () => {
+    try {
+      const missed = await api.getWatchEvents(lastEventIdRef.current)
+      mergeWatchEvents(missed)
+    } catch { /* ignore */ }
+  }, [mergeWatchEvents])
+
+  useEffect(() => {
+    void syncMissedEvents()
+  }, [syncMissedEvents])
 
   const refreshWatch = useCallback(async () => {
     try {
@@ -40,50 +77,41 @@ export function Watchlist({ onJobsChanged }: Props) {
     } catch { /* ignore */ }
   }, [])
 
-  const pollEvents = useCallback(async () => {
-    try {
-      const list = await api.getWatchEvents(lastEventIdRef.current)
-      if (!list.length) return
-      for (const ev of list) {
-        lastEventIdRef.current = Math.max(lastEventIdRef.current, ev.id)
-        if (notifsRef.current) {
-          if (ev.type === 'went_live') notify(`@${ev.username} is LIVE`, ev.title || 'Now streaming')
-          else if (ev.type === 'record_started') notify(`Recording @${ev.username}`, `Quality: ${ev.quality} → ${ev.file}`)
-          else if (ev.type === 'record_failed') notify(`Record failed: @${ev.username}`, ev.error || '')
-        }
+  const sseHandlers = useMemo(() => ({
+    watch_list: (raw: unknown) => {
+      const data = raw as WatchData
+      if (data && Array.isArray(data.list)) {
+        setWatchData(data)
+        setPollSeconds(data.pollSeconds)
       }
-      setEvents(prev => [...prev, ...list].slice(-50))
-      refreshWatch()
+      void syncMissedEvents()
+    },
+    watch_event: (raw: unknown) => {
+      const ev = raw as WatchEvent
+      if (!ev || !ev.id) return
+      if (ev.id <= lastEventIdRef.current) return
+      if (notifsRef.current) {
+        if (ev.type === 'went_live') notify(`@${ev.username} is LIVE`, ev.title || 'Now streaming')
+        else if (ev.type === 'record_started') notify(`Recording @${ev.username}`, `Quality: ${ev.quality} → ${ev.file}`)
+        else if (ev.type === 'record_failed') notify(`Record failed: @${ev.username}`, ev.error || '')
+      }
+      mergeWatchEvents([ev])
       onJobsChanged?.()
-    } catch { /* ignore */ }
-  }, [refreshWatch, onJobsChanged])
+    },
+  }), [onJobsChanged, mergeWatchEvents, syncMissedEvents])
 
-  useEffect(() => {
-    refreshWatch()
-  }, [refreshWatch])
-
-  // Poll watch events only while tab is visible
-  usePoll(pollEvents, 3000)
-
-  useEffect(() => {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      setNotifsEnabled(true)
-      notifsRef.current = true
-    }
-  }, [])
+  useEventStream('channels=watch', sseHandlers, true, notifsEnabled)
 
   const handleAdd = async () => {
-    const u = addUsername.trim().replace(/^@/, '')
+    const u = cleanUsernameInput(addUsername)
     if (!u) return
     setAdding(true)
     try {
-      // 'auto' is a UI-only sentinel — store as null so the server-side
-      // recorder picks the highest available quality at start time.
       const quality = addQuality && addQuality !== 'auto' ? addQuality : null
       await api.addWatch(u, quality, addAutoRecord)
       toast.success('Added to watchlist', { description: '@' + u })
       setAddUsername('')
-      refreshWatch()
+      void refreshWatch()
     } catch (e: unknown) {
       toast.error('Add failed', { description: e instanceof Error ? e.message : String(e) })
     } finally {
@@ -92,11 +120,10 @@ export function Watchlist({ onJobsChanged }: Props) {
   }
 
   const handleRemove = async (username: string) => {
-    if (!confirm(`Remove @${username} from watchlist?`)) return
     try {
       await api.removeWatch(username)
       toast.info('Removed', { description: '@' + username })
-      refreshWatch()
+      void refreshWatch()
     } catch (e: unknown) {
       toast.error('Remove failed', { description: e instanceof Error ? e.message : String(e) })
     }
@@ -106,7 +133,7 @@ export function Watchlist({ onJobsChanged }: Props) {
     try {
       await api.patchWatch(username, { autoRecord })
       toast.info(autoRecord ? 'Auto-record on' : 'Auto-record off', { description: '@' + username })
-      refreshWatch()
+      void refreshWatch()
     } catch (e: unknown) {
       toast.error('Update failed', { description: e instanceof Error ? e.message : String(e) })
     }
@@ -120,7 +147,7 @@ export function Watchlist({ onJobsChanged }: Props) {
     try {
       await api.savePollSeconds(pollSeconds)
       toast.success('Poll interval saved', { description: pollSeconds + 's' })
-      refreshWatch()
+      void refreshWatch()
     } catch (e: unknown) {
       toast.error('Save failed', { description: e instanceof Error ? e.message : String(e) })
     }
@@ -130,8 +157,7 @@ export function Watchlist({ onJobsChanged }: Props) {
     setPolling(true)
     try {
       await api.pollNow()
-      refreshWatch()
-      pollEvents()
+      void refreshWatch()
     } catch (e: unknown) {
       toast.error('Poll failed', { description: e instanceof Error ? e.message : String(e) })
     } finally {
@@ -147,14 +173,12 @@ export function Watchlist({ onJobsChanged }: Props) {
     const perm = await Notification.requestPermission()
     const enabled = perm === 'granted'
     setNotifsEnabled(enabled)
-    notifsRef.current = enabled
     toast[enabled ? 'success' : 'warning'](enabled ? 'Notifications enabled' : 'Notifications denied')
   }
 
   return (
     <Card>
       <CardContent className="pt-5">
-        {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
           <h2 className="font-semibold flex items-center gap-2 text-foreground">
             <Eye className="w-4 h-4 text-pink-400" /> Watchlist
@@ -187,7 +211,6 @@ export function Watchlist({ onJobsChanged }: Props) {
           </div>
         </div>
 
-        {/* Add form */}
         <div className="flex flex-wrap gap-2 mb-3 items-center">
           <div className="flex flex-1 min-w-[180px] items-center bg-secondary rounded-lg overflow-hidden border border-border focus-within:border-primary/60 transition">
             <span className="inline-flex items-center px-2.5 text-muted-foreground text-sm">@</span>
@@ -212,6 +235,7 @@ export function Watchlist({ onJobsChanged }: Props) {
               <SelectItem value="hd">hd (720p)</SelectItem>
               <SelectItem value="sd">sd</SelectItem>
               <SelectItem value="ld">ld (360p)</SelectItem>
+              <SelectItem value="ao">ao (audio only)</SelectItem>
             </SelectContent>
           </Select>
           <label className="flex items-center gap-1.5 text-sm bg-secondary border border-border rounded-lg px-2.5 py-1.5 cursor-pointer">
@@ -229,22 +253,29 @@ export function Watchlist({ onJobsChanged }: Props) {
           </Button>
         </div>
 
-        {/* List */}
         <div className="space-y-1 text-sm">
           {watchData.list.length === 0 ? (
             <p className="text-muted-foreground text-xs">{t('emptyList')}</p>
           ) : (
             watchData.list.map((e) => (
-              <div key={e.username} className="flex items-center gap-2 bg-secondary rounded-lg px-2 py-1.5">
+              <div key={e.username} className="flex items-center gap-2 bg-secondary/70 border border-border/50 rounded-lg px-2.5 py-1.5 flex-wrap sm:flex-nowrap">
                 <Badge
                   variant={e.lastStatus === 'live' ? 'destructive' : 'secondary'}
-                  className={e.lastStatus === 'live' ? 'bg-red-600 text-white text-[10px]' : 'text-[10px]'}
+                  className={e.lastStatus === 'live' ? 'bg-primary text-primary-foreground text-[10px] gap-1 shrink-0' : 'text-[10px] gap-1 shrink-0'}
                 >
-                  {e.lastStatus === 'live' ? '● LIVE' : e.lastStatus === 'offline' ? 'OFFLINE' : '…'}
+                  {e.lastStatus === 'live' ? (
+                    <><Radio className="w-2.5 h-2.5" /> {t('liveBadge')}</>
+                  ) : e.lastStatus === 'offline' ? (
+                    <><CircleOff className="w-2.5 h-2.5" /> {t('offline')}</>
+                  ) : (
+                    <span>...</span>
+                  )}
                 </Badge>
-                <span className="text-sm font-medium">@{e.username}</span>
+                <span className="text-sm font-medium font-mono">@{e.username}</span>
                 {e.lastStatus === 'live' && e.lastViewerCount != null && (
-                  <span className="text-xs text-muted-foreground">👁 {e.lastViewerCount.toLocaleString()}</span>
+                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground tabular-nums">
+                    <Users className="w-3 h-3" /> {e.lastViewerCount.toLocaleString()}
+                  </span>
                 )}
                 {e.lastTitle && <span className="text-xs text-muted-foreground truncate">{e.lastTitle}</span>}
                 <span className="flex-1" />
@@ -260,9 +291,17 @@ export function Watchlist({ onJobsChanged }: Props) {
                 {e.lastChangedAt && (
                   <span className="text-xs text-muted-foreground">since {new Date(e.lastChangedAt).toLocaleTimeString()}</span>
                 )}
-                <Button variant="destructive" size="icon-xs" onClick={() => handleRemove(e.username)}>
-                  <X className="w-3 h-3" />
-                </Button>
+                <ConfirmButton
+                  onConfirm={() => handleRemove(e.username)}
+                  confirmLabel={t('confirm')}
+                  cancelLabel={t('cancel')}
+                  title={t('btnCancel')}
+                  variant="ghost"
+                  size="icon-xs"
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </ConfirmButton>
               </div>
             ))
           )}
@@ -270,7 +309,6 @@ export function Watchlist({ onJobsChanged }: Props) {
 
         <Separator className="my-4" />
 
-        {/* Recent events */}
         <div>
           <h3 className="text-xs font-semibold mb-2 text-muted-foreground uppercase tracking-wider">{t('recentEvents')}</h3>
           <div className="space-y-1 text-xs max-h-48 overflow-y-auto pr-1">
@@ -278,19 +316,23 @@ export function Watchlist({ onJobsChanged }: Props) {
               <p className="text-muted-foreground">{t('noneYet')}</p>
             ) : (
               [...events].reverse().map((e) => {
-                let color = 'text-foreground/70'
-                let icon = '•'
-                if (e.type === 'went_live') { color = 'text-red-400'; icon = '●' }
-                if (e.type === 'went_offline') { color = 'text-muted-foreground'; icon = '○' }
-                if (e.type === 'record_started') { color = 'text-emerald-400'; icon = '⏺' }
-                if (e.type === 'record_failed') { color = 'text-destructive'; icon = '✕' }
+                let color = 'text-foreground/75'
+                let EventIcon = Circle
+                if (e.type === 'went_live') { color = 'text-primary'; EventIcon = Radio }
+                if (e.type === 'went_offline') { color = 'text-muted-foreground'; EventIcon = CircleOff }
+                if (e.type === 'record_started') { color = 'text-emerald-400'; EventIcon = Circle }
+                if (e.type === 'record_failed') { color = 'text-destructive'; EventIcon = AlertCircle }
                 const detail =
-                  e.type === 'went_live' ? ` — ${e.title || ''} ${e.viewerCount ? `(👁 ${e.viewerCount})` : ''}` :
-                  e.type === 'record_started' ? ` — recording ${e.quality || ''} → ${e.file}` :
+                  e.type === 'went_live' ? ` — ${e.title || ''} ${e.viewerCount ? `(${e.viewerCount.toLocaleString()})` : ''}` :
+                  e.type === 'record_started' ? ` — ${e.quality || ''} (${e.file})` :
                   e.type === 'record_failed' ? ` — ${e.error}` : ''
                 return (
-                  <div key={e.id} className={color}>
-                    <span className="text-muted-foreground">{fmtTime(e.ts)}</span> {icon} <strong>@{e.username}</strong> <em className="not-italic">{e.type}</em>{detail}
+                  <div key={e.id} className={`flex items-center gap-1.5 py-0.5 ${color}`}>
+                    <span className="text-muted-foreground font-mono tabular-nums shrink-0">{fmtTime(e.ts)}</span>
+                    <EventIcon className="w-3 h-3 shrink-0" />
+                    <strong className="font-mono">@{e.username}</strong>
+                    <span className="opacity-80">{e.type}</span>
+                    {detail && <span className="truncate text-muted-foreground">{detail}</span>}
                   </div>
                 )
               })
@@ -304,8 +346,6 @@ export function Watchlist({ onJobsChanged }: Props) {
 
 function notify(title: string, body: string) {
   try {
-    // No icon — favicon was removed and providing a 404 path makes some
-    // browsers (Chrome) suppress the notification entirely.
     const n = new Notification(title, { body })
     setTimeout(() => n.close(), 8000)
   } catch { /* ignore */ }

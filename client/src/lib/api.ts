@@ -11,12 +11,24 @@ import type {
   LeaderboardData,
   GiftEconomyData,
   WordFrequencyData,
+  SettingsResponse,
+  AppSettings,
+  DiskStatus,
 } from './types'
+
+export const UNAUTHORIZED_EVENT = 'tlr:unauthorized'
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, init)
-  const data = await r.json()
-  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`)
+  if (r.status === 401 && !url.startsWith('/api/auth/')) {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+  }
+  const text = await r.text()
+  let data: Record<string, unknown> = {}
+  if (text) {
+    try { data = JSON.parse(text) as Record<string, unknown> } catch { data = { error: text } }
+  }
+  if (!r.ok) throw new Error((typeof data.error === 'string' && data.error) || `HTTP ${r.status}`)
   return data as T
 }
 
@@ -27,6 +39,16 @@ function post<T>(url: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
   })
 }
+
+// ── Auth ──
+export const getAuthStatus = () =>
+  json<{ authRequired: boolean; authenticated: boolean }>('/api/auth/status')
+
+export const loginWithToken = (token: string) =>
+  post<{ ok: boolean; authRequired: boolean }>('/api/auth/login', { token })
+
+export const logoutAuth = () =>
+  post<{ ok: boolean }>('/api/auth/logout')
 
 // ── Check / Stream ──
 export const checkStream = (username: string) =>
@@ -64,11 +86,31 @@ export const getHighlights = (recording: string) =>
 export const analyzeHighlights = (recording: string) =>
   post<{ ok: boolean }>('/api/highlights/analyze', { recording })
 
-export const cutHighlightClip = (recording: string, startSec: number, endSec: number) =>
+export const cutHighlightClip = (
+  recording: string,
+  startSec: number,
+  endSec: number,
+  opts?: { vertical?: 'none' | 'crop' | 'blur'; burnSubtitles?: boolean },
+) =>
   post<{ ok: boolean; clip: HighlightClip & { reused?: boolean } }>(
     '/api/highlights/cut',
-    { recording, startSec, endSec },
+    { recording, startSec, endSec, vertical: opts?.vertical, burnSubtitles: opts?.burnSubtitles },
   )
+
+export const extractRecordingAudio = (name: string, format: 'm4a' | 'mp3' = 'm4a') =>
+  post<{ ok: boolean; name: string; url: string; sizeBytes: number; reused: boolean }>(
+    `/api/recordings/${encodeURIComponent(name)}/audio`,
+    { format },
+  )
+
+// ── Settings & Storage ──
+export const getSettings = () => json<SettingsResponse>('/api/settings')
+
+export const saveSettings = (patch: Partial<AppSettings> & { proxyUrl?: string }) =>
+  post<{ ok: boolean; settings: AppSettings; disk: DiskStatus }>('/api/settings', patch)
+
+export const runStorageCleanup = () =>
+  post<{ ok: boolean; deleted: string[]; disk: DiskStatus }>('/api/storage/cleanup')
 
 export const deleteHighlightClip = (clipName: string) =>
   json<void>(`/api/highlights/clip/${encodeURIComponent(clipName)}`, { method: 'DELETE' })
@@ -152,6 +194,9 @@ export const stopChat = (username: string) =>
 
 export const getChatEvents = (username: string, sinceId: number) =>
   json<ChatPollResult>(`/api/chat/events?username=${encodeURIComponent(username)}&sinceId=${sinceId}`)
+
+export const getChatDashboard = <T>() =>
+  json<T>('/api/chat/dashboard')
 
 // ── Accounts ──
 export interface AccountInfo {

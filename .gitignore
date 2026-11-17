@@ -7,10 +7,15 @@ node_modules/
 !.env.example
 accounts.json
 accounts.json.tmp
+.accounts.key
+.accounts.key.tmp
+*.key
 
 # ── User data ──
 watchlist.json
 watchlist.json.tmp
+settings.json
+settings.json.tmp
 recordings/
 
 # ── Build output ──

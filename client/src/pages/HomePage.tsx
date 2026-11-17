@@ -1,47 +1,59 @@
 import { useState, useRef, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { SearchSection } from '@/components/SearchSection'
 import { StatusSection, StatusSkeleton } from '@/components/StatusSection'
 import { StreamPlayer, BlockedStreams } from '@/components/StreamPlayer'
 import { Watchlist } from '@/components/Watchlist'
-import { ActiveJobs, type ActiveJobsRef } from '@/components/ActiveJobs'
-import { SavedRecordings, type SavedRecordingsRef } from '@/components/SavedRecordings'
+import { ActiveJobs } from '@/components/ActiveJobs'
+import { SavedRecordings } from '@/components/SavedRecordings'
+import { SettingsPanel } from '@/components/SettingsPanel'
+import { useI18n } from '@/lib/i18n'
 import type { CheckResult } from '@/lib/types'
 import { toast } from 'sonner'
 
 export function HomePage() {
-  const [result, setResult] = useState<CheckResult | null>(null)
+  const { t } = useI18n()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialUsername = searchParams.get('u') || undefined
+
   const [loading, setLoading] = useState(false)
-  const jobsRef = useRef<ActiveJobsRef>(null)
-  const filesRef = useRef<SavedRecordingsRef>(null)
+  const [result, setResult] = useState<CheckResult | null>(null)
+  const jobsRef = useRef<{ refresh: () => void }>(null)
+  const filesRef = useRef<{ refresh: () => void }>(null)
 
   const handleLoading = useCallback(() => {
     setLoading(true)
   }, [])
 
-  const handleResult = useCallback((data: CheckResult) => {
-    setResult(data)
-    setLoading(false)
-  }, [])
+  const handleResult = useCallback(
+    (data: CheckResult) => {
+      setLoading(false)
+      setResult(data)
+      if (data.username && searchParams.get('u') !== data.username) {
+        setSearchParams({ u: data.username }, { replace: true })
+      }
+    },
+    [searchParams, setSearchParams],
+  )
 
   const handleError = useCallback((msg: string) => {
-    setResult(null)
     setLoading(false)
-    toast.error('Check failed', { description: msg })
+    toast.error(msg)
   }, [])
 
   const handleRecordStarted = useCallback(() => {
     jobsRef.current?.refresh()
-    setTimeout(() => filesRef.current?.refresh(), 800)
+    setTimeout(() => filesRef.current?.refresh(), 1000)
   }, [])
 
   const handleJobsChanged = useCallback(() => {
     jobsRef.current?.refresh()
-    filesRef.current?.refresh()
   }, [])
 
   return (
     <div className="space-y-5">
       <SearchSection
+        initialUsername={initialUsername}
         onLoading={handleLoading}
         onResult={handleResult}
         onError={handleError}
@@ -49,22 +61,29 @@ export function HomePage() {
 
       {loading && <StatusSkeleton />}
 
-      {result && !loading && <StatusSection data={result} />}
+      {result && !loading && (
+        <StatusSection key={`status-${result.username}`} data={result} />
+      )}
 
       {result && result.live && result.streamsAvailable && (
-        <StreamPlayer data={result} onRecordStarted={handleRecordStarted} />
+        <StreamPlayer
+          key={`player-${result.username}`}
+          data={result}
+          onRecordStarted={handleRecordStarted}
+        />
       )}
 
       {result && result.live && !result.streamsAvailable && (
-        <BlockedStreams data={result} />
+        <BlockedStreams key={`blocked-${result.username}`} data={result} />
       )}
 
       <Watchlist onJobsChanged={handleJobsChanged} />
       <ActiveJobs ref={jobsRef} />
       <SavedRecordings ref={filesRef} />
+      <SettingsPanel onCleanup={() => filesRef.current?.refresh()} />
 
-      <footer className="text-center text-xs text-muted-foreground pt-4 pb-6">
-        ไม่เป็นทางการ — ใช้ <code className="bg-secondary px-1 rounded">tiktok-live-connector</code> + <code className="bg-secondary px-1 rounded">ffmpeg</code> · กรุณาเคารพข้อกำหนดของ TikTok และเจ้าของไลฟ์
+      <footer className="text-center text-xs text-muted-foreground pt-3 pb-6 border-t border-border/50">
+        {t('footerText')}
       </footer>
     </div>
   )

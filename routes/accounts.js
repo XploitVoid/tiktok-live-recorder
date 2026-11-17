@@ -1,8 +1,15 @@
 // routes/accounts.js — API routes for multi-account management.
 const { Router } = require('express');
 const accounts = require('../lib/accounts');
-const { getStealthMode, setStealthMode } = require('../lib/room');
+const { getStealthMode, setStealthMode, invalidateApiCache } = require('../lib/room');
+const { invalidateLiveStreamsCache } = require('./watch');
+const { safeError, stripControlChars } = require('../lib/utils');
 const router = Router();
+
+function maskSession(sessionId) {
+  if (!sessionId) return '';
+  return sessionId.length > 4 ? `••••${sessionId.slice(-4)}` : '••••';
+}
 
 // List all saved accounts (masks sessionId for security)
 router.get('/api/accounts', (_req, res) => {
@@ -10,14 +17,14 @@ router.get('/api/accounts', (_req, res) => {
     id: a.id,
     label: a.label,
     hasSession: !!a.sessionId,
-    sessionPreview: a.sessionId ? a.sessionId.slice(0, 8) + '...' : '',
+    sessionPreview: maskSession(a.sessionId),
   }));
   const active = accounts.getActive();
   res.json({
     accounts: list,
     active: {
       id: active.id || null,
-      sessionPreview: active.sessionId ? active.sessionId.slice(0, 8) + '...' : '',
+      sessionPreview: maskSession(active.sessionId),
       hasSession: !!active.sessionId,
     },
     stealth: getStealthMode(),
@@ -36,7 +43,7 @@ router.post('/api/accounts', (req, res) => {
   if (ttTargetIdc !== undefined && (typeof ttTargetIdc !== 'string' || ttTargetIdc.length > 64 || !/^[A-Za-z0-9_-]*$/.test(ttTargetIdc))) {
     return res.status(400).json({ error: 'ttTargetIdc invalid' });
   }
-  const safeLabel = typeof label === 'string' ? label.slice(0, 64) : '';
+  const safeLabel = stripControlChars(label, 64);
   const account = accounts.add(safeLabel, sessionId, ttTargetIdc || '');
   res.json({ ok: true, id: account.id, label: account.label });
 });
@@ -48,6 +55,8 @@ router.delete('/api/accounts/:id', (req, res) => {
     return res.status(400).json({ error: 'invalid id' });
   }
   accounts.remove(id);
+  invalidateApiCache();
+  invalidateLiveStreamsCache();
   res.json({ ok: true });
 });
 
@@ -59,9 +68,11 @@ router.post('/api/accounts/switch', (req, res) => {
       return res.status(400).json({ error: 'invalid id' });
     }
     const result = accounts.switchTo(id || null);
+    invalidateApiCache();
+    invalidateLiveStreamsCache();
     res.json({ ok: true, hasSession: !!result.sessionId });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json({ error: safeError(e) });
   }
 });
 
@@ -69,6 +80,7 @@ router.post('/api/accounts/switch', (req, res) => {
 router.post('/api/accounts/stealth', (req, res) => {
   const { enabled } = req.body || {};
   setStealthMode(!!enabled);
+  invalidateLiveStreamsCache();
   console.log(`[accounts] stealth mode ${enabled ? 'ON' : 'OFF'}`);
   res.json({ ok: true, stealth: getStealthMode() });
 });

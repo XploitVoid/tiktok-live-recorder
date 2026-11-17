@@ -10,6 +10,21 @@ Under the hood, it uses the [`tiktok-live-connector`](https://github.com/zerodyt
 
 ---
 
+## Screenshots
+
+### Recorder & Live Preview
+![Recorder & Live Preview](docs/screenshots/home.png)
+
+### Watchlist, Recordings & Storage Settings
+![Watchlist & Storage Settings](docs/screenshots/settings.png)
+
+### Multi-View Grid & Operations Dashboard
+| Multi-View Grid | Operations Dashboard |
+|---|---|
+| ![Multi-View Grid](docs/screenshots/grid.png) | ![Operations Dashboard](docs/screenshots/dashboard.png) |
+
+---
+
 ## What it does
 
 ### The Web UI (`http://localhost:3000`)

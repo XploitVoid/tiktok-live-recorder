@@ -198,3 +198,95 @@ test('transcode args and 60fps quality validation', () => {
     assert.ok(args.includes('flv'));
   }
 });
+
+test('ChatSession passes roomId to connect() and falls back to anonymous + fresh presets + proxy failover on DEVICE_BLOCKED / auth errors', async () => {
+  const accounts = require('../lib/accounts');
+  const settings = require('../lib/settings');
+  const origGetActive = accounts.getActiveCredentials;
+  const origSettings = settings.getSettings();
+
+  try {
+    // 1. Authenticated WS fails with DEVICE_BLOCKED -> retries anonymous with clientPresets & passes roomId
+    accounts.getActiveCredentials = () => ({ sessionId: 'bad_ws_session_123456', ttTargetIdc: 'useast5' });
+    const s1 = new ChatSession('ws_fallback_user');
+    s1.roomId = '777888999';
+    const seen = [];
+    s1._createConnection = (opts) => {
+      const conn = new EventEmitter();
+      conn.disconnect = async () => {};
+      conn.connect = async (rid) => {
+        seen.push({
+          authenticateWs: !!opts.authenticateWs,
+          hasSession: !!opts.session,
+          hasPresets: !!opts.clientPresets,
+          roomId: rid,
+        });
+        if (seen.length === 1) {
+          throw new Error('Error connecting to WebSocket with message: DEVICE_BLOCKED');
+        }
+        return { roomId: rid };
+      };
+      return conn;
+    };
+
+    await s1.connect();
+    assert.equal(s1.state, 'connected');
+    assert.equal(seen.length, 2);
+    assert.deepEqual(seen[0], { authenticateWs: true, hasSession: true, hasPresets: false, roomId: '777888999' });
+    assert.deepEqual(seen[1], { authenticateWs: false, hasSession: false, hasPresets: true, roomId: '777888999' });
+    s1.disconnect();
+
+    // 2. Authenticated WS fails with AuthenticatedWebSocketConnectionError -> retries anonymous
+    const s2 = new ChatSession('ws_auth_err_user');
+    const seen2 = [];
+    s2._createConnection = (opts) => {
+      const conn = new EventEmitter();
+      conn.disconnect = async () => {};
+      conn.connect = async () => {
+        seen2.push({ authenticateWs: !!opts.authenticateWs });
+        if (seen2.length === 1) {
+          const err = new Error('authenticate_websocket is true, but no whitelist host defined.');
+          err.name = 'AuthenticatedWebSocketConnectionError';
+          throw err;
+        }
+        return { roomId: '111' };
+      };
+      return conn;
+    };
+    await s2.connect();
+    assert.equal(s2.state, 'connected');
+    assert.deepEqual(seen2, [{ authenticateWs: true }, { authenticateWs: false }]);
+    s2.disconnect();
+
+    // 3. Anonymous WS fails with DEVICE_BLOCKED -> rotates proxy failover and retries with fresh presets
+    accounts.getActiveCredentials = () => ({ sessionId: '', ttTargetIdc: '' });
+    settings.updateSettings({ proxyUrl: 'http://p1.example:8080, http://p2.example:8080' });
+    const proxyConfig = require('../lib/proxy-config');
+    const firstProxy = proxyConfig.getActiveProxyUrl();
+    const s3 = new ChatSession('ws_anon_blocked_user');
+    let anonAttempts = 0;
+    let proxyAfterRotate = null;
+    s3._createConnection = (opts) => {
+      const conn = new EventEmitter();
+      conn.disconnect = async () => {};
+      conn.connect = async () => {
+        anonAttempts++;
+        if (anonAttempts === 1) {
+          throw new Error('Error connecting to WebSocket with message: DEVICE_BLOCKED');
+        }
+        proxyAfterRotate = proxyConfig.getActiveProxyUrl();
+        assert.ok(opts.clientPresets?.device?.user_agent);
+        return { roomId: '222' };
+      };
+      return conn;
+    };
+    await s3.connect();
+    assert.equal(s3.state, 'connected');
+    assert.equal(anonAttempts, 2);
+    assert.notEqual(proxyAfterRotate, firstProxy);
+    s3.disconnect();
+  } finally {
+    accounts.getActiveCredentials = origGetActive;
+    settings.updateSettings({ proxyUrl: origSettings.proxyUrl || '' });
+  }
+});

@@ -108,7 +108,7 @@ export function Watchlist({ onJobsChanged }: Props) {
     setAdding(true)
     try {
       const quality = addQuality && addQuality !== 'auto' ? addQuality : null
-      await api.addWatch(u, quality, addAutoRecord)
+      await api.addWatch(u, quality, addAutoRecord, { audioOnly: quality === 'ao' })
       toast.success('Added to watchlist', { description: '@' + u })
       setAddUsername('')
       void refreshWatch()
@@ -133,6 +133,16 @@ export function Watchlist({ onJobsChanged }: Props) {
     try {
       await api.patchWatch(username, { autoRecord })
       toast.info(autoRecord ? 'Auto-record on' : 'Auto-record off', { description: '@' + username })
+      void refreshWatch()
+    } catch (e: unknown) {
+      toast.error('Update failed', { description: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  const handleToggleAudioOnly = async (username: string, audioOnly: boolean) => {
+    try {
+      await api.patchWatch(username, { audioOnly })
+      toast.info(audioOnly ? 'Audio-only on' : 'Audio-only off', { description: '@' + username })
       void refreshWatch()
     } catch (e: unknown) {
       toast.error('Update failed', { description: e instanceof Error ? e.message : String(e) })
@@ -286,6 +296,14 @@ export function Watchlist({ onJobsChanged }: Props) {
                     className="w-3.5 h-3.5"
                   />
                   {t('autoRec')}
+                </label>
+                <label className="flex items-center gap-1 text-xs cursor-pointer text-muted-foreground" title={t('audioOnlyForce')}>
+                  <Checkbox
+                    checked={!!e.audioOnly || e.quality === 'ao'}
+                    onCheckedChange={(v) => handleToggleAudioOnly(e.username, !!v)}
+                    className="w-3.5 h-3.5"
+                  />
+                  {t('audioOnly')}
                 </label>
                 <span className="text-xs text-muted-foreground">{e.quality || 'auto'}</span>
                 {e.lastChangedAt && (

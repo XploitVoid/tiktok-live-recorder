@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react'
-import { FolderOpen, RefreshCw, Trash2, Download, Play, MessageSquare, Sparkles, Scissors, Search, Music } from 'lucide-react'
+import { FolderOpen, RefreshCw, Trash2, Download, Play, MessageSquare, Sparkles, Scissors, Search, Music, FileArchive, Loader2 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
 import { fmtBytes, fmtTimeSec } from '@/lib/format'
-import { getRecordings, deleteRecording, extractRecordingAudio } from '@/lib/api'
+import { getRecordings, deleteRecording, extractRecordingAudio, compressRecording } from '@/lib/api'
 import { useEventStream } from '@/lib/useEventStream'
 import type { RecordingFile } from '@/lib/types'
 import { toast } from 'sonner'
@@ -25,6 +25,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
   const [filterMode, setFilterMode] = useState<'all' | 'chat' | 'highlights'>('all')
   const [sortMode, setSortMode] = useState<'newest' | 'largest' | 'longest'>('newest')
   const [extracting, setExtracting] = useState<string | null>(null)
+  const [compressing, setCompressing] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -75,6 +76,23 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
       toast.error('Audio extract failed', { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setExtracting(null)
+    }
+  }
+
+  const handleCompress = async (name: string) => {
+    setCompressing(name)
+    toast.info(t('savedCompressing'), { description: name })
+    try {
+      const res = await compressRecording(name, 'balanced')
+      const pct = res.origBytes > 0 ? Math.round((1 - res.sizeBytes / res.origBytes) * 100) : 0
+      toast.success(t('savedCompressed'), {
+        description: `${res.name} (${fmtBytes(res.sizeBytes)}${pct > 0 ? `, -${pct}%` : ''})`,
+      })
+      void refresh()
+    } catch (e: unknown) {
+      toast.error('Compress failed', { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setCompressing(null)
     }
   }
 
@@ -205,6 +223,21 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                 >
                   <Music className="w-3 h-3 mr-1" /> M4A
                 </Button>
+                {!/_(balanced|compact)\.mp4$/i.test(f.name) && (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    disabled={compressing === f.name}
+                    onClick={() => handleCompress(f.name)}
+                    title={t('savedCompress')}
+                    className="h-6 px-2 text-xs"
+                  >
+                    {compressing === f.name
+                      ? <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                      : <FileArchive className="w-3 h-3 mr-1" />}
+                    720p
+                  </Button>
+                )}
                 <a
                   href={`/files/${encodeURIComponent(f.name)}`}
                   download

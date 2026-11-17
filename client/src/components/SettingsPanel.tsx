@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
-import { HardDrive, Settings2, Trash2, ChevronDown, ChevronUp, Save } from 'lucide-react'
+import { HardDrive, Settings2, Trash2, ChevronDown, ChevronUp, Save, BellRing } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
-import { getSettings, saveSettings, runStorageCleanup } from '@/lib/api'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { getSettings, saveSettings, runStorageCleanup, testWebhookSettings } from '@/lib/api'
 import { fmtBytes } from '@/lib/format'
 import { useI18n } from '@/lib/i18n'
 import type { AppSettings, DiskStatus } from '@/lib/types'
@@ -21,8 +22,14 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
   const [retentionDays, setRetentionDays] = useState('0')
   const [segmentMinutes, setSegmentMinutes] = useState('0')
   const [autoRetryRecord, setAutoRetryRecord] = useState(true)
+  const [stalledTimeoutSec, setStalledTimeoutSec] = useState('25')
+  const [defaultAudioBitrate, setDefaultAudioBitrate] = useState('copy')
   const [proxyUrl, setProxyUrl] = useState('')
+  const [discordWebhookUrl, setDiscordWebhookUrl] = useState('')
+  const [telegramBotToken, setTelegramBotToken] = useState('')
+  const [telegramChatId, setTelegramChatId] = useState('')
   const [saving, setSaving] = useState(false)
+  const [testingWebhook, setTestingWebhook] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -36,6 +43,9 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
         setRetentionDays(String(res.settings.retentionDays))
         setSegmentMinutes(String(res.settings.segmentMinutes))
         setAutoRetryRecord(res.settings.autoRetryRecord)
+        setStalledTimeoutSec(String(res.settings.stalledTimeoutSec ?? 25))
+        setDefaultAudioBitrate(res.settings.defaultAudioBitrate || 'copy')
+        setTelegramChatId(res.settings.telegramChatId || '')
       })
       .catch(() => { /* ignore */ })
     return () => { active = false }
@@ -50,17 +60,55 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
         retentionDays: Number(retentionDays),
         segmentMinutes: Number(segmentMinutes),
         autoRetryRecord,
+        stalledTimeoutSec: Number(stalledTimeoutSec),
+        defaultAudioBitrate: defaultAudioBitrate === 'copy' ? null : defaultAudioBitrate,
+        telegramChatId: telegramChatId.trim(),
       }
       if (proxyUrl.trim()) patch.proxyUrl = proxyUrl.trim()
+      if (discordWebhookUrl.trim()) patch.discordWebhookUrl = discordWebhookUrl.trim()
+      if (telegramBotToken.trim()) patch.telegramBotToken = telegramBotToken.trim()
       const res = await saveSettings(patch)
       setSettings(res.settings)
       setDisk(res.disk)
       setProxyUrl('')
+      setDiscordWebhookUrl('')
+      setTelegramBotToken('')
       toast.success(t('settingsSaved'))
     } catch (e: unknown) {
       toast.error(t('settingsSaveFail'), { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleClearWebhook = async (which: 'discord' | 'telegram') => {
+    setSaving(true)
+    try {
+      const patch = which === 'discord'
+        ? { discordWebhookUrl: '' }
+        : { telegramBotToken: '', telegramChatId: '' }
+      const res = await saveSettings(patch)
+      setSettings(res.settings)
+      setDisk(res.disk)
+      if (which === 'discord') setDiscordWebhookUrl('')
+      else { setTelegramBotToken(''); setTelegramChatId('') }
+      toast.info(t('settingsSaved'))
+    } catch (e: unknown) {
+      toast.error(t('settingsSaveFail'), { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleTestWebhook = async () => {
+    setTestingWebhook(true)
+    try {
+      await testWebhookSettings()
+      toast.success(t('settingsWebhookSent'))
+    } catch (e: unknown) {
+      toast.error(t('settingsWebhookFail'), { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setTestingWebhook(false)
     }
   }
 
@@ -116,6 +164,11 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
                 Proxy ON
               </Badge>
             )}
+            {(settings?.hasDiscordWebhook || settings?.hasTelegram) && (
+              <Badge variant="secondary" className="text-[10px] border border-border">
+                Alerts ON
+              </Badge>
+            )}
           </div>
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground group-hover:text-foreground">
             <Settings2 className="w-3.5 h-3.5" />
@@ -144,11 +197,72 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3 pt-0.5">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <Checkbox checked={autoRetryRecord} onCheckedChange={(v) => setAutoRetryRecord(!!v)} className="w-3.5 h-3.5" />
-                <span>{t('settingsRetry')}</span>
-              </label>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-muted-foreground block mb-1">{t('settingsStalledSec')}</label>
+                <Input type="number" min={0} max={600} step={5} value={stalledTimeoutSec} onChange={(e) => setStalledTimeoutSec(e.target.value)} className="h-8 text-xs tabular-nums" />
+              </div>
+              <div>
+                <label className="text-muted-foreground block mb-1">{t('settingsDefaultAudioBitrate')}</label>
+                <Select value={defaultAudioBitrate} onValueChange={(v) => v && setDefaultAudioBitrate(v)}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="copy">{t('audioBitrateCopy')}</SelectItem>
+                    <SelectItem value="64k">64 kbps</SelectItem>
+                    <SelectItem value="96k">96 kbps</SelectItem>
+                    <SelectItem value="128k">128 kbps</SelectItem>
+                    <SelectItem value="192k">192 kbps</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-end pb-1">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox checked={autoRetryRecord} onCheckedChange={(v) => setAutoRetryRecord(!!v)} className="w-3.5 h-3.5" />
+                  <span>{t('settingsRetry')}</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-2 pt-0.5">
+              <div className="flex items-center gap-1.5">
+                <Input
+                  type="password"
+                  value={discordWebhookUrl}
+                  onChange={(e) => setDiscordWebhookUrl(e.target.value)}
+                  placeholder={settings?.hasDiscordWebhook ? `Discord: ${settings.discordWebhookPreview}` : 'Discord Webhook URL (https://discord.com/api/webhooks/...)'}
+                  autoComplete="off"
+                  className="h-8 text-xs flex-1 font-mono"
+                />
+                {settings?.hasDiscordWebhook && (
+                  <Button size="xs" variant="outline" onClick={() => handleClearWebhook('discord')} disabled={saving} className="h-8">
+                    {t('btnCancel')}
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Input
+                  type="password"
+                  value={telegramBotToken}
+                  onChange={(e) => setTelegramBotToken(e.target.value)}
+                  placeholder={settings?.hasTelegram ? `Telegram: ${settings.telegramBotPreview}` : 'Telegram Bot Token'}
+                  autoComplete="off"
+                  className="h-8 text-xs flex-1 font-mono"
+                />
+                <Input
+                  value={telegramChatId}
+                  onChange={(e) => setTelegramChatId(e.target.value)}
+                  placeholder="Chat ID"
+                  autoComplete="off"
+                  className="h-8 text-xs w-28 font-mono"
+                />
+                {settings?.hasTelegram && (
+                  <Button size="xs" variant="outline" onClick={() => handleClearWebhook('telegram')} disabled={saving} className="h-8">
+                    {t('btnCancel')}
+                  </Button>
+                )}
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2 pt-0.5">
@@ -163,6 +277,11 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
               {settings?.hasProxy && (
                 <Button size="xs" variant="outline" onClick={handleClearProxy} disabled={saving} className="h-8">
                   {t('btnCancel')} Proxy
+                </Button>
+              )}
+              {(settings?.hasDiscordWebhook || settings?.hasTelegram) && (
+                <Button size="xs" variant="outline" onClick={handleTestWebhook} disabled={testingWebhook} className="h-8">
+                  <BellRing className="w-3 h-3 mr-1" /> {t('settingsTestWebhook')}
                 </Button>
               )}
               <Button size="xs" variant="outline" onClick={handleCleanup} className="h-8">

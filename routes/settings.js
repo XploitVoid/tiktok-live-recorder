@@ -2,6 +2,7 @@
 
 const { Router } = require('express');
 const { getPublicSettings, updateSettings } = require('../lib/settings');
+const { testNotifications } = require('../lib/notifications');
 const { getDiskStatus, enforceRetention } = require('../lib/storage');
 const { invalidateApiCache } = require('../lib/room');
 const { activeFilePaths } = require('../lib/recorder');
@@ -30,6 +31,17 @@ router.post('/api/settings', (req, res) => {
     res.json({ ok: true, settings, disk: getDiskStatus() });
   } catch (e) {
     res.status(400).json({ error: safeError(e) });
+  }
+});
+
+router.post('/api/settings/test-webhook', async (_req, res) => {
+  try {
+    const results = await testNotifications();
+    const anyFail = Object.values(results).some((r) => !r.ok);
+    res.status(anyFail ? 502 : 200).json({ ok: !anyFail, results });
+  } catch (e) {
+    const status = e.code === 'NOT_CONFIGURED' ? 400 : 500;
+    res.status(status).json({ error: safeError(e) });
   }
 });
 

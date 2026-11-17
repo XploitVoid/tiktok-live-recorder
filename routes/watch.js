@@ -9,7 +9,7 @@ const {
   hasStreamUrls,
 } = require('../lib/room');
 const watcher = require('../lib/watcher');
-const { safeError, sanitizeQuality } = require('../lib/utils');
+const { safeError, sanitizeQuality, sanitizeAudioBitrate } = require('../lib/utils');
 
 const router = Router();
 
@@ -23,6 +23,8 @@ router.post('/api/watch', (req, res) => {
   const result = watcher.addToWatchlist(username, {
     autoRecord: !!req.body?.autoRecord,
     quality: sanitizeQuality(req.body?.quality),
+    audioOnly: !!req.body?.audioOnly,
+    audioBitrate: sanitizeAudioBitrate(req.body?.audioBitrate, null),
   });
   if (result.error) return res.status(result.status).json({ error: result.error });
   res.json(result);
@@ -33,6 +35,8 @@ router.patch('/api/watch/:username', (req, res) => {
   const result = watcher.updateWatchEntry(username, {
     autoRecord: typeof req.body?.autoRecord === 'boolean' ? req.body.autoRecord : undefined,
     quality: req.body?.quality !== undefined ? sanitizeQuality(req.body.quality) : undefined,
+    audioOnly: typeof req.body?.audioOnly === 'boolean' ? req.body.audioOnly : undefined,
+    audioBitrate: req.body?.audioBitrate !== undefined ? sanitizeAudioBitrate(req.body.audioBitrate, null) : undefined,
   });
   if (!result) return res.status(404).json({ error: 'not in watchlist' });
   res.json(result);

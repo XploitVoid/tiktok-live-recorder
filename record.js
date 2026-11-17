@@ -16,7 +16,7 @@ const {
   extractStreamUrls,
   pickPreferredStream,
 } = require('./lib/room');
-const { resolveFfmpeg } = require('./lib/ffmpeg');
+const { resolveFfmpeg, buildRecordArgs } = require('./lib/ffmpeg');
 const { isValidStreamUrl } = require('./lib/utils');
 const { getFfmpegProxyArgs } = require('./lib/proxy-config');
 
@@ -62,22 +62,7 @@ async function main() {
   console.log(`  ffmpeg: ${ffmpegBin}`);
   console.log(`  Press Ctrl+C to stop.\n`);
 
-  const args = [
-    '-hide_banner',
-    '-loglevel', 'warning',
-    '-stats',
-    '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
-    '-headers', 'Referer: https://www.tiktok.com/\r\n',
-    ...getFfmpegProxyArgs(),
-    '-fflags', '+genpts',
-    '-i', pick.url,
-    '-c', 'copy',
-    ...(pick.quality === 'ao' ? ['-vn'] : ['-bsf:a', 'aac_adtstoasc']),
-    // Fragmented MP4 so the file is playable even if killed mid-recording.
-    '-movflags', '+empty_moov+default_base_moof+frag_keyframe',
-    '-frag_duration', '2000000',
-    outFile,
-  ];
+  const args = buildRecordArgs(pick, outFile, getFfmpegProxyArgs());
 
   const ff = spawn(ffmpegBin, args, { stdio: ['pipe', 'inherit', 'inherit'] });
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import { MessageSquare, Play, AlertTriangle, ArrowLeft } from 'lucide-react'
+import { MessageSquare, Play, AlertTriangle, ArrowLeft, Headphones, Video, Loader2 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -14,10 +14,11 @@ import { BookmarksPanel } from '@/components/BookmarksPanel'
 import { ChatEventRow } from '@/components/ChatEventRow'
 import { VideoPlayerBox } from '@/components/VideoPlayerBox'
 import { useI18n } from '@/lib/i18n'
-import { getReplayData } from '@/lib/api'
+import { getReplayData, extractRecordingAudio } from '@/lib/api'
 import { fmtTimeSec } from '@/lib/format'
 import type { ChatEvent } from '@/lib/types'
 import { getKeywords } from '@/lib/chatHighlight'
+import { toast } from 'sonner'
 
 type ReplayEvent = ChatEvent & { t?: number }
 
@@ -35,9 +36,14 @@ export function ReplayPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [durationSec, setDurationSec] = useState<number | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
+  const [creatorUsername, setCreatorUsername] = useState<string | null>(null)
+  const [audioMode, setAudioMode] = useState(false)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [loadingAudio, setLoadingAudio] = useState(false)
 
   const [keywords] = useState(() => getKeywords())
   const videoRef = useRef<HTMLVideoElement>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
   const feedRef = useRef<HTMLDivElement>(null)
   const videoCardRef = useRef<HTMLDivElement>(null)
   const [chatHeight, setChatHeight] = useState<number | null>(null)
@@ -89,6 +95,7 @@ export function ReplayPage() {
       try {
         const data = await getReplayData(file)
         setLoadError(null)
+        setCreatorUsername(data.username || null)
         setInfo({
           start: data.startMs ? new Date(data.startMs).toLocaleString() : '',
           events: data.eventsExists ? `${data.eventCount} events` : 'No chat sidecar',
@@ -113,37 +120,95 @@ export function ReplayPage() {
   }, [shown, autoScroll])
 
   useEffect(() => {
-    const video = videoRef.current
-    if (!video) return
+    const media = (audioMode ? audioRef.current : videoRef.current) as HTMLMediaElement | null
+    if (!media) return
     const handler = () => {
-      syncToTime(video.currentTime)
-      setCurrentTime(video.currentTime)
+      syncToTime(media.currentTime)
+      setCurrentTime(media.currentTime)
     }
     const meta = () => {
-      if (Number.isFinite(video.duration) && video.duration > 0) {
-        setDurationSec(video.duration)
+      if (Number.isFinite(media.duration) && media.duration > 0) {
+        setDurationSec(media.duration)
       }
     }
-    video.addEventListener('timeupdate', handler)
-    video.addEventListener('seeked', handler)
-    video.addEventListener('seeking', handler)
-    video.addEventListener('loadedmetadata', meta)
-    video.addEventListener('durationchange', meta)
+    media.addEventListener('timeupdate', handler)
+    media.addEventListener('seeked', handler)
+    media.addEventListener('seeking', handler)
+    media.addEventListener('loadedmetadata', meta)
+    media.addEventListener('durationchange', meta)
     return () => {
-      video.removeEventListener('timeupdate', handler)
-      video.removeEventListener('seeked', handler)
-      video.removeEventListener('seeking', handler)
-      video.removeEventListener('loadedmetadata', meta)
-      video.removeEventListener('durationchange', meta)
+      media.removeEventListener('timeupdate', handler)
+      media.removeEventListener('seeked', handler)
+      media.removeEventListener('seeking', handler)
+      media.removeEventListener('loadedmetadata', meta)
+      media.removeEventListener('durationchange', meta)
     }
-  }, [syncToTime])
+  }, [syncToTime, audioMode, audioUrl])
+
+  // Register MediaSession metadata & lock-screen playback controls for background listening
+  useEffect(() => {
+    if (!file || typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
+    const activeMedia = () => (audioMode ? audioRef.current : videoRef.current) as HTMLMediaElement | null
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: file,
+        artist: creatorUsername ? `@${creatorUsername}` : 'TikTok LIVE Recorder',
+      })
+      navigator.mediaSession.setActionHandler('play', () => { activeMedia()?.play().catch(() => {}) })
+      navigator.mediaSession.setActionHandler('pause', () => { activeMedia()?.pause() })
+      navigator.mediaSession.setActionHandler('seekbackward', (d) => {
+        const m = activeMedia()
+        if (m) m.currentTime = Math.max(0, m.currentTime - (d.seekOffset || 15))
+      })
+      navigator.mediaSession.setActionHandler('seekforward', (d) => {
+        const m = activeMedia()
+        if (m) m.currentTime = Math.min(m.duration || Infinity, m.currentTime + (d.seekOffset || 15))
+      })
+      navigator.mediaSession.setActionHandler('seekto', (d) => {
+        const m = activeMedia()
+        if (m && typeof d.seekTime === 'number') m.currentTime = Math.max(0, d.seekTime)
+      })
+    } catch { /* ignore unsupported MediaSession actions */ }
+  }, [file, creatorUsername, audioMode, audioUrl])
+
+  const toggleAudioMode = async () => {
+    if (audioMode) {
+      const resumeAt = audioRef.current?.currentTime || 0
+      audioRef.current?.pause()
+      setAudioMode(false)
+      requestAnimationFrame(() => {
+        if (videoRef.current && resumeAt > 0) videoRef.current.currentTime = resumeAt
+      })
+      return
+    }
+    if (!file) return
+    const resumeAt = videoRef.current?.currentTime || 0
+    videoRef.current?.pause()
+    if (!audioUrl) {
+      setLoadingAudio(true)
+      try {
+        const res = await extractRecordingAudio(file, 'm4a')
+        setAudioUrl(res.url)
+      } catch (e: unknown) {
+        toast.error(t('savedExtractFailed'), { description: e instanceof Error ? e.message : String(e) })
+        setLoadingAudio(false)
+        return
+      } finally {
+        setLoadingAudio(false)
+      }
+    }
+    setAudioMode(true)
+    requestAnimationFrame(() => {
+      if (audioRef.current && resumeAt > 0) audioRef.current.currentTime = resumeAt
+    })
+  }
 
   const jumpTo = useCallback((sec: number) => {
-    const video = videoRef.current
-    if (!video) return
-    video.currentTime = Math.max(0, sec)
-    video.play().catch(() => {})
-  }, [])
+    const media = (audioMode ? audioRef.current : videoRef.current) as HTMLMediaElement | null
+    if (!media) return
+    media.currentTime = Math.max(0, sec)
+    media.play().catch(() => {})
+  }, [audioMode])
 
   // Track the video card's actual rendered height so the chat card can match
   // it on desktop (md and above). On mobile we let chat use its natural
@@ -221,16 +286,45 @@ export function ReplayPage() {
   return (
     <div className="max-w-6xl mx-auto p-4 md:p-6 space-y-4">
       <Header />
-      <p className="text-xs text-muted-foreground truncate">{file}</p>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-xs text-muted-foreground truncate">{file}</p>
+        <Button
+          variant={audioMode ? 'default' : 'outline'}
+          size="xs"
+          onClick={toggleAudioMode}
+          disabled={loadingAudio}
+          className="cursor-pointer gap-1.5"
+        >
+          {loadingAudio ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : audioMode ? (
+            <Video className="w-3.5 h-3.5" />
+          ) : (
+            <Headphones className="w-3.5 h-3.5" />
+          )}
+          <span>{audioMode ? t('replayModeVideo') : t('replayModeAudio')}</span>
+        </Button>
+      </div>
 
       <div className="grid md:grid-cols-3 gap-4 md:items-stretch">
-        {/* Video */}
+        {/* Video or Background Audio */}
         <Card ref={videoCardRef} className="md:col-span-2">
           <CardContent className="pt-4">
-            <VideoPlayerBox
-              videoRef={videoRef}
-              src={`/files/${encodeURIComponent(file)}`}
-            />
+            {audioMode && audioUrl ? (
+              <div className="rounded-lg border border-border bg-secondary/50 p-4 space-y-3">
+                <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                  <Headphones className="w-4 h-4 text-primary" />
+                  <span className="truncate">{creatorUsername ? `@${creatorUsername}` : file}</span>
+                </div>
+                <audio ref={audioRef} controls src={audioUrl} className="w-full" />
+                <p className="text-xs text-muted-foreground">{t('replayAudioHint')}</p>
+              </div>
+            ) : (
+              <VideoPlayerBox
+                videoRef={videoRef}
+                src={`/files/${encodeURIComponent(file)}`}
+              />
+            )}
             <div className="text-xs text-muted-foreground mt-2 px-1 flex flex-wrap gap-x-4 gap-y-1">
               <span>{info.start}</span>
               <span>{info.events}</span>

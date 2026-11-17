@@ -55,8 +55,17 @@ export const checkStream = (username: string) =>
   json<CheckResult>(`/api/stream?u=${encodeURIComponent(username)}`)
 
 // ── Record ──
-export const startRecord = (username: string, quality?: string) =>
-  post<{ file: string; reused?: boolean }>('/api/record/start', { username, quality })
+export const startRecord = (
+  username: string,
+  quality?: string,
+  opts?: { audioOnly?: boolean; audioBitrate?: string | null },
+) =>
+  post<{ file: string; reused?: boolean }>('/api/record/start', {
+    username,
+    quality,
+    audioOnly: opts?.audioOnly,
+    audioBitrate: opts?.audioBitrate,
+  })
 
 export const stopRecord = (id: number) =>
   post<{
@@ -97,17 +106,28 @@ export const cutHighlightClip = (
     { recording, startSec, endSec, vertical: opts?.vertical, burnSubtitles: opts?.burnSubtitles },
   )
 
-export const extractRecordingAudio = (name: string, format: 'm4a' | 'mp3' = 'm4a') =>
-  post<{ ok: boolean; name: string; url: string; sizeBytes: number; reused: boolean }>(
+export const extractRecordingAudio = (name: string, format: 'm4a' | 'mp3' = 'm4a', bitrate?: string | null) =>
+  post<{ ok: boolean; name: string; url: string; sizeBytes: number; bitrate?: string; reused: boolean }>(
     `/api/recordings/${encodeURIComponent(name)}/audio`,
-    { format },
+    { format, bitrate: bitrate || undefined },
+  )
+
+export const compressRecording = (name: string, preset: 'balanced' | 'compact' = 'balanced') =>
+  post<{ ok: boolean; name: string; sizeBytes: number; origBytes: number; preset: string; reused: boolean }>(
+    `/api/recordings/${encodeURIComponent(name)}/compress`,
+    { preset },
   )
 
 // ── Settings & Storage ──
 export const getSettings = () => json<SettingsResponse>('/api/settings')
 
-export const saveSettings = (patch: Partial<AppSettings> & { proxyUrl?: string }) =>
+export const saveSettings = (
+  patch: Partial<AppSettings> & { proxyUrl?: string; discordWebhookUrl?: string; telegramBotToken?: string },
+) =>
   post<{ ok: boolean; settings: AppSettings; disk: DiskStatus }>('/api/settings', patch)
+
+export const testWebhookSettings = () =>
+  post<{ ok: boolean; results: Record<string, { ok: boolean; error?: string }> }>('/api/settings/test-webhook')
 
 export const runStorageCleanup = () =>
   post<{ ok: boolean; deleted: string[]; disk: DiskStatus }>('/api/storage/cleanup')
@@ -161,13 +181,27 @@ export const getRecordingTags = (recording: string) =>
 // ── Watchlist ──
 export const getWatch = () => json<WatchData>('/api/watch')
 
-export const addWatch = (username: string, quality?: string | null, autoRecord?: boolean) =>
-  post<WatchData>('/api/watch', { username, quality, autoRecord })
+export const addWatch = (
+  username: string,
+  quality?: string | null,
+  autoRecord?: boolean,
+  opts?: { audioOnly?: boolean; audioBitrate?: string | null },
+) =>
+  post<WatchData>('/api/watch', {
+    username,
+    quality,
+    autoRecord,
+    audioOnly: opts?.audioOnly,
+    audioBitrate: opts?.audioBitrate,
+  })
 
 export const removeWatch = (username: string) =>
   json<void>(`/api/watch/${encodeURIComponent(username)}`, { method: 'DELETE' })
 
-export const patchWatch = (username: string, patch: { autoRecord?: boolean }) =>
+export const patchWatch = (
+  username: string,
+  patch: { autoRecord?: boolean; audioOnly?: boolean; audioBitrate?: string | null },
+) =>
   json<void>(`/api/watch/${encodeURIComponent(username)}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },

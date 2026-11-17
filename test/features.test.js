@@ -257,3 +257,177 @@ test('ChatSession UI stop does not kill active recorder writer and releaseRecord
   releaseRecorderSession('nonexistent_user', null, null);
   assert.equal(getSession('nonexistent_user'), undefined);
 });
+
+test('buildRecordArgs handles H.264, HEVC, audio-only, and prevents mid-stream PK resolution corruption', () => {
+  const os = require('node:os');
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+
+  const h264Args = ffmpeg.buildRecordArgs({ url: 'https://example.com/live.flv', quality: 'ld' }, 'out.mp4', ['-http_proxy', 'http://p:1']);
+  assert.ok(h264Args.includes('+genpts+discardcorrupt'));
+  assert.ok(h264Args.includes('h264_mp4toannexb'));
+  assert.ok(h264Args.includes('aac_adtstoasc'));
+  assert.ok(h264Args.includes('-http_proxy'));
+
+  const hevcArgs = ffmpeg.buildRecordArgs({ url: 'https://example.com/live.flv', quality: 'hevc:uhd' }, 'out.mp4');
+  assert.ok(hevcArgs.includes('hevc_mp4toannexb'));
+  assert.ok(hevcArgs.includes('aac_adtstoasc'));
+
+  const aoArgs = ffmpeg.buildRecordArgs({ url: 'https://example.com/live.flv', quality: 'ao' }, 'out.mp4');
+  assert.ok(aoArgs.includes('-vn'));
+  assert.equal(aoArgs.includes('h264_mp4toannexb'), false);
+
+  // Integration check: FLV switching from 360x640 -> 720x640 mid-stream (simulating PK battle at 360p)
+  const ffBin = ffmpeg.resolveFfmpeg();
+  const fpBin = ffmpeg.resolveFfprobe();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pk-res-test-'));
+  try {
+    const aFlv = path.join(dir, 'a.flv');
+    const bFlv = path.join(dir, 'b.flv');
+    const abFlv = path.join(dir, 'ab.flv');
+    const outMp4 = path.join(dir, 'out.mp4');
+
+    spawnSync(ffBin, ['-y', '-f', 'lavfi', '-i', 'testsrc=size=360x640:rate=15', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100', '-t', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', aFlv]);
+    spawnSync(ffBin, ['-y', '-f', 'lavfi', '-i', 'testsrc=size=720x640:rate=15', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100', '-t', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', bFlv]);
+
+    const a = fs.readFileSync(aFlv);
+    const b = fs.readFileSync(bFlv);
+    let pos = 13;
+    const bTags = [];
+    while (pos + 11 <= b.length) {
+      const dataSize = (b[pos + 1] << 16) | (b[pos + 2] << 8) | b[pos + 3];
+      const ts = ((b[pos + 7] << 24) | (b[pos + 4] << 16) | (b[pos + 5] << 8) | b[pos + 6]) >>> 0;
+      const newTs = ts + 1050;
+      const tagLen = 11 + dataSize + 4;
+      if (pos + tagLen > b.length) break;
+      const tag = Buffer.from(b.subarray(pos, pos + tagLen));
+      tag[4] = (newTs >> 16) & 0xff;
+      tag[5] = (newTs >> 8) & 0xff;
+      tag[6] = newTs & 0xff;
+      tag[7] = (newTs >> 24) & 0xff;
+      bTags.push(tag);
+      pos += tagLen;
+    }
+    fs.writeFileSync(abFlv, Buffer.concat([a, ...bTags]));
+
+    const recArgs = ffmpeg.buildRecordArgs({ url: abFlv, quality: 'ld' }, outMp4)
+      .filter((arg, i, arr) => arg !== '-user_agent' && arr[i - 1] !== '-user_agent' && arg !== '-headers' && arr[i - 1] !== '-headers');
+    const recRes = spawnSync(ffBin, ['-y', ...recArgs], { encoding: 'utf8' });
+    assert.equal(recRes.status, 0);
+
+    const decRes = spawnSync(ffBin, ['-v', 'error', '-i', outMp4, '-f', 'null', '-'], { encoding: 'utf8' });
+    assert.equal(decRes.status, 0);
+    assert.equal(decRes.stderr.trim(), '');
+
+    const framesOut = spawnSync(fpBin, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'frame=width,height', '-of', 'csv=p=0', outMp4], { encoding: 'utf8' }).stdout;
+    assert.match(framesOut, /360,640/);
+    assert.match(framesOut, /720,640/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('recorder.getNextRetryAttempt supports clean EOF recovery and resets after healthy runs', () => {
+  const { getNextRetryAttempt } = require('../lib/recorder');
+  assert.equal(getNextRetryAttempt({ manualStop: false, rollover: false, autoRetryRecord: true, ranMs: 1000, retryCount: 0 }), 0);
+  assert.equal(getNextRetryAttempt({ manualStop: false, rollover: false, autoRetryRecord: true, ranMs: 5000, retryCount: 3 }), 3);
+  assert.equal(getNextRetryAttempt({ manualStop: false, rollover: false, autoRetryRecord: true, ranMs: 5000, retryCount: 5 }), null);
+  assert.equal(getNextRetryAttempt({ manualStop: false, rollover: false, autoRetryRecord: true, ranMs: 65_000, retryCount: 5 }), 0);
+  assert.equal(getNextRetryAttempt({ manualStop: true, rollover: false, autoRetryRecord: true, ranMs: 1000, retryCount: 0 }), null);
+  assert.equal(getNextRetryAttempt({ manualStop: false, rollover: true, autoRetryRecord: true, ranMs: 1000, retryCount: 0 }), null);
+  assert.equal(getNextRetryAttempt({ manualStop: false, rollover: false, autoRetryRecord: false, ranMs: 1000, retryCount: 0 }), null);
+});
+
+test('highlights.cutClip supports full PK battle durations (> 90s up to 240s)', async () => {
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+  const { cutClip, CLIPS_DIR } = require('../lib/highlights');
+
+  const base = `pkcuttest_${Date.now()}`;
+  const recName = `${base}.mp4`;
+  const recPath = path.join(storage.RECORDINGS_DIR, recName);
+  let clipPath = null;
+  try {
+    // Generate a tiny 115s silent/blank mp4 very quickly
+    const gen = spawnSync(ffmpeg.resolveFfmpeg(), [
+      '-y', '-f', 'lavfi', '-i', 'color=c=black:s=64x64:r=1', '-t', '115',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', recPath,
+    ], { encoding: 'utf8' });
+    assert.equal(gen.status, 0);
+
+    const res = await cutClip(recName, 0, 110);
+    clipPath = path.join(CLIPS_DIR, res.name);
+    assert.match(res.name, /_110s\.mp4$/);
+    assert.equal(fs.existsSync(clipPath), true);
+  } finally {
+    fs.rmSync(recPath, { force: true });
+    if (clipPath) fs.rmSync(clipPath, { force: true });
+  }
+});
+
+test('Stalled watchdog, audioBitrate args, webhook validation, and storage audio/compress', async () => {
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+  const { isJobStalled } = require('../lib/recorder');
+  const { formatMessage } = require('../lib/notifications');
+  const utils = require('../lib/utils');
+
+  // 1. Stalled watchdog
+  const job = { exited: false, manualStop: false, rollover: false, stalled: false, startedAt: 1000, lastProgressAt: 1000, lastBytes: 100 };
+  assert.equal(isJobStalled(job, 20_000, 25_000, 100), false);
+  assert.equal(isJobStalled(job, 27_000, 25_000, 100), true);
+  assert.equal(isJobStalled(job, 27_000, 25_000, 200), false); // bytes grew -> resets progress
+  assert.equal(job.lastProgressAt, 27_000);
+  assert.equal(isJobStalled({ ...job, manualStop: true }, 99_000, 25_000, 200), false);
+
+  // 2. Audio-only & bitrate buildRecordArgs
+  assert.equal(utils.sanitizeAudioBitrate('96k'), '96k');
+  assert.equal(utils.sanitizeAudioBitrate('999k'), null);
+  const aoReencode = ffmpeg.buildRecordArgs({ url: 'https://example.com/a.flv', quality: 'hd', audioOnly: true, audioBitrate: '96k' }, 'out.mp4');
+  assert.ok(aoReencode.includes('-vn'));
+  assert.ok(aoReencode.includes('-b:a'));
+  assert.ok(aoReencode.includes('96k'));
+  const vidAbr = ffmpeg.buildRecordArgs({ url: 'https://example.com/a.flv', quality: 'hd', audioOnly: false, audioBitrate: '128k' }, 'out.mp4');
+  assert.ok(vidAbr.includes('-c:v'));
+  assert.ok(vidAbr.includes('128k'));
+
+  // 3. Webhook validators & formatter
+  assert.equal(settings.isValidDiscordWebhookUrl('https://discord.com/api/webhooks/123456/abcdef_123'), true);
+  assert.equal(settings.isValidDiscordWebhookUrl('http://127.0.0.1:8080/hook'), false);
+  assert.equal(settings.isValidDiscordWebhookUrl('https://evil.example/api/webhooks/1/a'), false);
+  assert.equal(settings.isValidTelegramBotToken('123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw'), true);
+  assert.equal(settings.isValidTelegramBotToken('bad-token'), false);
+  assert.equal(settings.isValidTelegramChatId('-1001234567890'), true);
+  assert.equal(settings.isValidTelegramChatId('bad chat id!'), false);
+
+  const msg = formatMessage('went_live', { username: 'creator', viewerCount: 150, title: 'Hi' });
+  assert.match(msg.title, /@creator/);
+  assert.match(msg.body, /Hi/);
+
+  // 4. extractAudio with bitrate + compressRecording + bundle cleanup
+  const base = `compresstest_${Date.now()}`;
+  const recName = `${base}.mp4`;
+  const recPath = path.join(storage.RECORDINGS_DIR, recName);
+  let compressedName = null;
+  try {
+    const gen = spawnSync(ffmpeg.resolveFfmpeg(), [
+      '-y', '-f', 'lavfi', '-i', 'testsrc=size=128x128:rate=10',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+      '-t', '1', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', recPath,
+    ], { encoding: 'utf8' });
+    assert.equal(gen.status, 0);
+
+    const audioRes = await storage.extractAudio(recName, 'm4a', '64k');
+    assert.equal(audioRes.bitrate, '64k');
+    assert.match(audioRes.name, /_64k\.m4a$/);
+    assert.equal(fs.existsSync(path.join(storage.AUDIO_DIR, audioRes.name)), true);
+
+    const compRes = await storage.compressRecording(recName, 'compact');
+    compressedName = compRes.name;
+    assert.match(compRes.name, /_compact\.mp4$/);
+    assert.equal(fs.existsSync(path.join(storage.RECORDINGS_DIR, compRes.name)), true);
+  } finally {
+    storage.deleteRecordingBundle(recName);
+    if (compressedName) storage.deleteRecordingBundle(compressedName);
+  }
+});

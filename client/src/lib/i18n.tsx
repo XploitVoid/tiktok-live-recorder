@@ -104,6 +104,9 @@ const th = {
   audioOnly: 'เฉพาะเสียง',
   ffmpegRequiredTitle: 'ต้องติดตั้ง ffmpeg ก่อน',
   ffmpegRequiredDesc: 'การดูไลฟ์ 1080p/HEVC ต้องใช้ ffmpeg แปลงภาพเป็น H.264',
+  audioBitrateLabel: 'บิตเรตเสียง',
+  audioBitrateCopy: 'ต้นฉบับ (Copy)',
+  audioOnlyForce: 'เฉพาะเสียง (Audio-Only)',
 
   // Blocked streams
   noStreamsTitle: 'ไม่สามารถดึงลิงก์สตรีมได้',
@@ -150,6 +153,9 @@ const th = {
   savedExtracted: 'แยกไฟล์เสียงเรียบร้อยแล้ว',
   savedExtractFailed: 'ไม่สามารถแยกไฟล์เสียงได้',
   savedOpenReplay: 'เปิดหน้าวิเคราะห์รีเพลย์',
+  savedCompress: 'บีบอัด (ประหยัดพื้นที่)',
+  savedCompressing: 'กำลังบีบอัดวิดีโอ...',
+  savedCompressed: 'บีบอัดไฟล์เรียบร้อยแล้ว',
 
   // Settings Panel
   settingsTitle: 'ตั้งค่าระบบและพื้นที่จัดเก็บ',
@@ -169,6 +175,11 @@ const th = {
   settingsCleanupDone: 'ตรวจสอบและล้างไฟล์เรียบร้อย',
   settingsSaved: 'บันทึกการตั้งค่าแล้ว',
   settingsSaveFail: 'ไม่สามารถบันทึกการตั้งค่าได้',
+  settingsStalledSec: 'รีสตาร์ตเมื่อสตรีมค้าง (วินาที, 0=ปิด)',
+  settingsDefaultAudioBitrate: 'บิตเรตเสียงเริ่มต้น',
+  settingsTestWebhook: 'ทดสอบแจ้งเตือน',
+  settingsWebhookSent: 'ส่งแจ้งเตือนทดสอบแล้ว',
+  settingsWebhookFail: 'ส่งแจ้งเตือนไม่สำเร็จ',
 
   // Grid & Dashboard
   colsLabel: 'คอลัมน์',
@@ -199,6 +210,9 @@ const th = {
   replayTabLeaderboard: 'อันดับผู้สนับสนุน',
   replayTabEconomy: 'กราฟของขวัญ',
   replayTabWords: 'คำยอดนิยม',
+  replayModeVideo: 'โหมดวิดีโอ',
+  replayModeAudio: 'ฟังเสียงพื้นหลัง (Audio)',
+  replayAudioHint: 'โหมดฟังเสียงรองรับการเล่นต่อเนื่องขณะสลับแอปหรือล็อกหน้าจอบนมือถือ',
 
   highlights: 'ไฮไลท์อัตโนมัติ',
   hlAuto: 'ช่วงที่น่าสนใจ',
@@ -360,6 +374,9 @@ const en: Record<keyof typeof th, string> = {
   audioOnly: 'Audio Only',
   ffmpegRequiredTitle: 'ffmpeg is required',
   ffmpegRequiredDesc: '1080p/HEVC live preview requires ffmpeg to transcode to H.264',
+  audioBitrateLabel: 'Audio bitrate',
+  audioBitrateCopy: 'Original (copy)',
+  audioOnlyForce: 'Audio Only (Force -vn)',
 
   noStreamsTitle: 'Stream URLs Unavailable',
   noStreamsDesc: 'This user is live, but TikTok did not return playable stream URLs.',
@@ -402,6 +419,9 @@ const en: Record<keyof typeof th, string> = {
   savedExtracted: 'Audio extracted',
   savedExtractFailed: 'Audio extraction failed',
   savedOpenReplay: 'Open Replay & Analytics',
+  savedCompress: 'Compress (save space)',
+  savedCompressing: 'Compressing video...',
+  savedCompressed: 'Video compressed',
 
   settingsTitle: 'Storage & Network Settings',
   settingsDiskGuard: 'Disk Space Guard (pause/stop below threshold)',
@@ -420,6 +440,11 @@ const en: Record<keyof typeof th, string> = {
   settingsCleanupDone: 'Retention cleanup completed',
   settingsSaved: 'Settings saved',
   settingsSaveFail: 'Failed to save settings',
+  settingsStalledSec: 'Stalled Watchdog (sec, 0=off)',
+  settingsDefaultAudioBitrate: 'Default Audio Bitrate',
+  settingsTestWebhook: 'Test Webhook',
+  settingsWebhookSent: 'Test notification sent',
+  settingsWebhookFail: 'Webhook test failed',
 
   colsLabel: 'Columns',
   muteAll: 'Mute All',
@@ -448,6 +473,9 @@ const en: Record<keyof typeof th, string> = {
   replayTabLeaderboard: 'Leaderboard',
   replayTabEconomy: 'Gift Economy',
   replayTabWords: 'Word Cloud',
+  replayModeVideo: 'Video Mode',
+  replayModeAudio: 'Background Audio',
+  replayAudioHint: 'Audio mode keeps playing when switching apps or locking your screen on mobile',
 
   highlights: 'Auto Highlights',
   hlAuto: 'Peak Moments',

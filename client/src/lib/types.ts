@@ -73,6 +73,8 @@ export interface WatchEntry {
   username: string
   quality?: string
   autoRecord: boolean
+  audioOnly?: boolean
+  audioBitrate?: string | null
   lastStatus?: string
   lastChangedAt?: number
   lastViewerCount?: number
@@ -150,8 +152,15 @@ export interface AppSettings {
   retentionDays: number
   segmentMinutes: number
   autoRetryRecord: boolean
+  stalledTimeoutSec: number
+  defaultAudioBitrate: string | null
   hasProxy: boolean
   proxyPreview: string
+  hasDiscordWebhook: boolean
+  discordWebhookPreview: string
+  hasTelegram: boolean
+  telegramBotPreview: string
+  telegramChatId: string
 }
 
 export interface DiskStatus {
@@ -175,6 +184,7 @@ export interface ChatPollResult {
 }
 
 export interface ReplayData {
+  username?: string | null
   startMs?: number
   eventCount?: number
   eventsExists?: boolean

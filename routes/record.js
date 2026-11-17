@@ -4,7 +4,7 @@ const { Router } = require('express');
 const fs = require('fs');
 const path = require('path');
 const { normalizeUsername } = require('../lib/room');
-const { safeError, sanitizeQuality, resolveInsideDir, readEvents, parseStartTimeFromName } = require('../lib/utils');
+const { safeError, sanitizeQuality, sanitizeAudioBitrate, resolveInsideDir, readEvents, parseStartTimeFromName } = require('../lib/utils');
 const {
   RECORDINGS_DIR,
   recorderEvents,
@@ -18,6 +18,7 @@ const {
   readMeta,
   ensureThumbnailAndMeta,
   extractAudio,
+  compressRecording,
 } = require('../lib/storage');
 
 const router = Router();
@@ -27,11 +28,15 @@ const router = Router();
 router.post('/api/record/start', async (req, res) => {
   const username = normalizeUsername(req.body?.username);
   const quality = sanitizeQuality(req.body?.quality, undefined);
+  const audioOnly = !!req.body?.audioOnly;
+  const audioBitrate = req.body?.audioBitrate !== undefined
+    ? sanitizeAudioBitrate(req.body.audioBitrate, null)
+    : undefined;
   if (!username) return res.status(400).json({ error: 'missing username' });
   try {
-    const result = await startRecording(username, quality);
+    const result = await startRecording(username, quality, { audioOnly, audioBitrate });
     invalidateRecordingsCache();
-    console.log(`[audit] record start: @${username} q=${quality || 'auto'} -> ${result.file}`);
+    console.log(`[audit] record start: @${username} q=${quality || 'auto'} ao=${audioOnly} abr=${audioBitrate ?? 'default'} -> ${result.file}`);
     res.json(result);
   } catch (e) {
     const status =
@@ -169,8 +174,24 @@ router.post('/api/recordings/:name/audio', async (req, res) => {
   const resolved = resolveInsideDir(RECORDINGS_DIR, req.params.name, '.mp4');
   if (!resolved) return res.status(400).json({ error: 'bad name' });
   const format = req.body?.format === 'mp3' ? 'mp3' : 'm4a';
+  const bitrate = sanitizeAudioBitrate(req.body?.bitrate, null);
   try {
-    const out = await extractAudio(resolved.name, format);
+    const out = await extractAudio(resolved.name, format, bitrate);
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'NO_FFMPEG' ? 503 : 500;
+    res.status(status).json({ error: safeError(e) });
+  }
+});
+
+router.post('/api/recordings/:name/compress', async (req, res) => {
+  const resolved = resolveInsideDir(RECORDINGS_DIR, req.params.name, '.mp4');
+  if (!resolved) return res.status(400).json({ error: 'bad name' });
+  const preset = req.body?.preset === 'compact' ? 'compact' : 'balanced';
+  try {
+    const out = await compressRecording(resolved.name, preset);
+    invalidateRecordingsCache();
+    console.log(`[audit] compress: ${resolved.name} (${preset}) -> ${out.name} (${out.sizeBytes} bytes)`);
     res.json({ ok: true, ...out });
   } catch (e) {
     const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'NO_FFMPEG' ? 503 : 500;

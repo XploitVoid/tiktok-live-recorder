@@ -31,6 +31,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
   const playersRef = useRef<{ destroy: () => void }[]>([])
   const [playerQuality, setPlayerQuality] = useState('auto')
   const [recordQuality, setRecordQuality] = useState('auto')
+  const [recordAudioBitrate, setRecordAudioBitrate] = useState('default')
   const [playerInfo, setPlayerInfo] = useState('')
   const [recording, setRecording] = useState(false)
   const [recordMsg, setRecordMsg] = useState('')
@@ -255,6 +256,8 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
   }
   if (s.flv?.ao || s.cmaf?.ao) {
     recordQualities.push({ value: 'ao', label: 'Audio Only (ao)' })
+  } else {
+    recordQualities.push({ value: 'ao', label: t('audioOnlyForce') })
   }
 
   const handleRecord = async () => {
@@ -262,7 +265,11 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
     setRecordMsg('')
     try {
       const q = recordQuality && recordQuality !== 'auto' ? recordQuality : undefined
-      const result = await apiStartRecord(data.username, q)
+      const abr = recordAudioBitrate !== 'default' ? (recordAudioBitrate === 'copy' ? null : recordAudioBitrate) : undefined
+      const result = await apiStartRecord(data.username, q, {
+        audioOnly: recordQuality === 'ao',
+        audioBitrate: abr,
+      })
       toast.success(result.reused ? 'Already recording' : `Recording @${data.username}`, {
         description: result.file,
       })
@@ -348,6 +355,19 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
                 {recordQualities.map(q => (
                   <SelectItem key={q.value} value={q.value}>{q.label}</SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+            <Select value={recordAudioBitrate} onValueChange={(v) => v !== null && setRecordAudioBitrate(v)}>
+              <SelectTrigger className="w-[150px] h-8 text-xs">
+                <SelectValue placeholder={t('audioBitrateLabel')} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">{t('audioBitrateLabel')}: Auto</SelectItem>
+                <SelectItem value="copy">{t('audioBitrateCopy')}</SelectItem>
+                <SelectItem value="64k">64 kbps</SelectItem>
+                <SelectItem value="96k">96 kbps</SelectItem>
+                <SelectItem value="128k">128 kbps</SelectItem>
+                <SelectItem value="192k">192 kbps</SelectItem>
               </SelectContent>
             </Select>
             <Button

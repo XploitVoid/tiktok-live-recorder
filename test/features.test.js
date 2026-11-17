@@ -431,3 +431,102 @@ test('Stalled watchdog, audioBitrate args, webhook validation, and storage audio
     if (compressedName) storage.deleteRecordingBundle(compressedName);
   }
 });
+
+test('Pin/protect, notes/title, sprite sheet, faststart remux, pk-split 9:16, schedule, and proxy failover', async () => {
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+  const { cutClip, CLIPS_DIR, highlightsEvents } = require('../lib/highlights');
+  const watcher = require('../lib/watcher');
+  const accounts = require('../lib/accounts');
+
+  // 1. Proxy failover list parsing, validation, and masking
+  assert.equal(settings.isValidProxyUrl('http://a:b@p1.example:8080, socks5://p2.example:1080'), true);
+  assert.equal(settings.isValidProxyUrl('http://p1.example:8080, ftp://bad.example:21'), false);
+  assert.equal(settings.parseProxyList('http://p1:80\nsocks5://p2:1080').length, 2);
+  const maskedList = settings.maskProxyUrl('http://alice:secret@p1.example:8080, socks5://p2.example:1080');
+  assert.equal(maskedList.includes('secret'), false);
+  assert.match(maskedList, /p1\.example:8080/);
+  assert.match(maskedList, /p2\.example:1080/);
+
+  // 2. Schedule helper (daytime and overnight wrap)
+  const d10 = new Date(2026, 10, 17, 10, 30);
+  const d23 = new Date(2026, 10, 17, 23, 0);
+  const d02 = new Date(2026, 10, 18, 2, 0);
+  const d04 = new Date(2026, 10, 18, 4, 0);
+  assert.equal(watcher.isWithinSchedule(d10, '09:00', '17:00'), true);
+  assert.equal(watcher.isWithinSchedule(d23, '09:00', '17:00'), false);
+  assert.equal(watcher.isWithinSchedule(d23, '18:00', '03:00'), true);
+  assert.equal(watcher.isWithinSchedule(d02, '18:00', '03:00'), true);
+  assert.equal(watcher.isWithinSchedule(d04, '18:00', '03:00'), false);
+
+  // 3. Per-channel anonymous credentials lookup
+  assert.deepEqual(accounts.getCredentialsById('anon'), { id: 'anon', sessionId: '', ttTargetIdc: '' });
+
+  // 4. Meta protection, faststart remux, sprite sheet, and pk-split 9:16 cut + progress
+  const base = `v2quick_${Date.now()}`;
+  const recName = `${base}.mp4`;
+  const recPath = path.join(storage.RECORDINGS_DIR, recName);
+  let pkClipPath = null;
+  try {
+    const gen = spawnSync(ffmpeg.resolveFfmpeg(), [
+      '-y', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=5',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+      '-t', '12', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', recPath,
+    ], { encoding: 'utf8' });
+    assert.equal(gen.status, 0);
+
+    const remuxOk = await storage.remuxFaststart(recName);
+    assert.equal(remuxOk, true);
+
+    const updated = storage.updateRecordingMeta(recName, {
+      protected: true,
+      displayTitle: 'My Special Live',
+      notes: 'PK battle highlight',
+    });
+    assert.equal(updated.protected, true);
+    assert.equal(updated.displayTitle, 'My Special Live');
+    assert.equal(updated.notes, 'PK battle highlight');
+
+    const metaAfter = await storage.ensureThumbnailAndMeta(recName, { force: true });
+    assert.equal(metaAfter.protected, true);
+    assert.equal(metaAfter.displayTitle, 'My Special Live');
+    assert.ok(metaAfter.spriteUrl);
+    assert.ok(metaAfter.spriteMeta && metaAfter.spriteMeta.cols === 8);
+
+    // Retention cleanup must NOT delete protected file even if aged
+    const oldMs = Date.now() - 100 * 24 * 60 * 60 * 1000;
+    fs.utimesSync(recPath, oldMs / 1000, oldMs / 1000);
+    const prevSettings = settings.getSettings();
+    try {
+      settings.updateSettings({ retentionDays: 1 });
+      const clean = storage.enforceRetention(new Set());
+      assert.equal(clean.deleted.includes(recName), false);
+      assert.equal(fs.existsSync(recPath), true);
+    } finally {
+      settings.updateSettings({ retentionDays: prevSettings.retentionDays });
+    }
+
+    // pk-split 9:16 clip cut + progress events
+    const progressEvents = [];
+    const onProg = (ev) => { if (ev.recording === recName) progressEvents.push(ev.percent); };
+    highlightsEvents.on('cut_progress', onProg);
+    try {
+      const pkRes = await cutClip(recName, 0, 2, { vertical: 'pk-split' });
+      pkClipPath = path.join(CLIPS_DIR, pkRes.name);
+      assert.match(pkRes.name, /_916pk\.mp4$/);
+      assert.equal(fs.existsSync(pkClipPath), true);
+      assert.ok(progressEvents.includes(100));
+
+      const dimOut = spawnSync(ffmpeg.resolveFfprobe(), [
+        '-v', 'error', '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height', '-of', 'csv=p=0', pkClipPath,
+      ], { encoding: 'utf8' }).stdout.trim();
+      assert.equal(dimOut, '1080,1920');
+    } finally {
+      highlightsEvents.off('cut_progress', onProg);
+    }
+  } finally {
+    storage.deleteRecordingBundle(recName);
+    if (pkClipPath) fs.rmSync(pkClipPath, { force: true });
+  }
+});

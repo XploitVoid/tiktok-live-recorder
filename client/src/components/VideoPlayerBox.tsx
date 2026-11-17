@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Maximize, Minimize, PictureInPicture2, Scaling } from 'lucide-react'
+import { Maximize, Minimize, PictureInPicture2, Scaling, MessageSquare } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/lib/i18n'
 import { toast } from 'sonner'
@@ -15,13 +15,15 @@ interface VideoPlayerBoxProps {
   muted?: boolean
   src?: string
   showPip?: boolean
+  overlay?: React.ReactNode
 }
 
-export function VideoPlayerBox({ videoRef, muted = false, src, showPip = true }: VideoPlayerBoxProps) {
+export function VideoPlayerBox({ videoRef, muted = false, src, showPip = true, overlay }: VideoPlayerBoxProps) {
   const { t } = useI18n()
   const containerRef = useRef<HTMLDivElement>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [fitMode, setFitMode] = useState<'contain' | 'cover' | 'fill'>('contain')
+  const [showOverlay, setShowOverlay] = useState(true)
 
   const cycleFitMode = () => {
     setFitMode((prev) => (prev === 'contain' ? 'cover' : prev === 'cover' ? 'fill' : 'contain'))
@@ -113,6 +115,18 @@ export function VideoPlayerBox({ videoRef, muted = false, src, showPip = true }:
           isFullscreen ? 'opacity-0 group-hover/video:opacity-100 focus-within:opacity-100' : 'opacity-75 hover:opacity-100'
         }`}
       >
+        {isFullscreen && overlay && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="xs"
+            onClick={() => setShowOverlay((v) => !v)}
+            className="gap-1 bg-black/65 hover:bg-black/85 text-white border border-white/15 backdrop-blur-xs cursor-pointer"
+          >
+            <MessageSquare className="w-3 h-3" />
+            <span>{showOverlay ? t('chatOverlayHide') : t('chatOverlayShow')}</span>
+          </Button>
+        )}
         {isFullscreen && (
           <Button
             type="button"
@@ -153,6 +167,12 @@ export function VideoPlayerBox({ videoRef, muted = false, src, showPip = true }:
           <span>{isFullscreen ? t('fullscreenExit') : t('fullscreenEnter')}</span>
         </Button>
       </div>
+
+      {isFullscreen && overlay && showOverlay && (
+        <div className="pointer-events-none absolute bottom-14 left-4 z-10 w-80 max-w-[75vw] rounded-lg bg-black/60 backdrop-blur-xs border border-white/10 p-2.5 text-xs text-white space-y-1">
+          {overlay}
+        </div>
+      )}
     </div>
   )
 }

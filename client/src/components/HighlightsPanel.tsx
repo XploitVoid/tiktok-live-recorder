@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Sparkles, Scissors, RefreshCw, Trash2, Download, Play, MessageSquare, Gift, Gem, Heart, UserPlus, Star } from 'lucide-react'
 import { ConfirmButton } from '@/components/ConfirmButton'
 import { Card, CardContent } from '@/components/ui/card'
@@ -8,13 +8,14 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
 import { fmtBytes, fmtTimeSec } from '@/lib/format'
+import { useEventStream } from '@/lib/useEventStream'
 import {
   getHighlights,
   analyzeHighlights,
   cutHighlightClip,
   deleteHighlightClip,
 } from '@/lib/api'
-import type { HighlightCandidate, HighlightClip } from '@/lib/types'
+import type { HighlightCandidate, HighlightClip, SpriteMeta } from '@/lib/types'
 import { Avatar } from '@/components/Avatar'
 import { toast } from 'sonner'
 
@@ -22,19 +23,42 @@ interface Props {
   recording: string
   hasEvents: boolean
   durationSec?: number | null
+  currentTime?: number
+  spriteUrl?: string | null
+  spriteMeta?: SpriteMeta | null
   onJump: (sec: number) => void
 }
 
-export function HighlightsPanel({ recording, hasEvents, durationSec, onJump }: Props) {
+export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime = 0, spriteUrl, spriteMeta, onJump }: Props) {
   const { t } = useI18n()
   const [candidates, setCandidates] = useState<HighlightCandidate[]>([])
   const [clips, setClips] = useState<HighlightClip[]>([])
   const [loading, setLoading] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [cuttingId, setCuttingId] = useState<string | null>(null)
+  const [cutPercent, setCutPercent] = useState<number | null>(null)
   const [usedFallback, setUsedFallback] = useState(false)
-  const [verticalMode, setVerticalMode] = useState<'none' | 'blur' | 'crop'>('none')
+  const [verticalMode, setVerticalMode] = useState<'none' | 'blur' | 'crop' | 'pk-split'>('none')
   const [burnSubtitles, setBurnSubtitles] = useState(false)
+  const [trimIn, setTrimIn] = useState(0)
+  const [trimOut, setTrimOut] = useState(30)
+  const [hoverSec, setHoverSec] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (durationSec && durationSec > 0) {
+      setTrimOut((prev) => Math.min(durationSec, Math.max(1, prev > durationSec ? Math.min(30, durationSec) : prev)))
+    }
+  }, [durationSec])
+
+  const sseHandlers = useMemo(() => ({
+    cut_progress: (raw: unknown) => {
+      const ev = raw as { recording?: string; percent?: number; done?: boolean }
+      if (!ev || ev.recording !== recording) return
+      if (ev.done) setCutPercent(null)
+      else if (typeof ev.percent === 'number') setCutPercent(ev.percent)
+    },
+  }), [recording])
+  useEventStream('channels=highlights', sseHandlers, true)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -93,6 +117,26 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, onJump }: P
       toast.error('Cut failed', { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setCuttingId(null)
+      setCutPercent(null)
+    }
+  }
+
+  const handleCutRange = async () => {
+    if (trimOut <= trimIn) return
+    setCuttingId('custom_trim')
+    setCutPercent(0)
+    try {
+      const r = await cutHighlightClip(recording, trimIn, trimOut, {
+        vertical: verticalMode,
+        burnSubtitles,
+      })
+      toast.success(t('hlGenerate'), { description: r.clip.name })
+      await refresh()
+    } catch (e: unknown) {
+      toast.error('Cut failed', { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setCuttingId(null)
+      setCutPercent(null)
     }
   }
 
@@ -136,13 +180,14 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, onJump }: P
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Select value={verticalMode} onValueChange={(v) => v && setVerticalMode(v as typeof verticalMode)}>
-              <SelectTrigger className="w-[140px] h-7 text-xs">
+              <SelectTrigger className="w-[170px] h-7 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">Original (fast copy)</SelectItem>
                 <SelectItem value="blur">9:16 Blur BG</SelectItem>
                 <SelectItem value="crop">9:16 Center Crop</SelectItem>
+                <SelectItem value="pk-split">9:16 PK Split (Top/Bot)</SelectItem>
               </SelectContent>
             </Select>
             <label className="flex items-center gap-1.5 text-xs cursor-pointer">
@@ -156,26 +201,140 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, onJump }: P
           </div>
         </div>
 
-        {/* Timeline strip with markers */}
-        {durationSec && durationSec > 0 && candidates.length > 0 && (
-          <div className="relative w-full h-3 bg-secondary rounded-full overflow-hidden">
-            {candidates.map((c) => {
-              const left = Math.max(0, Math.min(100, (c.startSec / durationSec) * 100))
-              const width = Math.max(0.5, Math.min(100 - left, ((c.endSec - c.startSec) / durationSec) * 100))
-              const color =
-                c.reason === 'pk_battle' ? 'bg-fuchsia-500' :
-                c.reason === 'gift_spike' ? 'bg-amber-400' :
-                c.reason === 'chat_spike' ? 'bg-pink-400' : 'bg-indigo-400'
-              return (
-                <button
-                  key={c.id}
-                  onClick={() => onJump(c.startSec)}
-                  title={`${fmtTimeSec(c.startSec)} → ${fmtTimeSec(c.endSec)} (${c.reason})`}
-                  className={`absolute top-0 h-full ${color} hover:brightness-125 transition-all cursor-pointer`}
-                  style={{ left: `${left}%`, width: `${width}%` }}
-                />
+        {/* Timeline strip with markers + hover sprite preview */}
+        {durationSec && durationSec > 0 && (
+          <div className="space-y-2">
+            <div
+              className="relative w-full h-3 bg-secondary rounded-full overflow-hidden cursor-pointer"
+              onMouseMove={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect()
+                const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+                setHoverSec(ratio * durationSec)
+              }}
+              onMouseLeave={() => setHoverSec(null)}
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect()
+                const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+                onJump(ratio * durationSec)
+              }}
+            >
+              {candidates.map((c) => {
+                const left = Math.max(0, Math.min(100, (c.startSec / durationSec) * 100))
+                const width = Math.max(0.5, Math.min(100 - left, ((c.endSec - c.startSec) / durationSec) * 100))
+                const color =
+                  c.reason === 'pk_battle' ? 'bg-fuchsia-500' :
+                  c.reason === 'gift_spike' ? 'bg-amber-400' :
+                  c.reason === 'chat_spike' ? 'bg-pink-400' : 'bg-indigo-400'
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onJump(c.startSec) }}
+                    title={`${fmtTimeSec(c.startSec)} → ${fmtTimeSec(c.endSec)} (${c.reason})`}
+                    className={`absolute top-0 h-full ${color} hover:brightness-125 transition-all cursor-pointer`}
+                    style={{ left: `${left}%`, width: `${width}%` }}
+                  />
+                )
+              })}
+              {/* Selected In/Out range overlay */}
+              <div
+                className="pointer-events-none absolute top-0 h-full bg-white/25 border-x border-white/70"
+                style={{
+                  left: `${Math.max(0, Math.min(100, (trimIn / durationSec) * 100))}%`,
+                  width: `${Math.max(0.5, Math.min(100, ((trimOut - trimIn) / durationSec) * 100))}%`,
+                }}
+              />
+            </div>
+
+            {hoverSec !== null && spriteUrl && spriteMeta && (() => {
+              const idx = Math.min(
+                spriteMeta.cols * spriteMeta.rows - 1,
+                Math.max(0, Math.floor(hoverSec / spriteMeta.intervalSec)),
               )
-            })}
+              const col = idx % spriteMeta.cols
+              const row = Math.floor(idx / spriteMeta.cols)
+              return (
+                <div className="flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
+                  <div
+                    className="rounded border border-border bg-black shrink-0"
+                    style={{
+                      width: spriteMeta.tileWidth,
+                      height: spriteMeta.tileHeight,
+                      backgroundImage: `url(${spriteUrl})`,
+                      backgroundPosition: `-${col * spriteMeta.tileWidth}px -${row * spriteMeta.tileHeight}px`,
+                      backgroundRepeat: 'no-repeat',
+                    }}
+                  />
+                  <span>{fmtTimeSec(hoverSec)}</span>
+                </div>
+              )
+            })()}
+
+            {/* Visual Timeline In/Out Trimmer */}
+            <div className="flex flex-wrap items-center gap-2 bg-secondary/40 border border-border/70 rounded-lg px-2.5 py-2 text-xs">
+              <span className="font-medium text-muted-foreground">{t('trimmerTitle')}</span>
+              <div className="flex items-center gap-1.5">
+                <Button size="xs" variant="outline" onClick={() => {
+                  const v = Math.floor(currentTime)
+                  setTrimIn(v)
+                  if (trimOut <= v) setTrimOut(Math.min(Math.floor(durationSec), v + 15))
+                }}>
+                  {t('trimmerSetIn')} ({fmtTimeSec(trimIn)})
+                </Button>
+                <Button size="xs" variant="outline" onClick={() => {
+                  const v = Math.max(trimIn + 1, Math.ceil(currentTime))
+                  setTrimOut(Math.min(Math.floor(durationSec), v))
+                }}>
+                  {t('trimmerSetOut')} ({fmtTimeSec(trimOut)})
+                </Button>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(1, Math.floor(durationSec) - 1)}
+                value={trimIn}
+                onChange={(e) => {
+                  const v = Number(e.target.value)
+                  setTrimIn(v)
+                  if (trimOut <= v) setTrimOut(Math.min(Math.floor(durationSec), v + 1))
+                }}
+                className="w-24 accent-primary"
+                aria-label="Trim In"
+              />
+              <input
+                type="range"
+                min={Math.min(Math.floor(durationSec), trimIn + 1)}
+                max={Math.max(1, Math.floor(durationSec))}
+                value={trimOut}
+                onChange={(e) => setTrimOut(Math.max(trimIn + 1, Number(e.target.value)))}
+                className="w-24 accent-primary"
+                aria-label="Trim Out"
+              />
+              <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+                {Math.max(0, Math.round(trimOut - trimIn))}s
+              </span>
+              <Button
+                size="xs"
+                onClick={handleCutRange}
+                disabled={cuttingId !== null || trimOut <= trimIn}
+                className="ml-auto cursor-pointer"
+              >
+                <Scissors className="w-3 h-3 mr-1" />
+                {cuttingId === 'custom_trim' ? t('hlGenerating') : t('trimmerCut')}
+              </Button>
+            </div>
+
+            {cutPercent !== null && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
+                  <span>FFmpeg encoding...</span>
+                  <span>{cutPercent}%</span>
+                </div>
+                <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
+                  <div className="h-full bg-primary transition-all duration-150" style={{ width: `${cutPercent}%` }} />
+                </div>
+              </div>
+            )}
           </div>
         )}
 

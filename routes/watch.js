@@ -25,6 +25,11 @@ router.post('/api/watch', (req, res) => {
     quality: sanitizeQuality(req.body?.quality),
     audioOnly: !!req.body?.audioOnly,
     audioBitrate: sanitizeAudioBitrate(req.body?.audioBitrate, null),
+    priority: req.body?.priority,
+    accountId: req.body?.accountId,
+    minViewers: req.body?.minViewers,
+    scheduleStart: req.body?.scheduleStart,
+    scheduleEnd: req.body?.scheduleEnd,
   });
   if (result.error) return res.status(result.status).json({ error: result.error });
   res.json(result);
@@ -37,6 +42,11 @@ router.patch('/api/watch/:username', (req, res) => {
     quality: req.body?.quality !== undefined ? sanitizeQuality(req.body.quality) : undefined,
     audioOnly: typeof req.body?.audioOnly === 'boolean' ? req.body.audioOnly : undefined,
     audioBitrate: req.body?.audioBitrate !== undefined ? sanitizeAudioBitrate(req.body.audioBitrate, null) : undefined,
+    priority: req.body?.priority,
+    accountId: req.body?.accountId,
+    minViewers: req.body?.minViewers,
+    scheduleStart: req.body?.scheduleStart,
+    scheduleEnd: req.body?.scheduleEnd,
   });
   if (!result) return res.status(404).json({ error: 'not in watchlist' });
   res.json(result);

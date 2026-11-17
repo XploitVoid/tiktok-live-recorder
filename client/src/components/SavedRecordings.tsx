@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react'
-import { FolderOpen, RefreshCw, Trash2, Download, Play, MessageSquare, Sparkles, Scissors, Search, Music, FileArchive, Loader2 } from 'lucide-react'
+import { FolderOpen, RefreshCw, Trash2, Download, Play, MessageSquare, Sparkles, Scissors, Search, Music, FileArchive, Loader2, Lock, Unlock, Pencil, Check, X } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
 import { fmtBytes, fmtTimeSec } from '@/lib/format'
-import { getRecordings, deleteRecording, extractRecordingAudio, compressRecording } from '@/lib/api'
+import { getRecordings, deleteRecording, extractRecordingAudio, compressRecording, updateRecordingMeta } from '@/lib/api'
 import { useEventStream } from '@/lib/useEventStream'
 import type { RecordingFile } from '@/lib/types'
 import { toast } from 'sonner'
@@ -22,10 +22,13 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
   const { t } = useI18n()
   const [files, setFiles] = useState<RecordingFile[]>([])
   const [query, setQuery] = useState('')
-  const [filterMode, setFilterMode] = useState<'all' | 'chat' | 'highlights'>('all')
+  const [filterMode, setFilterMode] = useState<'all' | 'chat' | 'highlights' | 'protected'>('all')
   const [sortMode, setSortMode] = useState<'newest' | 'largest' | 'longest'>('newest')
   const [extracting, setExtracting] = useState<string | null>(null)
   const [compressing, setCompressing] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState<string | null>(null)
+  const [editTitle, setEditTitle] = useState('')
+  const [editNotes, setEditNotes] = useState('')
 
   const refresh = useCallback(async () => {
     try {
@@ -96,12 +99,44 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
     }
   }
 
+  const handleToggleProtect = async (f: RecordingFile) => {
+    try {
+      const next = !f.protected
+      await updateRecordingMeta(f.name, { protected: next })
+      toast.success(next ? t('savedProtect') : t('savedUnprotect'), { description: f.name })
+      void refresh()
+    } catch (e: unknown) {
+      toast.error('Update failed', { description: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  const startEditMeta = (f: RecordingFile) => {
+    setEditingName(f.name)
+    setEditTitle(f.displayTitle || '')
+    setEditNotes(f.notes || '')
+  }
+
+  const saveEditMeta = async (name: string) => {
+    try {
+      await updateRecordingMeta(name, { displayTitle: editTitle.trim() || null, notes: editNotes.trim() })
+      setEditingName(null)
+      toast.success(t('settingsSaved'))
+      void refresh()
+    } catch (e: unknown) {
+      toast.error('Update failed', { description: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
   const visibleFiles = useMemo(() => {
     const q = query.trim().toLowerCase()
     const filtered = files.filter((f) => {
-      if (q && !f.name.toLowerCase().includes(q)) return false
+      if (q) {
+        const hay = `${f.name} ${f.displayTitle || ''} ${f.notes || ''}`.toLowerCase()
+        if (!hay.includes(q)) return false
+      }
       if (filterMode === 'chat' && !f.hasEvents) return false
       if (filterMode === 'highlights' && !(f.highlightCount && f.highlightCount > 0)) return false
+      if (filterMode === 'protected' && !f.protected) return false
       return true
     })
     return [...filtered].sort((a, b) => {
@@ -145,6 +180,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                 <SelectItem value="all">{t('savedFilterAll')}</SelectItem>
                 <SelectItem value="chat">{t('fChat')}</SelectItem>
                 <SelectItem value="highlights">{t('highlights')}</SelectItem>
+                <SelectItem value="protected">{t('savedFilterProtected')}</SelectItem>
               </SelectContent>
             </Select>
             <Select value={sortMode} onValueChange={(v) => v && setSortMode(v as typeof sortMode)}>
@@ -165,97 +201,156 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
             <p className="text-muted-foreground text-xs">{t('emptyList')}</p>
           ) : (
             visibleFiles.map((f) => (
-              <div key={f.name} className="flex items-center gap-2 bg-secondary rounded-lg px-2 py-1.5 flex-wrap sm:flex-nowrap">
-                {f.thumbUrl ? (
-                  <img
-                    src={f.thumbUrl}
-                    alt=""
-                    loading="lazy"
-                    className="w-12 h-7 rounded object-cover bg-black shrink-0 border border-border"
-                  />
-                ) : (
-                  <div className="w-12 h-7 rounded bg-zinc-800/80 border border-border flex items-center justify-center text-[10px] text-muted-foreground shrink-0">
-                    MP4
+              <div key={f.name} className="bg-secondary rounded-lg px-2 py-1.5 space-y-1.5">
+                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                  {f.thumbUrl ? (
+                    <img
+                      src={f.thumbUrl}
+                      alt=""
+                      loading="lazy"
+                      className="w-12 h-7 rounded object-cover bg-black shrink-0 border border-border"
+                    />
+                  ) : (
+                    <div className="w-12 h-7 rounded bg-zinc-800/80 border border-border flex items-center justify-center text-[10px] text-muted-foreground shrink-0">
+                      MP4
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-foreground/90 truncate font-medium">
+                      {f.displayTitle ? (
+                        <>
+                          <span>{f.displayTitle}</span>{' '}
+                          <span className="font-mono text-[10px] text-muted-foreground">({f.name})</span>
+                        </>
+                      ) : (
+                        <span className="font-mono">{f.name}</span>
+                      )}
+                    </div>
+                    {f.notes && (
+                      <div className="text-[10px] text-muted-foreground truncate">{f.notes}</div>
+                    )}
+                    <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                      {f.protected && (
+                        <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-emerald-700/30 text-emerald-200 border-emerald-700/40">
+                          <Lock className="w-2.5 h-2.5 mr-0.5" /> {t('savedFilterProtected')}
+                        </Badge>
+                      )}
+                      {f.durationSec != null && (
+                        <span className="text-[10px] font-mono text-emerald-300/90">{fmtTimeSec(f.durationSec)}</span>
+                      )}
+                      {f.height != null && (
+                        <span className="text-[10px] text-muted-foreground">
+                          {f.height}p{f.fps && f.fps >= 50 ? f.fps : ''}
+                        </span>
+                      )}
+                      <span className="text-[10px] text-muted-foreground">{fmtBytes(f.sizeBytes)}</span>
+                      {f.hasEvents && (
+                        <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-pink-700/30 text-pink-200 border-pink-700/40">
+                          <MessageSquare className="w-2.5 h-2.5 mr-0.5" /> chat
+                        </Badge>
+                      )}
+                      {!!f.highlightCount && f.highlightCount > 0 && (
+                        <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-amber-700/30 text-amber-200 border-amber-700/40" title={`${f.highlightCount} highlight candidates`}>
+                          <Sparkles className="w-2.5 h-2.5 mr-0.5" /> {f.highlightCount}
+                        </Badge>
+                      )}
+                      {!!f.clipCount && f.clipCount > 0 && (
+                        <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-indigo-700/30 text-indigo-200 border-indigo-700/40" title={`${f.clipCount} cut clips`}>
+                          <Scissors className="w-2.5 h-2.5 mr-0.5" /> {f.clipCount}
+                        </Badge>
+                      )}
+                    </div>
                   </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs text-foreground/90 truncate font-mono">{f.name}</div>
-                  <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                    {f.durationSec != null && (
-                      <span className="text-[10px] font-mono text-emerald-300/90">{fmtTimeSec(f.durationSec)}</span>
-                    )}
-                    {f.height != null && (
-                      <span className="text-[10px] text-muted-foreground">
-                        {f.height}p{f.fps && f.fps >= 50 ? f.fps : ''}
-                      </span>
-                    )}
-                    <span className="text-[10px] text-muted-foreground">{fmtBytes(f.sizeBytes)}</span>
-                    {f.hasEvents && (
-                      <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-pink-700/30 text-pink-200 border-pink-700/40">
-                        <MessageSquare className="w-2.5 h-2.5 mr-0.5" /> chat
-                      </Badge>
-                    )}
-                    {!!f.highlightCount && f.highlightCount > 0 && (
-                      <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-amber-700/30 text-amber-200 border-amber-700/40" title={`${f.highlightCount} highlight candidates`}>
-                        <Sparkles className="w-2.5 h-2.5 mr-0.5" /> {f.highlightCount}
-                      </Badge>
-                    )}
-                    {!!f.clipCount && f.clipCount > 0 && (
-                      <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-indigo-700/30 text-indigo-200 border-indigo-700/40" title={`${f.clipCount} cut clips`}>
-                        <Scissors className="w-2.5 h-2.5 mr-0.5" /> {f.clipCount}
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-                <Link
-                  to={`/replay?file=${encodeURIComponent(f.name)}`}
-                  className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md transition-colors"
-                >
-                  <Play className="w-3 h-3" /> {t('btnReplay')}
-                </Link>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  disabled={extracting === `${f.name}:m4a`}
-                  onClick={() => handleExtractAudio(f.name, 'm4a')}
-                  title={t('savedExtractAudio')}
-                  className="h-6 px-2 text-xs"
-                >
-                  <Music className="w-3 h-3 mr-1" /> M4A
-                </Button>
-                {!/_(balanced|compact)\.mp4$/i.test(f.name) && (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => handleToggleProtect(f)}
+                    title={f.protected ? t('savedUnprotect') : t('savedProtect')}
+                    className={f.protected ? 'text-emerald-400 hover:text-emerald-300' : 'text-muted-foreground hover:text-foreground'}
+                  >
+                    {f.protected ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => editingName === f.name ? setEditingName(null) : startEditMeta(f)}
+                    title={t('savedEditMeta')}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </Button>
+                  <Link
+                    to={`/replay?file=${encodeURIComponent(f.name)}`}
+                    className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md transition-colors"
+                  >
+                    <Play className="w-3 h-3" /> {t('btnReplay')}
+                  </Link>
                   <Button
                     variant="outline"
                     size="xs"
-                    disabled={compressing === f.name}
-                    onClick={() => handleCompress(f.name)}
-                    title={t('savedCompress')}
+                    disabled={extracting === `${f.name}:m4a`}
+                    onClick={() => handleExtractAudio(f.name, 'm4a')}
+                    title={t('savedExtractAudio')}
                     className="h-6 px-2 text-xs"
                   >
-                    {compressing === f.name
-                      ? <Loader2 className="w-3 h-3 animate-spin mr-1" />
-                      : <FileArchive className="w-3 h-3 mr-1" />}
-                    720p
+                    <Music className="w-3 h-3 mr-1" /> M4A
                   </Button>
+                  {!/_(balanced|compact)\.mp4$/i.test(f.name) && (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      disabled={compressing === f.name}
+                      onClick={() => handleCompress(f.name)}
+                      title={t('savedCompress')}
+                      className="h-6 px-2 text-xs"
+                    >
+                      {compressing === f.name
+                        ? <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                        : <FileArchive className="w-3 h-3 mr-1" />}
+                      720p
+                    </Button>
+                  )}
+                  <a
+                    href={`/files/${encodeURIComponent(f.name)}`}
+                    download
+                    className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-secondary hover:bg-muted border border-border text-foreground/80 rounded-md transition-colors"
+                  >
+                    <Download className="w-3 h-3" /> {t('btnDownload')}
+                  </a>
+                  <ConfirmButton
+                    onConfirm={() => handleDelete(f.name)}
+                    confirmLabel={t('confirm')}
+                    cancelLabel={t('cancel')}
+                    title={t('accDelete')}
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-muted-foreground hover:text-destructive"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </ConfirmButton>
+                </div>
+                {editingName === f.name && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-border/50">
+                    <Input
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      placeholder="Custom title..."
+                      className="h-7 text-xs flex-1 min-w-[140px]"
+                    />
+                    <Input
+                      value={editNotes}
+                      onChange={(e) => setEditNotes(e.target.value)}
+                      placeholder="Notes / tags..."
+                      className="h-7 text-xs flex-1 min-w-[160px]"
+                    />
+                    <Button size="xs" onClick={() => saveEditMeta(f.name)} className="h-7 px-2">
+                      <Check className="w-3 h-3 mr-1" /> {t('btnSave')}
+                    </Button>
+                    <Button size="xs" variant="ghost" onClick={() => setEditingName(null)} className="h-7 px-2">
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
                 )}
-                <a
-                  href={`/files/${encodeURIComponent(f.name)}`}
-                  download
-                  className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-secondary hover:bg-muted border border-border text-foreground/80 rounded-md transition-colors"
-                >
-                  <Download className="w-3 h-3" /> {t('btnDownload')}
-                </a>
-                <ConfirmButton
-                  onConfirm={() => handleDelete(f.name)}
-                  confirmLabel={t('confirm')}
-                  cancelLabel={t('cancel')}
-                  title={t('accDelete')}
-                  variant="ghost"
-                  size="icon-xs"
-                  className="text-muted-foreground hover:text-destructive"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </ConfirmButton>
               </div>
             ))
           )}

@@ -16,7 +16,7 @@ import { VideoPlayerBox } from '@/components/VideoPlayerBox'
 import { useI18n } from '@/lib/i18n'
 import { getReplayData, extractRecordingAudio } from '@/lib/api'
 import { fmtTimeSec } from '@/lib/format'
-import type { ChatEvent } from '@/lib/types'
+import type { ChatEvent, SpriteMeta } from '@/lib/types'
 import { getKeywords } from '@/lib/chatHighlight'
 import { toast } from 'sonner'
 
@@ -37,6 +37,8 @@ export function ReplayPage() {
   const [durationSec, setDurationSec] = useState<number | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
   const [creatorUsername, setCreatorUsername] = useState<string | null>(null)
+  const [spriteUrl, setSpriteUrl] = useState<string | null>(null)
+  const [spriteMeta, setSpriteMeta] = useState<SpriteMeta | null>(null)
   const [audioMode, setAudioMode] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [loadingAudio, setLoadingAudio] = useState(false)
@@ -96,6 +98,8 @@ export function ReplayPage() {
         const data = await getReplayData(file)
         setLoadError(null)
         setCreatorUsername(data.username || null)
+        setSpriteUrl(data.spriteUrl || null)
+        setSpriteMeta(data.spriteMeta || null)
         setInfo({
           start: data.startMs ? new Date(data.startMs).toLocaleString() : '',
           events: data.eventsExists ? `${data.eventCount} events` : 'No chat sidecar',
@@ -323,6 +327,18 @@ export function ReplayPage() {
               <VideoPlayerBox
                 videoRef={videoRef}
                 src={`/files/${encodeURIComponent(file)}`}
+                overlay={shown.length > 0 ? (
+                  <>
+                    {shown.slice(-6).map((ev) => (
+                      <ChatEventRow
+                        key={ev.id}
+                        event={ev}
+                        timeText={fmtTimeSec(ev.t ?? 0)}
+                        keywords={keywords}
+                      />
+                    ))}
+                  </>
+                ) : undefined}
               />
             )}
             <div className="text-xs text-muted-foreground mt-2 px-1 flex flex-wrap gap-x-4 gap-y-1">
@@ -399,6 +415,9 @@ export function ReplayPage() {
         recording={file}
         hasEvents={hasEvents}
         durationSec={durationSec}
+        currentTime={currentTime}
+        spriteUrl={spriteUrl}
+        spriteMeta={spriteMeta}
         onJump={jumpTo}
       />
 

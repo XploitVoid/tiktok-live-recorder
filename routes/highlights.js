@@ -69,7 +69,7 @@ router.post('/api/highlights/cut', async (req, res) => {
   if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
     return res.status(400).json({ error: 'invalid startSec/endSec' });
   }
-  const vertical = ['crop', 'blur'].includes(req.body?.vertical) ? req.body.vertical : 'none';
+  const vertical = ['crop', 'blur', 'pk-split'].includes(req.body?.vertical) ? req.body.vertical : 'none';
   const burnSubtitles = !!req.body?.burnSubtitles;
   try {
     const out = await cutClip(name, startSec, endSec, { vertical, burnSubtitles });

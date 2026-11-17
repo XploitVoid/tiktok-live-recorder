@@ -270,7 +270,7 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
                 type="password"
                 value={proxyUrl}
                 onChange={(e) => setProxyUrl(e.target.value)}
-                placeholder={settings?.hasProxy ? `Current: ${settings.proxyPreview}` : t('settingsProxyPlaceholder')}
+                placeholder={settings?.hasProxy ? `Current: ${settings.proxyPreview}` : `${t('settingsProxyPlaceholder')} (comma-separated failover)`}
                 autoComplete="off"
                 className="h-8 text-xs flex-1 min-w-[220px] font-mono"
               />

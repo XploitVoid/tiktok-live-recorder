@@ -6,6 +6,7 @@ const { normalizeUsername } = require('../lib/room');
 const { recorderEvents, getJobsList } = require('../lib/recorder');
 const watcher = require('../lib/watcher');
 const chat = require('../lib/chat');
+const { highlightsEvents } = require('../lib/highlights');
 const { buildDashboardData } = require('./chat');
 
 const router = Router();
@@ -48,6 +49,13 @@ router.get('/api/events/stream', (req, res) => {
       recorderEvents.off('jobs', onJobs);
       recorderEvents.off('recordings', onRecordings);
     });
+  }
+
+  // ── Highlights cut progress channel ──
+  if (channels.has('highlights')) {
+    const onCutProgress = (ev) => sendSse(res, 'cut_progress', ev);
+    highlightsEvents.on('cut_progress', onCutProgress);
+    cleanups.push(() => highlightsEvents.off('cut_progress', onCutProgress));
   }
 
   // ── Watchlist channel ──

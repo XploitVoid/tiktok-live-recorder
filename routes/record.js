@@ -16,6 +16,7 @@ const {
 const {
   deleteRecordingBundle,
   readMeta,
+  updateRecordingMeta,
   ensureThumbnailAndMeta,
   extractAudio,
   compressRecording,
@@ -126,6 +127,11 @@ router.get('/api/recordings', (_req, res) => {
           height: meta?.height ?? null,
           fps: meta?.fps ?? null,
           thumbUrl: meta?.thumbUrl ?? null,
+          spriteUrl: meta?.spriteUrl ?? null,
+          spriteMeta: meta?.spriteMeta ?? null,
+          protected: !!meta?.protected,
+          displayTitle: meta?.displayTitle ?? null,
+          notes: meta?.notes ?? '',
         };
       })
       .sort((a, b) => b.mtime - a.mtime);
@@ -164,10 +170,33 @@ router.get('/api/recordings/:name', (req, res) => {
   const userMatch = name.match(/^(.+)_\d{4}\d{2}\d{2}_\d{2}\d{2}\d{2}(?:_p\d+)?\.mp4$/i);
   const username = userMatch ? userMatch[1] : null;
 
+  const meta = readMeta(name);
   res.json({
     name, username, sizeBytes: st.size, startMs, mtimeMs: st.mtimeMs,
     eventsExists, eventCount: events.length, events,
+    protected: !!meta?.protected,
+    displayTitle: meta?.displayTitle ?? null,
+    notes: meta?.notes ?? '',
+    spriteUrl: meta?.spriteUrl ?? null,
+    spriteMeta: meta?.spriteMeta ?? null,
   });
+});
+
+router.patch('/api/recordings/:name', (req, res) => {
+  const resolved = resolveInsideDir(RECORDINGS_DIR, req.params.name, '.mp4');
+  if (!resolved) return res.status(400).json({ error: 'bad name' });
+  try {
+    const updated = updateRecordingMeta(resolved.name, {
+      protected: typeof req.body?.protected === 'boolean' ? req.body.protected : undefined,
+      displayTitle: req.body?.displayTitle,
+      notes: req.body?.notes,
+    });
+    invalidateRecordingsCache();
+    res.json({ ok: true, meta: updated });
+  } catch (e) {
+    const status = e.code === 'NOT_FOUND' ? 404 : 500;
+    res.status(status).json({ error: safeError(e) });
+  }
 });
 
 router.post('/api/recordings/:name/audio', async (req, res) => {

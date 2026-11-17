@@ -88,6 +88,16 @@ export const deleteRecording = (name: string) =>
 export const getReplayData = (name: string) =>
   json<ReplayData>(`/api/recordings/${encodeURIComponent(name)}`)
 
+export const updateRecordingMeta = (
+  name: string,
+  patch: { protected?: boolean; displayTitle?: string | null; notes?: string },
+) =>
+  json<{ ok: boolean; meta: RecordingFile }>(`/api/recordings/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+
 // ── Highlights ──
 export const getHighlights = (recording: string) =>
   json<HighlightsData>(`/api/highlights/${encodeURIComponent(recording)}`)
@@ -99,7 +109,7 @@ export const cutHighlightClip = (
   recording: string,
   startSec: number,
   endSec: number,
-  opts?: { vertical?: 'none' | 'crop' | 'blur'; burnSubtitles?: boolean },
+  opts?: { vertical?: 'none' | 'crop' | 'blur' | 'pk-split'; burnSubtitles?: boolean },
 ) =>
   post<{ ok: boolean; clip: HighlightClip & { reused?: boolean } }>(
     '/api/highlights/cut',
@@ -185,7 +195,15 @@ export const addWatch = (
   username: string,
   quality?: string | null,
   autoRecord?: boolean,
-  opts?: { audioOnly?: boolean; audioBitrate?: string | null },
+  opts?: {
+    audioOnly?: boolean
+    audioBitrate?: string | null
+    priority?: 'high' | 'normal'
+    accountId?: string | null
+    minViewers?: number | null
+    scheduleStart?: string | null
+    scheduleEnd?: string | null
+  },
 ) =>
   post<WatchData>('/api/watch', {
     username,
@@ -193,6 +211,11 @@ export const addWatch = (
     autoRecord,
     audioOnly: opts?.audioOnly,
     audioBitrate: opts?.audioBitrate,
+    priority: opts?.priority,
+    accountId: opts?.accountId,
+    minViewers: opts?.minViewers,
+    scheduleStart: opts?.scheduleStart,
+    scheduleEnd: opts?.scheduleEnd,
   })
 
 export const removeWatch = (username: string) =>
@@ -200,7 +223,16 @@ export const removeWatch = (username: string) =>
 
 export const patchWatch = (
   username: string,
-  patch: { autoRecord?: boolean; audioOnly?: boolean; audioBitrate?: string | null },
+  patch: {
+    autoRecord?: boolean
+    audioOnly?: boolean
+    audioBitrate?: string | null
+    priority?: 'high' | 'normal'
+    accountId?: string | null
+    minViewers?: number | null
+    scheduleStart?: string | null
+    scheduleEnd?: string | null
+  },
 ) =>
   json<void>(`/api/watch/${encodeURIComponent(username)}`, {
     method: 'PATCH',

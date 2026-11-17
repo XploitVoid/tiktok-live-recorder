@@ -55,6 +55,15 @@ export interface RecordJob {
   lastErr?: string
 }
 
+export interface SpriteMeta {
+  intervalSec: number
+  cols: number
+  rows: number
+  tileWidth: number
+  tileHeight: number
+  durationSec: number
+}
+
 export interface RecordingFile {
   name: string
   sizeBytes: number
@@ -67,6 +76,11 @@ export interface RecordingFile {
   height?: number | null
   fps?: number | null
   thumbUrl?: string | null
+  spriteUrl?: string | null
+  spriteMeta?: SpriteMeta | null
+  protected?: boolean
+  displayTitle?: string | null
+  notes?: string
 }
 
 export interface WatchEntry {
@@ -75,6 +89,11 @@ export interface WatchEntry {
   autoRecord: boolean
   audioOnly?: boolean
   audioBitrate?: string | null
+  priority?: 'high' | 'normal'
+  accountId?: string | null
+  minViewers?: number | null
+  scheduleStart?: string | null
+  scheduleEnd?: string | null
   lastStatus?: string
   lastChangedAt?: number
   lastViewerCount?: number
@@ -189,6 +208,11 @@ export interface ReplayData {
   eventCount?: number
   eventsExists?: boolean
   sizeBytes?: number
+  protected?: boolean
+  displayTitle?: string | null
+  notes?: string
+  spriteUrl?: string | null
+  spriteMeta?: SpriteMeta | null
   events?: (ChatEvent & { t?: number })[]
 }
 

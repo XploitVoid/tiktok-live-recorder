@@ -8,6 +8,16 @@ A local Node.js and React stack I put together to monitor TikTok LIVE streams, g
 
 Under the hood, it uses the [`tiktok-live-connector`](https://github.com/zerodytrash/TikTok-Live-Connector) library to pull data without needing an API key, and `ffmpeg` to handle the heavy lifting for video.
 
+> [!NOTE]
+> **🚀 Version 2.0.0 Coming Soon!**
+> - Stalled Stream Watchdog & Auto-Merge Split Parts
+> - Live Instant Clipping & Visual Timeline Trimmer
+> - PK 9:16 Split-Screen Clips & Fullscreen Chat Overlay
+> - Per-Channel Watchlist Settings & Priority Polling
+> - Recording Pin/Protect & Per-Channel Folder Organization
+> - Discord / Telegram Webhooks & Account Cookie Health Check
+> - Local SQLite Search Index
+
 ---
 
 ## Screenshots

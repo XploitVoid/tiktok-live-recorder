@@ -501,15 +501,16 @@ async function createArchive({ stagingParent, bundleDirName, outDir, version, ta
   if (targetSpec.isWindows) {
     const outZip = path.join(artifactsDir, `tiktok-live-recorder-v${version}-${targetSpec.name}-portable.zip`);
     fs.rmSync(outZip, { force: true });
+    const stagingRoot = path.join(stagingParent, bundleDirName);
+    const topItems = fs.readdirSync(stagingRoot).sort();
 
     if (process.platform === 'win32') {
-      const tarRes = spawnSync('tar.exe', ['-a', '-cf', outZip, '-C', stagingParent, bundleDirName], {
+      const tarRes = spawnSync('tar.exe', ['-a', '-cf', outZip, '-C', stagingRoot, ...topItems], {
         stdio: 'inherit',
       });
       if (tarRes.status !== 0 || !fs.existsSync(outZip)) {
         console.log('[package] tar.exe archive failed or unavailable, falling back to Compress-Archive...');
-        const srcDir = path.join(stagingParent, bundleDirName);
-        const psScript = `Compress-Archive -Path '${srcDir.replace(/'/g, "''")}' -DestinationPath '${outZip.replace(/'/g, "''")}' -Force`;
+        const psScript = `Compress-Archive -Path '${stagingRoot.replace(/'/g, "''")}\\*' -DestinationPath '${outZip.replace(/'/g, "''")}' -Force`;
         const psRes = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psScript], {
           stdio: 'inherit',
         });
@@ -518,7 +519,7 @@ async function createArchive({ stagingParent, bundleDirName, outDir, version, ta
         }
       }
     } else {
-      const zipRes = spawnSync('zip', ['-rq', outZip, bundleDirName], { cwd: stagingParent, stdio: 'inherit' });
+      const zipRes = spawnSync('zip', ['-rq', outZip, ...topItems], { cwd: stagingRoot, stdio: 'inherit' });
       if (zipRes.status !== 0 || !fs.existsSync(outZip)) {
         throw new Error('Failed to create portable zip archive via zip');
       }

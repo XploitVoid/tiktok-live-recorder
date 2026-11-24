@@ -24,7 +24,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
   const { t } = useI18n()
   const [files, setFiles] = useState<RecordingFile[]>([])
   const [query, setQuery] = useState('')
-  const [filterMode, setFilterMode] = useState<'all' | 'tiktok' | 'twitch' | 'youtube' | 'chat' | 'highlights' | 'protected'>('all')
+  const [filterMode, setFilterMode] = useState<'all' | 'tiktok' | 'twitch' | 'youtube' | 'kick' | 'chat' | 'highlights' | 'protected'>('all')
   const [sortMode, setSortMode] = useState<'newest' | 'largest' | 'longest'>('newest')
   const [extracting, setExtracting] = useState<string | null>(null)
   const [compressing, setCompressing] = useState<string | null>(null)
@@ -221,6 +221,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
       if (filterMode === 'tiktok' && (f.platform || 'tiktok') !== 'tiktok') return false
       if (filterMode === 'twitch' && f.platform !== 'twitch') return false
       if (filterMode === 'youtube' && f.platform !== 'youtube') return false
+      if (filterMode === 'kick' && f.platform !== 'kick') return false
       if (filterMode === 'chat' && !f.hasEvents) return false
       if (filterMode === 'highlights' && !(f.highlightCount && f.highlightCount > 0)) return false
       if (filterMode === 'protected' && !f.protected) return false
@@ -238,6 +239,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
     tiktok: t('platformTikTok'),
     twitch: t('platformTwitch'),
     youtube: t('platformYouTube'),
+    kick: t('platformKick'),
     chat: t('fChat'),
     highlights: t('highlights'),
     protected: t('savedFilterProtected'),
@@ -391,6 +393,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                 <SelectItem value="tiktok">{t('platformTikTok')}</SelectItem>
                 <SelectItem value="twitch">{t('platformTwitch')}</SelectItem>
                 <SelectItem value="youtube">{t('platformYouTube')}</SelectItem>
+                <SelectItem value="kick">{t('platformKick')}</SelectItem>
                 <SelectItem value="chat">{t('fChat')}</SelectItem>
                 <SelectItem value="highlights">{t('highlights')}</SelectItem>
                 <SelectItem value="protected">{t('savedFilterProtected')}</SelectItem>

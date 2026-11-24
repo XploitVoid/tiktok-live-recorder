@@ -1493,3 +1493,201 @@ test('YouTube Live provider (URL parser, InnerTube/HTML HLS, Live Chat/Super Cha
   assert.ok(ytArgs.includes('Referer: https://www.youtube.com/\r\n'));
   assert.ok(chat.chatEvents);
 });
+
+test('Kick LIVE provider (HLS, Pusher WS chat, yt-dlp fallback) & multi-platform accounts work cleanly', async () => {
+  const providers = require('../lib/providers');
+  const kick = require('../lib/providers/kick');
+  const utils = require('../lib/utils');
+  const ffmpeg = require('../lib/ffmpeg');
+  const accounts = require('../lib/accounts');
+
+  // 1. parseChannelInput & kick.normalizeUsername
+  assert.deepEqual(providers.parseChannelInput('https://kick.com/xQc'), { platform: 'kick', username: 'xqc' });
+  assert.deepEqual(providers.parseChannelInput('kick:WestCOL'), { platform: 'kick', username: 'westcol' });
+  assert.equal(kick.normalizeUsername('browse'), '');
+  assert.equal(providers.sessionKey('kick', 'xqc'), 'kick:xqc');
+
+  // 2. parseKickMasterM3u8 & fetchLiveStatus (v2 API + Cloudflare 403 -> yt-dlp fallback)
+  const kickM3u8 = [
+    '#EXTM3U',
+    '#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,FRAME-RATE=60',
+    'https://fa723fc1b171.us-west-2.playback.live-video.net/api/video/v1/source.m3u8',
+    '#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,FRAME-RATE=30',
+    'https://fa723fc1b171.us-west-2.playback.live-video.net/api/video/v1/720p.m3u8',
+  ].join('\n');
+  const parsedM3u8 = kick.parseKickMasterM3u8(kickM3u8);
+  assert.equal(parsedM3u8.hlsByQuality.uhd_60, 'https://fa723fc1b171.us-west-2.playback.live-video.net/api/video/v1/source.m3u8');
+  assert.equal(parsedM3u8.hlsByQuality.hd, 'https://fa723fc1b171.us-west-2.playback.live-video.net/api/video/v1/720p.m3u8');
+  assert.equal(kick.pickPreferredStream(parsedM3u8).quality, 'uhd_60');
+
+  const liveData = await kick.fetchLiveStatus('xqc', {
+    fetchImpl: async (url) => {
+      if (url.includes('/api/v2/channels/xqc')) {
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            id: 668,
+            slug: 'xqc',
+            verified: true,
+            followers_count: 900000,
+            playback_url: 'https://fa723fc1b171.us-west-2.playback.live-video.net/api/video/v1/master.m3u8',
+            chatroom: { id: 668123 },
+            user: { username: 'xQc', profile_pic: 'https://kick.com/avatar.jpg' },
+            livestream: {
+              id: 777111,
+              session_title: 'Varieties & Chill',
+              viewer_count: 32100,
+              is_live: true,
+              created_at: '2026-11-24T12:00:00Z',
+              categories: [{ name: 'Just Chatting' }],
+              thumbnail: { url: 'https://kick.com/thumb.jpg' },
+            },
+          }),
+        };
+      }
+      return { ok: true, status: 200, text: kickM3u8 };
+    },
+  });
+  assert.equal(kick.isLive(liveData), true);
+  const summary = kick.buildSummary('xqc', liveData, kick.extractStreamUrls(liveData));
+  assert.equal(summary.platform, 'kick');
+  assert.equal(summary.viewerCount, 32100);
+  assert.equal(summary.liveRoomMode, 'Just Chatting');
+  assert.equal(summary.roomId, '668123');
+
+  // Cloudflare 403 -> yt-dlp fallback
+  const cfFallback = await kick.fetchLiveStatus('westcol', {
+    fetchImpl: async (url) => {
+      if (url.includes('kick.com/api/')) return { ok: false, status: 403, text: '<html>Just a moment...</html>' };
+      return { ok: true, status: 200, text: kickM3u8 };
+    },
+    ytDlpExec: async (_bin, args) => {
+      assert.ok(args.includes('https://kick.com/westcol'));
+      return JSON.stringify({
+        id: 'cf-1',
+        is_live: true,
+        title: 'CF Bypassed Stream',
+        uploader: 'WestCOL',
+        concurrent_view_count: 15000,
+        manifest_url: 'https://fa723fc1b171.us-west-2.playback.live-video.net/api/video/v1/master.m3u8',
+      });
+    },
+  });
+  assert.equal(kick.isLive(cfFallback), true);
+  assert.equal(cfFallback.livestream.viewer_count, 15000);
+
+  // 3. parseKickPusherMessage
+  const chatFrame = kick.parseKickPusherMessage(JSON.stringify({
+    event: 'App\\Events\\ChatMessageEvent',
+    data: JSON.stringify({
+      content: 'Hello [emote:12345:KEKW] world',
+      sender: { id: 10, username: 'ChatterOne', slug: 'chatterone' },
+    }),
+  }));
+  assert.equal(chatFrame.events[0].type, 'chat');
+  assert.equal(chatFrame.events[0].comment, 'Hello :KEKW: world');
+  assert.equal(chatFrame.events[0].user.uniqueId, 'chatterone');
+
+  const subFrame = kick.parseKickPusherMessage(JSON.stringify({
+    event: 'App\\Events\\SubscriptionEvent',
+    data: JSON.stringify({ username: 'SubUser', months: 6 }),
+  }));
+  assert.equal(subFrame.events[0].type, 'subscribe');
+  assert.match(subFrame.events[0].label, /6 months/);
+
+  const giftFrame = kick.parseKickPusherMessage(JSON.stringify({
+    event: 'App\\Events\\GiftedSubscriptionsEvent',
+    data: JSON.stringify({ gifter_username: 'BigGifter', gifted_usernames: ['u1', 'u2'] }),
+  }));
+  assert.equal(giftFrame.events[0].type, 'gift');
+  assert.equal(giftFrame.events[0].repeatCount, 2);
+  assert.equal(giftFrame.events[0].diamondCount, 1000);
+  assert.equal(kick.parseKickPusherMessage(JSON.stringify({ event: 'pusher:ping' })).command, 'PING');
+
+  // 4. KickChatSession subscribe, message push, ping/pong, and clean mid-connect disconnect
+  const sentFrames = [];
+  const fakeWs = new EventEmitter();
+  fakeWs.readyState = 1;
+  fakeWs.send = (msg) => sentFrames.push(JSON.parse(msg));
+  fakeWs.close = () => { fakeWs.readyState = 3; };
+  fakeWs.terminate = () => { fakeWs.readyState = 3; };
+  const bus = new EventEmitter();
+  const busEvents = [];
+  bus.on('event', (ev) => busEvents.push(ev));
+  const ks = new kick.KickChatSession('xqc', { chatroomId: '668123', chatEvents: bus, wsFactory: () => fakeWs });
+  ks.uiActive = true;
+  const kp = ks.connect();
+  await Promise.resolve();
+  fakeWs.emit('open');
+  await kp;
+  assert.equal(ks.state, 'connected');
+  assert.equal(sentFrames[0].event, 'pusher:subscribe');
+  assert.equal(sentFrames[0].data.channel, 'chatrooms.668123.v2');
+  fakeWs.emit('message', JSON.stringify({ event: 'pusher:ping' }));
+  assert.equal(sentFrames[1].event, 'pusher:pong');
+  fakeWs.emit('message', JSON.stringify({
+    event: 'App\\Events\\ChatMessageEvent',
+    data: JSON.stringify({ content: 'GGs', sender: { id: 1, username: 'Fan', slug: 'fan' } }),
+  }));
+  assert.equal(ks.events.length, 1);
+  assert.equal(busEvents[0].platform, 'kick');
+  ks.disconnect();
+  assert.equal(ks.state, 'closed');
+  assert.equal(ks._pingTimer, null);
+
+  // Mid-connect disconnect rejects cleanly
+  const hangWs = new EventEmitter();
+  hangWs.readyState = 0;
+  hangWs.send = () => {};
+  hangWs.close = () => { hangWs.readyState = 3; };
+  hangWs.terminate = () => { hangWs.readyState = 3; };
+  const ks2 = new kick.KickChatSession('xqc', { chatroomId: '668123', wsFactory: () => hangWs });
+  ks2.uiActive = true;
+  const kp2 = ks2.connect();
+  await Promise.resolve();
+  ks2.disconnect();
+  await assert.rejects(() => kp2, /connection closed/);
+  assert.equal(ks2._connectTimer, null);
+
+  // 5. CDN SSRF checks, filename prefix & referer
+  assert.equal(utils.isAllowedCdnUrl('https://fa723fc1b171.us-west-2.playback.live-video.net/api/video/v1/source.m3u8'), true);
+  assert.equal(utils.isAllowedCdnUrl('https://kick.com/thumb.jpg'), true);
+  assert.equal(utils.isAllowedCdnUrl('https://evilkick.com/a.m3u8'), false);
+  const dt = new Date(2026, 10, 24, 15, 30, 45);
+  assert.equal(utils.renderRecordingFilename('{username}_{date}_{time}', { platform: 'kick', username: 'xqc', dateObj: dt }), 'kick_xqc_20261124_153045');
+  assert.equal(providers.derivePlatformFromFilename('kick_xqc_20261124_153045.mp4'), 'kick');
+  const kickArgs = ffmpeg.buildRecordArgs({ url: 'https://playback.live-video.net/a.m3u8', kind: 'hls', quality: 'uhd_60', referer: 'https://kick.com/' }, 'out.mp4');
+  assert.ok(kickArgs.includes('Referer: https://kick.com/\r\n'));
+
+  // 6. Multi-platform accounts save/switch + safe non-TikTok health check
+  const root = path.resolve(__dirname, '..');
+  const accFile = path.join(root, 'accounts.json');
+  const keyFile = path.join(root, '.accounts.key');
+  const hadAcc = fs.existsSync(accFile);
+  const hadKey = fs.existsSync(keyFile);
+  const origAcc = hadAcc ? fs.readFileSync(accFile) : null;
+  const origKey = hadKey ? fs.readFileSync(keyFile) : null;
+  const prevSecret = process.env.ACCOUNTS_SECRET;
+  try {
+    process.env.ACCOUNTS_SECRET = 'phase3-test-secret';
+    const kAcc = accounts.add('KickMain', 'kick_secret_token_987654', '', 'kick');
+    assert.equal(kAcc.platform, 'kick');
+    accounts.switchTo(kAcc.id);
+    assert.equal(accounts.getActivePlatformCredential('kick'), 'kick_secret_token_987654');
+    assert.equal(accounts.getActiveByPlatform().kick, kAcc.id);
+    const nonTtHealth = await accounts.checkAccountHealth(kAcc.id, {
+      requestImpl: () => { throw new Error('must not call TikTok passport endpoint'); },
+    });
+    assert.equal(nonTtHealth.status, 'unknown');
+    accounts.remove(kAcc.id);
+    assert.equal(accounts.getActiveByPlatform().kick, null);
+  } finally {
+    if (prevSecret === undefined) delete process.env.ACCOUNTS_SECRET;
+    else process.env.ACCOUNTS_SECRET = prevSecret;
+    if (hadAcc && origAcc) fs.writeFileSync(accFile, origAcc);
+    else fs.rmSync(accFile, { force: true });
+    if (hadKey && origKey) fs.writeFileSync(keyFile, origKey);
+    else fs.rmSync(keyFile, { force: true });
+  }
+});

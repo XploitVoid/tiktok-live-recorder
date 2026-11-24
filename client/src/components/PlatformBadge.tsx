@@ -7,12 +7,14 @@ const BADGE_STYLES: Record<Platform, string> = {
   tiktok: 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30',
   twitch: 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/30',
   youtube: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30',
+  kick: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30',
 }
 
 const ACTIVE_SWITCH_STYLES: Record<Platform, string> = {
   tiktok: 'bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-500/40 shadow-xs',
   twitch: 'bg-purple-500/20 text-purple-700 dark:text-purple-300 border border-purple-500/40 shadow-xs',
   youtube: 'bg-red-500/20 text-red-700 dark:text-red-300 border border-red-500/40 shadow-xs',
+  kick: 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40 shadow-xs',
 }
 
 export function PlatformBadge({
@@ -29,7 +31,9 @@ export function PlatformBadge({
       ? t('platformTwitch')
       : plat === 'youtube'
         ? t('platformYouTube')
-        : t('platformTikTok')
+        : plat === 'kick'
+          ? t('platformKick')
+          : t('platformTikTok')
   return (
     <Badge
       variant="secondary"
@@ -51,11 +55,12 @@ export function PlatformSwitch({
 }) {
   const { t } = useI18n()
   const heightCls = size === 'sm' ? 'h-8' : 'h-10'
-  const btnCls = size === 'sm' ? 'px-2.5 text-xs' : 'px-3 text-xs'
+  const btnCls = size === 'sm' ? 'px-2 text-xs' : 'px-2.5 text-xs'
   const options: { id: Platform; label: string }[] = [
     { id: 'tiktok', label: t('platformTikTok') },
     { id: 'twitch', label: t('platformTwitch') },
     { id: 'youtube', label: t('platformYouTube') },
+    { id: 'kick', label: t('platformKick') },
   ]
 
   return (

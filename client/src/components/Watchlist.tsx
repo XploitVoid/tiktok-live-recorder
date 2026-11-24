@@ -320,7 +320,7 @@ export function Watchlist({ onJobsChanged }: Props) {
               onChange={(e) => {
                 const val = e.target.value
                 setAddUsername(val)
-                if (/^(?:twitch|tiktok|youtube|yt):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be)\//i.test(val)) {
+                if (/^(?:twitch|tiktok|youtube|yt|kick):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be|kick\.com)\//i.test(val)) {
                   const detected = parseChannelInput(val, addPlatform)
                   if (detected.platform !== addPlatform) setAddPlatform(detected.platform)
                 }

@@ -193,6 +193,11 @@ router.get('/api/proxy', async (req, res) => {
       targetHost.endsWith('.ggpht.com') || targetHost === 'ggpht.com'
     ) {
       referer = 'https://www.youtube.com/';
+    } else if (
+      targetHost.endsWith('.live-video.net') || targetHost === 'live-video.net' ||
+      targetHost.endsWith('.kick.com') || targetHost === 'kick.com'
+    ) {
+      referer = 'https://kick.com/';
     }
     const upstream = await safeFetch(target, {
       headers: {

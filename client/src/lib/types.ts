@@ -1,4 +1,4 @@
-export type Platform = 'tiktok' | 'twitch' | 'youtube'
+export type Platform = 'tiktok' | 'twitch' | 'youtube' | 'kick'
 
 export interface Owner {
   nickname?: string

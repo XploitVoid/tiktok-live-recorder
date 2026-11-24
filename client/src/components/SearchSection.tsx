@@ -124,7 +124,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
   const cleanedInput = parsedInput.username
   const inputIsFav = !!cleanedInput && isFavorite(cleanedInput, parsedInput.platform)
   const normEntryKey = (p: Platform, u: string) => {
-    if (p === 'twitch') return `twitch:${u.toLowerCase()}`
+    if (p === 'twitch' || p === 'kick') return `${p}:${u.toLowerCase()}`
     if (p === 'youtube') return `youtube:${/^v_|^UC/.test(u) ? u : u.toLowerCase()}`
     return `tiktok:${u}`
   }
@@ -133,7 +133,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
 
   const handleInputChange = (val: string) => {
     setUsername(val)
-    if (/^(?:twitch|tiktok|youtube|yt):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be)\//i.test(val)) {
+    if (/^(?:twitch|tiktok|youtube|yt|kick):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be|kick\.com)\//i.test(val)) {
       const detected = parseChannelInput(val, platform)
       if (detected.platform !== platform) setPlatform(detected.platform)
     }

@@ -332,6 +332,7 @@ export const getChatDashboard = <T>() =>
 export interface AccountInfo {
   id: string
   label: string
+  platform?: Platform
   hasSession: boolean
   sessionPreview: string
   health?: AccountHealth | null
@@ -339,20 +340,25 @@ export interface AccountInfo {
 
 export interface AccountsResponse {
   accounts: AccountInfo[]
-  active: { id: string | null; sessionPreview: string; hasSession: boolean }
+  active: {
+    id: string | null
+    sessionPreview: string
+    hasSession: boolean
+    byPlatform?: Record<Platform, string | null>
+  }
   stealth: boolean
 }
 
 export const getAccounts = () => json<AccountsResponse>('/api/accounts')
 
-export const addAccount = (label: string, sessionId: string, ttTargetIdc?: string) =>
-  post<{ ok: boolean; id: string; label: string }>('/api/accounts', { label, sessionId, ttTargetIdc })
+export const addAccount = (label: string, sessionId: string, ttTargetIdc?: string, platform?: Platform) =>
+  post<{ ok: boolean; id: string; label: string; platform?: Platform }>('/api/accounts', { label, sessionId, ttTargetIdc, platform })
 
 export const deleteAccount = (id: string) =>
   json<void>(`/api/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
-export const switchAccount = (id?: string) =>
-  post<{ ok: boolean; hasSession: boolean }>('/api/accounts/switch', { id })
+export const switchAccount = (id?: string, platform?: Platform) =>
+  post<{ ok: boolean; hasSession: boolean; platform?: Platform }>('/api/accounts/switch', { id, platform })
 
 export const toggleStealth = (enabled: boolean) =>
   post<{ ok: boolean; stealth: boolean }>('/api/accounts/stealth', { enabled })

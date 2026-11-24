@@ -4,8 +4,10 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { ConfirmButton } from '@/components/ConfirmButton'
+import { PlatformBadge, PlatformSwitch } from '@/components/PlatformBadge'
 import { getAccounts, addAccount, deleteAccount, switchAccount, toggleStealth, checkAccountHealth, checkAllAccountsHealth } from '@/lib/api'
 import type { AccountInfo, AccountsResponse } from '@/lib/api'
+import type { Platform } from '@/lib/types'
 import { useI18n } from '@/lib/i18n'
 import { toast } from 'sonner'
 
@@ -14,6 +16,7 @@ export function AccountSwitcher() {
   const [data, setData] = useState<AccountsResponse | null>(null)
   const [open, setOpen] = useState(false)
   const [adding, setAdding] = useState(false)
+  const [accPlatform, setAccPlatform] = useState<Platform>('tiktok')
   const [label, setLabel] = useState('')
   const [sessionId, setSessionId] = useState('')
   const [ttTargetIdc, setTtTargetIdc] = useState('')
@@ -87,10 +90,16 @@ export function AccountSwitcher() {
     }
     setSaving(true)
     try {
-      await addAccount(label.trim() || 'Account', sessionId.trim(), ttTargetIdc.trim() || undefined)
+      await addAccount(
+        label.trim() || 'Account',
+        sessionId.trim(),
+        accPlatform === 'tiktok' ? (ttTargetIdc.trim() || undefined) : undefined,
+        accPlatform,
+      )
       setLabel('')
       setSessionId('')
       setTtTargetIdc('')
+      setAccPlatform('tiktok')
       setAdding(false)
       await refresh()
       toast.success(t('accSaved'))
@@ -250,7 +259,10 @@ export function AccountSwitcher() {
               </button>
 
               {data?.accounts.map((acc: AccountInfo) => {
-                const active = data.active.id === acc.id
+                const plat = acc.platform || 'tiktok'
+                const active = plat === 'tiktok'
+                  ? data.active.id === acc.id
+                  : data.active.byPlatform?.[plat] === acc.id
                 return (
                   <div
                     key={acc.id}
@@ -267,6 +279,7 @@ export function AccountSwitcher() {
                     >
                       <div className="flex items-center gap-1.5 min-w-0">
                         <UserCheck className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400 shrink-0" />
+                        {plat !== 'tiktok' && <PlatformBadge platform={plat} className="text-[9px] px-1 py-0" />}
                         <span className="truncate">{acc.label}</span>
                         <span className="text-[10px] font-mono text-muted-foreground/70 shrink-0 tabular-nums">
                           {acc.sessionPreview}
@@ -341,6 +354,7 @@ export function AccountSwitcher() {
 
             {adding ? (
               <div className="space-y-2 pt-2 border-t border-border">
+                <PlatformSwitch value={accPlatform} onChange={setAccPlatform} size="sm" />
                 <Input
                   placeholder={t('accNamePlaceholder')}
                   value={label}
@@ -349,17 +363,27 @@ export function AccountSwitcher() {
                 />
                 <Input
                   type="password"
-                  placeholder={t('accSessionPlaceholder')}
+                  placeholder={
+                    accPlatform === 'twitch'
+                      ? t('accTokenPlaceholderTwitch')
+                      : accPlatform === 'youtube'
+                        ? t('accTokenPlaceholderYouTube')
+                        : accPlatform === 'kick'
+                          ? t('accTokenPlaceholderKick')
+                          : t('accSessionPlaceholder')
+                  }
                   value={sessionId}
                   onChange={(e) => setSessionId(e.target.value)}
                   className="h-8 text-xs font-mono"
                 />
-                <Input
-                  placeholder={t('accTargetIdcPlaceholder')}
-                  value={ttTargetIdc}
-                  onChange={(e) => setTtTargetIdc(e.target.value)}
-                  className="h-8 text-xs font-mono"
-                />
+                {accPlatform === 'tiktok' && (
+                  <Input
+                    placeholder={t('accTargetIdcPlaceholder')}
+                    value={ttTargetIdc}
+                    onChange={(e) => setTtTargetIdc(e.target.value)}
+                    className="h-8 text-xs font-mono"
+                  />
+                )}
                 <div className="flex gap-1.5">
                   <Button
                     size="xs"
@@ -372,7 +396,7 @@ export function AccountSwitcher() {
                   <Button
                     size="xs"
                     variant="ghost"
-                    onClick={() => { setAdding(false); setTtTargetIdc('') }}
+                    onClick={() => { setAdding(false); setTtTargetIdc(''); setAccPlatform('tiktok') }}
                   >
                     {t('btnCancel')}
                   </Button>

@@ -27,7 +27,7 @@ function normPlatform(p?: unknown): Platform {
 
 function normUsername(username: string, platform: Platform): string {
   const s = username.trim()
-  if (platform === 'twitch') return s.toLowerCase()
+  if (platform === 'twitch' || platform === 'kick') return s.toLowerCase()
   if (platform === 'youtube') {
     if (/^v_[A-Za-z0-9_-]{11}$/.test(s) || /^UC[A-Za-z0-9_-]{22}$/.test(s)) return s
     return s.toLowerCase()

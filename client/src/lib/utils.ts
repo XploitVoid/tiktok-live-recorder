@@ -49,8 +49,26 @@ export function normalizePlatform(raw?: unknown, fallback: Platform = 'tiktok'):
   const p = raw.trim().toLowerCase()
   if (p === 'twitch') return 'twitch'
   if (p === 'youtube' || p === 'yt') return 'youtube'
+  if (p === 'kick') return 'kick'
   if (p === 'tiktok') return 'tiktok'
   return fallback
+}
+
+function cleanKickSlug(raw: string): string {
+  let s = raw.trim()
+  if (!s) return ''
+  if (/^https?:\/\//i.test(s) || /^(?:www\.|m\.)?kick\.com\//i.test(s)) {
+    try {
+      const url = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`)
+      const m = url.pathname.match(/^\/([^/]+)/)
+      s = m ? m[1] : ''
+    } catch {
+      // fall through
+    }
+  } else {
+    s = s.replace(/^@/, '').replace(/[/?#].*$/, '')
+  }
+  return s.replace(/^@/, '').trim().toLowerCase()
 }
 
 function cleanTwitchLogin(raw: string): string {
@@ -110,6 +128,9 @@ export function formatChannelUrl(platform: Platform | undefined, username: strin
   if (plat === 'twitch') {
     return `https://www.twitch.tv/${encodeURIComponent(username)}`
   }
+  if (plat === 'kick') {
+    return `https://kick.com/${encodeURIComponent(username)}`
+  }
   if (plat === 'youtube') {
     const vidMatch = username.match(/^v_([A-Za-z0-9_-]{11})$/)
     if (vidMatch) return `https://www.youtube.com/watch?v=${encodeURIComponent(vidMatch[1])}`
@@ -122,7 +143,7 @@ export function formatChannelUrl(platform: Platform | undefined, username: strin
 }
 
 /**
- * Parse a username, explicit platform prefix ("twitch:name", "youtube:@name", "tiktok:@name"),
+ * Parse a username, explicit platform prefix ("twitch:name", "youtube:@name", "kick:name", "tiktok:@name"),
  * or channel URL into { platform, username }.
  */
 export function parseChannelInput(
@@ -132,16 +153,17 @@ export function parseChannelInput(
   const s = raw.trim()
   if (!s) return { platform: fallback, username: '' }
 
-  const prefixMatch = s.match(/^(twitch|tiktok|youtube|yt):(.*)$/i)
+  const prefixMatch = s.match(/^(twitch|tiktok|youtube|yt|kick):(.*)$/i)
   if (prefixMatch) {
     const plat = normalizePlatform(prefixMatch[1])
     const rest = prefixMatch[2].trim()
     if (plat === 'twitch') return { platform: 'twitch', username: cleanTwitchLogin(rest) }
     if (plat === 'youtube') return { platform: 'youtube', username: cleanYouTubeInput(rest) }
+    if (plat === 'kick') return { platform: 'kick', username: cleanKickSlug(rest) }
     return { platform: 'tiktok', username: cleanUsernameInput(rest) }
   }
 
-  if (/^https?:\/\//i.test(s) || /^(?:www\.|m\.|music\.|gaming\.)?(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be)\//i.test(s)) {
+  if (/^https?:\/\//i.test(s) || /^(?:www\.|m\.|music\.|gaming\.)?(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be|kick\.com)\//i.test(s)) {
     try {
       const url = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`)
       const host = url.hostname.toLowerCase()
@@ -150,6 +172,9 @@ export function parseChannelInput(
       }
       if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') {
         return { platform: 'youtube', username: cleanYouTubeInput(s) }
+      }
+      if (host === 'kick.com' || host.endsWith('.kick.com')) {
+        return { platform: 'kick', username: cleanKickSlug(s) }
       }
       if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
         return { platform: 'tiktok', username: cleanUsernameInput(s) }
@@ -161,5 +186,6 @@ export function parseChannelInput(
 
   if (fallback === 'twitch') return { platform: 'twitch', username: cleanTwitchLogin(s) }
   if (fallback === 'youtube') return { platform: 'youtube', username: cleanYouTubeInput(s) }
+  if (fallback === 'kick') return { platform: 'kick', username: cleanKickSlug(s) }
   return { platform: 'tiktok', username: cleanUsernameInput(s) }
 }

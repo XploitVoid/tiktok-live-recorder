@@ -78,8 +78,8 @@
 - [x] เพิ่ม optional `yt-dlp` fallback และรองรับใน `Dockerfile`
 
 ### 🟠 เฟสที่ 3: Kick & Multi-Platform UI (`v2.0.0-beta.2`)
-- [ ] พัฒนา `lib/providers/kick.js` (HLS + Pusher WebSocket + Cloudflare/proxy fallback)
-- [ ] อัปเกรด `AccountSwitcher`, `Watchlist`, `SavedRecordings`, `GridPage` และ `SearchSection` ให้เลือก/กรองตามแพลตฟอร์มและวาง URL ข้ามแพลตฟอร์มได้
+- [x] พัฒนา `lib/providers/kick.js` (HLS + Pusher WebSocket + Cloudflare/proxy fallback)
+- [x] อัปเกรด `AccountSwitcher`, `Watchlist`, `SavedRecordings`, `GridPage` และ `SearchSection` ให้เลือก/กรองตามแพลตฟอร์มและวาง URL ข้ามแพลตฟอร์มได้
 
 ### 🔵 เฟสที่ 4: ความเข้ากันได้ย้อนหลัง, ทดสอบ & ปล่อยเวอร์ชันจริง (`v2.0.0 Stable`)
 - [ ] ทดสอบ backward compatibility กับ `watchlist.json`, `accounts.json`, `settings.json`, `recordings/` และ `recorder.db` จาก `v1.6.0`

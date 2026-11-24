@@ -293,7 +293,10 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
 
   // Build record quality options
   const recordQualities: { value: string; label: string }[] = []
-  const qs = s.qualities?.length ? s.qualities : Object.keys(s.flv || {}).map(k => ({ name: k, sdkKey: k }))
+  const qs = s.qualities?.length
+    ? s.qualities
+    : (Object.keys(s.flv || {}).length ? Object.keys(s.flv || {}) : Object.keys(s.hlsByQuality || {}))
+        .map(k => ({ name: k, sdkKey: k }))
   for (const q of qs) {
     if (q.sdkKey === 'ao') continue
     recordQualities.push({ value: q.sdkKey, label: `${q.name} (${q.sdkKey})` })
@@ -303,7 +306,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
     if (q.sdkKey === 'ao') continue
     recordQualities.push({ value: `hevc:${q.sdkKey}`, label: `${q.name} (${q.sdkKey}) · HEVC` })
   }
-  if (s.flv?.ao || s.cmaf?.ao) {
+  if (s.flv?.ao || s.cmaf?.ao || s.hlsByQuality?.ao) {
     recordQualities.push({ value: 'ao', label: 'Audio Only (ao)' })
   } else {
     recordQualities.push({ value: 'ao', label: t('audioOnlyForce') })
@@ -342,6 +345,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
       const result = await apiStartRecord(data.username, q, {
         audioOnly: recordQuality === 'ao',
         audioBitrate: abr,
+        platform: data.platform,
       })
       toast.success(result.reused ? 'Already recording' : `Recording @${data.username}`, {
         description: result.file,
@@ -403,7 +407,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
             <p className="text-xs text-muted-foreground mt-1">{playerInfo}</p>
           </div>
           <div className="overflow-hidden" style={isDesktop && chatHeight ? { height: chatHeight } : undefined}>
-            <ChatPanel key={data.username} username={data.username} />
+            <ChatPanel key={`${data.platform || 'tiktok'}:${data.username}`} username={data.username} platform={data.platform} />
           </div>
         </div>
 

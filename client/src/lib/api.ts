@@ -1,4 +1,5 @@
 import type {
+  Platform,
   CheckResult,
   RecordJob,
   RecordingFile,
@@ -53,8 +54,10 @@ export const logoutAuth = () =>
   post<{ ok: boolean }>('/api/auth/logout')
 
 // ── Check / Stream ──
-export async function checkStream(username: string): Promise<CheckResult> {
-  const url = `/api/stream?u=${encodeURIComponent(username)}`
+export async function checkStream(username: string, platform?: Platform): Promise<CheckResult> {
+  const params = new URLSearchParams({ u: username })
+  if (platform) params.set('platform', platform)
+  const url = `/api/stream?${params.toString()}`
   const r = await fetch(url)
   if (r.status === 401) {
     window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
@@ -77,14 +80,15 @@ export async function checkStream(username: string): Promise<CheckResult> {
 export const startRecord = (
   username: string,
   quality?: string,
-  opts?: { audioOnly?: boolean; audioBitrate?: string | null; recordChat?: boolean },
+  opts?: { audioOnly?: boolean; audioBitrate?: string | null; recordChat?: boolean; platform?: Platform },
 ) =>
-  post<{ file: string; reused?: boolean }>('/api/record/start', {
+  post<{ file: string; reused?: boolean; platform?: Platform }>('/api/record/start', {
     username,
     quality,
     audioOnly: opts?.audioOnly,
     audioBitrate: opts?.audioBitrate,
     recordChat: opts?.recordChat,
+    platform: opts?.platform,
   })
 
 export const stopRecord = (id: number) =>
@@ -242,6 +246,7 @@ export const addWatch = (
   quality?: string | null,
   autoRecord?: boolean,
   opts?: {
+    platform?: Platform
     audioOnly?: boolean
     audioBitrate?: string | null
     recordChat?: boolean
@@ -256,6 +261,7 @@ export const addWatch = (
     username,
     quality,
     autoRecord,
+    platform: opts?.platform,
     audioOnly: opts?.audioOnly,
     audioBitrate: opts?.audioBitrate,
     recordChat: opts?.recordChat,
@@ -266,12 +272,15 @@ export const addWatch = (
     scheduleEnd: opts?.scheduleEnd,
   })
 
-export const removeWatch = (username: string) =>
-  json<void>(`/api/watch/${encodeURIComponent(username)}`, { method: 'DELETE' })
+export const removeWatch = (username: string, platform?: Platform) => {
+  const qs = platform ? `?platform=${encodeURIComponent(platform)}` : ''
+  return json<void>(`/api/watch/${encodeURIComponent(username)}${qs}`, { method: 'DELETE' })
+}
 
 export const patchWatch = (
   username: string,
   patch: {
+    platform?: Platform
     quality?: string | null
     autoRecord?: boolean
     audioOnly?: boolean
@@ -283,12 +292,14 @@ export const patchWatch = (
     scheduleStart?: string | null
     scheduleEnd?: string | null
   },
-) =>
-  json<void>(`/api/watch/${encodeURIComponent(username)}`, {
+) => {
+  const qs = patch.platform ? `?platform=${encodeURIComponent(patch.platform)}` : ''
+  return json<void>(`/api/watch/${encodeURIComponent(username)}${qs}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(patch),
   })
+}
 
 export const savePollSeconds = (seconds: number) =>
   post<void>('/api/watch/poll-seconds', { seconds })
@@ -302,14 +313,17 @@ export const getLiveStreams = () =>
   json<CheckResult[]>('/api/watch/live-streams')
 
 // ── Chat ──
-export const startChat = (username: string) =>
-  post<void>('/api/chat/start', { username })
+export const startChat = (username: string, platform?: Platform) =>
+  post<void>('/api/chat/start', { username, platform })
 
-export const stopChat = (username: string) =>
-  post<void>('/api/chat/stop', { username })
+export const stopChat = (username: string, platform?: Platform) =>
+  post<void>('/api/chat/stop', { username, platform })
 
-export const getChatEvents = (username: string, sinceId: number) =>
-  json<ChatPollResult>(`/api/chat/events?username=${encodeURIComponent(username)}&sinceId=${sinceId}`)
+export const getChatEvents = (username: string, sinceId: number, platform?: Platform) => {
+  const params = new URLSearchParams({ username, sinceId: String(sinceId) })
+  if (platform) params.set('platform', platform)
+  return json<ChatPollResult>(`/api/chat/events?${params.toString()}`)
+}
 
 export const getChatDashboard = <T>() =>
   json<T>('/api/chat/dashboard')

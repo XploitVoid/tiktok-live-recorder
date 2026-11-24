@@ -7,6 +7,7 @@ import { useI18n } from '@/lib/i18n'
 import { useEventStream } from '@/lib/useEventStream'
 import { fmtBytes, fmtDuration, fmtTime } from '@/lib/format'
 import { getJobs, stopRecord, cutLiveClip } from '@/lib/api'
+import { PlatformBadge } from '@/components/PlatformBadge'
 import type { RecordJob } from '@/lib/types'
 import { toast } from 'sonner'
 
@@ -124,6 +125,7 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
                         </>
                       )}
                     </Badge>
+                    <PlatformBadge platform={j.platform || 'tiktok'} />
                     <span className="font-medium font-mono text-sm">@{j.username}</span>
                     <span className="text-xs text-muted-foreground font-mono">{j.kind}/{j.quality}</span>
                     {!!j.part && j.part > 1 && (

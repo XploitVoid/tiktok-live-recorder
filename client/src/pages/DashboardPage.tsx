@@ -4,10 +4,11 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Header } from '@/components/Header'
 import { ChatEventRow } from '@/components/ChatEventRow'
+import { PlatformBadge } from '@/components/PlatformBadge'
 import { useI18n } from '@/lib/i18n'
 import { useEventStream } from '@/lib/useEventStream'
 import { fmtTime } from '@/lib/format'
-import type { ChatEvent } from '@/lib/types'
+import type { ChatEvent, Platform } from '@/lib/types'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,7 @@ interface StreamHealth {
 }
 
 interface DashboardStream {
+  platform?: Platform
   username: string
   viewerCount: number
   eventCount: number
@@ -45,7 +47,7 @@ interface DashboardData {
   unifiedFeed: UnifiedChatEvent[]
 }
 
-type UnifiedChatEvent = ChatEvent & { _username?: string }
+type UnifiedChatEvent = ChatEvent & { _username?: string; _platform?: Platform }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -66,8 +68,12 @@ const STREAM_COLORS: StreamColor[] = [
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
-function getStreamColor(username: string, allUsernames: string[]): StreamColor {
-  const index = allUsernames.indexOf(username)
+function streamKey(platform: Platform | undefined, username: string): string {
+  return `${platform === 'twitch' ? 'twitch' : 'tiktok'}:${username}`
+}
+
+function getStreamColor(key: string, allKeys: string[]): StreamColor {
+  const index = allKeys.indexOf(key)
   return STREAM_COLORS[index >= 0 ? index % STREAM_COLORS.length : 0]
 }
 
@@ -107,9 +113,11 @@ function StatCard({ icon, value, label }: { icon: React.ReactNode; value: number
   )
 }
 
-function StreamCard({ stream, allUsernames, now }: { stream: DashboardStream; allUsernames: string[]; now: number }) {
+function StreamCard({ stream, allKeys, now }: { stream: DashboardStream; allKeys: string[]; now: number }) {
   const { t } = useI18n()
-  const color = getStreamColor(stream.username, allUsernames)
+  const plat: Platform = stream.platform === 'twitch' ? 'twitch' : 'tiktok'
+  const key = streamKey(plat, stream.username)
+  const color = getStreamColor(key, allKeys)
   const { health } = stream
   const stale = isStreamStale(health, now)
   const hasIssues = health && (health.reconnectCount > 0 || health.errorsCount > 0 || stale)
@@ -117,23 +125,27 @@ function StreamCard({ stream, allUsernames, now }: { stream: DashboardStream; al
   const statusColor = stale ? 'bg-red-500' : hasIssues ? 'bg-amber-500' : 'bg-emerald-500'
   const statusTitle = stale ? t('dashStale') : hasIssues ? t('dashUnstable') : t('dashHealthy')
   const uptimeStr = formatUptime(health?.lastConnectedAt ?? null, now)
+  const liveUrl = plat === 'twitch'
+    ? `https://www.twitch.tv/${encodeURIComponent(stream.username)}`
+    : `https://www.tiktok.com/@${encodeURIComponent(stream.username)}/live`
 
   return (
     <Card className="border-border/50">
       <CardContent className="pt-4 pb-3">
         {/* Stream header */}
-        <div className="flex items-center gap-2 mb-2">
-          <span className={`w-2.5 h-2.5 rounded-full ${color.bg} animate-pulse`} />
+        <div className="flex items-center gap-2 mb-2 min-w-0">
+          <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${color.bg} animate-pulse`} />
           <a
-            href={`https://www.tiktok.com/@${encodeURIComponent(stream.username)}/live`}
+            href={liveUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className={`font-semibold text-sm ${color.text} hover:underline`}
+            className={`font-semibold text-sm ${color.text} hover:underline truncate`}
           >
             @{stream.username}
           </a>
+          <PlatformBadge platform={plat} />
           <span className="flex-1" />
-          <span className={`w-2 h-2 rounded-full ${statusColor}`} title={statusTitle} />
+          <span className={`w-2 h-2 rounded-full shrink-0 ${statusColor}`} title={statusTitle} />
         </div>
 
         {/* Stats grid */}
@@ -175,19 +187,21 @@ function StreamCard({ stream, allUsernames, now }: { stream: DashboardStream; al
 }
 
 function FilterChips({
-  allUsernames,
+  streams,
+  allKeys,
   filter,
   onToggle,
   onClear,
 }: {
-  allUsernames: string[]
+  streams: DashboardStream[]
+  allKeys: string[]
   filter: Set<string>
-  onToggle: (username: string) => void
+  onToggle: (key: string) => void
   onClear: () => void
 }) {
   const { t } = useI18n()
 
-  if (allUsernames.length <= 1) return null
+  if (streams.length <= 1) return null
 
   return (
     <div className="flex flex-wrap gap-1.5 items-center">
@@ -202,13 +216,14 @@ function FilterChips({
       >
         {t('fAll')}
       </button>
-      {allUsernames.map((username) => {
-        const color = getStreamColor(username, allUsernames)
-        const active = filter.has(username)
+      {streams.map((stream) => {
+        const key = streamKey(stream.platform, stream.username)
+        const color = getStreamColor(key, allKeys)
+        const active = filter.has(key)
         return (
           <button
-            key={username}
-            onClick={() => onToggle(username)}
+            key={key}
+            onClick={() => onToggle(key)}
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border transition-colors ${
               active
                 ? `${color.badge} font-semibold`
@@ -218,7 +233,8 @@ function FilterChips({
             }`}
           >
             <span className={`w-2 h-2 rounded-full ${color.bg}`} />
-            @{username}
+            {stream.platform === 'twitch' && <PlatformBadge platform="twitch" className="text-[9px] px-1 py-0" />}
+            @{stream.username}
           </button>
         )
       })}
@@ -233,7 +249,7 @@ function UnifiedChatLine({ event, color }: { event: UnifiedChatEvent; color: Str
   const streamBadge = event._username ? (
     <span className={`inline-flex items-center gap-0.5 px-1.5 py-0 rounded text-[9px] font-mono font-semibold ${color.badge} border`}>
       <span className={`w-1.5 h-1.5 rounded-full ${color.bg}`} />
-      {event._username}
+      {event._platform === 'twitch' ? 'twitch:' : ''}{event._username}
     </span>
   ) : null
 
@@ -276,25 +292,27 @@ export function DashboardPage() {
     }
   }, [data?.unifiedFeed])
 
-  const allUsernames = useMemo(() => {
-    return data?.streams.map((stream) => stream.username) ?? []
+  const allKeys = useMemo(() => {
+    return data?.streams.map((stream) => streamKey(stream.platform, stream.username)) ?? []
   }, [data?.streams])
 
   const filteredFeed = useMemo(() => {
     if (!data) return []
     if (filter.size === 0) return data.unifiedFeed
-    return data.unifiedFeed.filter((ev) => ev._username && filter.has(ev._username))
+    return data.unifiedFeed.filter(
+      (ev) => ev._username && filter.has(streamKey(ev._platform, ev._username)),
+    )
   }, [data, filter])
 
   const totalDiamonds = useMemo(() => {
     return data?.streams.reduce((sum, stream) => sum + stream.recentDiamonds, 0) ?? 0
   }, [data?.streams])
 
-  const toggleFilter = useCallback((username: string) => {
+  const toggleFilter = useCallback((key: string) => {
     setFilter((prev) => {
       const next = new Set(prev)
-      if (next.has(username)) next.delete(username)
-      else next.add(username)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }, [])
@@ -330,7 +348,7 @@ export function DashboardPage() {
       {data && data.streams.length > 0 && (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {data.streams.map((stream) => (
-            <StreamCard key={stream.username} stream={stream} allUsernames={allUsernames} now={now} />
+            <StreamCard key={streamKey(stream.platform, stream.username)} stream={stream} allKeys={allKeys} now={now} />
           ))}
         </div>
       )}
@@ -344,7 +362,8 @@ export function DashboardPage() {
           </h3>
 
           <FilterChips
-            allUsernames={allUsernames}
+            streams={data?.streams ?? []}
+            allKeys={allKeys}
             filter={filter}
             onToggle={toggleFilter}
             onClear={clearFilter}
@@ -360,9 +379,9 @@ export function DashboardPage() {
             )}
             {filteredFeed.map((ev) => (
               <UnifiedChatLine
-                key={`${ev._username}_${ev.id}`}
+                key={`${streamKey(ev._platform, ev._username ?? '')}_${ev.id}`}
                 event={ev}
-                color={getStreamColor(ev._username ?? '', allUsernames)}
+                color={getStreamColor(streamKey(ev._platform, ev._username ?? ''), allKeys)}
               />
             ))}
           </div>

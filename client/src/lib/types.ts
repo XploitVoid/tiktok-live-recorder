@@ -1,3 +1,5 @@
+export type Platform = 'tiktok' | 'twitch'
+
 export interface Owner {
   nickname?: string
   uniqueId?: string
@@ -21,6 +23,7 @@ export interface StreamData {
 }
 
 export interface CheckResult {
+  platform?: Platform
   username: string
   live: boolean
   streamsAvailable?: boolean
@@ -35,6 +38,7 @@ export interface CheckResult {
 
 export interface RecordJob {
   id: number
+  platform?: Platform
   username: string
   kind: string
   quality: string
@@ -68,6 +72,7 @@ export interface SpriteMeta {
 
 export interface RecordingFile {
   name: string
+  platform?: Platform
   sizeBytes: number
   mtime?: number
   hasEvents: boolean
@@ -87,6 +92,7 @@ export interface RecordingFile {
 }
 
 export interface WatchEntry {
+  platform?: Platform
   username: string
   quality?: string
   autoRecord: boolean
@@ -113,6 +119,7 @@ export interface WatchEvent {
   id: number
   ts: number
   type: string
+  platform?: Platform
   username: string
   title?: string
   viewerCount?: number
@@ -220,12 +227,14 @@ export interface SettingsResponse {
 }
 
 export interface ChatPollResult {
+  platform?: Platform
   state: string
   viewerCount?: number
   events?: ChatEvent[]
 }
 
 export interface ReplayData {
+  platform?: Platform
   username?: string | null
   startMs?: number
   eventCount?: number

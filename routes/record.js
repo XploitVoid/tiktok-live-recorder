@@ -3,7 +3,7 @@
 const { Router } = require('express');
 const fs = require('fs');
 const path = require('path');
-const { normalizeUsername } = require('../lib/room');
+const { parseChannelInput } = require('../lib/providers');
 const { safeError, sanitizeQuality, sanitizeAudioBitrate, resolveRecordingPath, readEvents, parseStartTimeFromName } = require('../lib/utils');
 const db = require('../lib/db');
 const {
@@ -33,7 +33,7 @@ const router = Router();
 // ── Recording control ──
 
 router.post('/api/record/start', async (req, res) => {
-  const username = normalizeUsername(req.body?.username);
+  const { platform, username } = parseChannelInput(req.body?.username, req.body?.platform);
   const quality = sanitizeQuality(req.body?.quality, undefined);
   const audioOnly = !!req.body?.audioOnly;
   const recordChat = req.body?.recordChat !== false;
@@ -42,9 +42,9 @@ router.post('/api/record/start', async (req, res) => {
     : undefined;
   if (!username) return res.status(400).json({ error: 'missing username' });
   try {
-    const result = await startRecording(username, quality, { audioOnly, audioBitrate, recordChat });
+    const result = await startRecording(username, quality, { platform, audioOnly, audioBitrate, recordChat });
     invalidateRecordingsCache();
-    console.log(`[audit] record start: @${username} q=${quality || 'auto'} ao=${audioOnly} abr=${audioBitrate ?? 'default'} -> ${result.file}`);
+    console.log(`[audit] record start: [${platform}] @${username} q=${quality || 'auto'} ao=${audioOnly} abr=${audioBitrate ?? 'default'} -> ${result.file}`);
     res.json(result);
   } catch (e) {
     const status =
@@ -152,6 +152,7 @@ router.get('/api/recordings', (_req, res) => {
         }
         return {
           name: f, sizeBytes: st.size, mtime: st.mtimeMs,
+          platform: meta?.platform || ((resolved.folder && /^twitch_/i.test(resolved.folder)) || /^twitch_/i.test(resolved.fileName) ? 'twitch' : 'tiktok'),
           hasEvents: fs.existsSync(sidecar),
           highlightCount,
           clipCount,
@@ -202,12 +203,13 @@ router.get('/api/recordings/:name', (req, res) => {
     return res.status(500).json({ error: safeError(e) });
   }
 
-  // Derive username from metadata, creator subfolder, or filename
-  const userMatch = fileName.match(/^(.+?)_\d{4}(?:-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}|\d{4}_\d{6})/);
-  const username = meta?.username || folder || (userMatch ? userMatch[1] : null);
+  // Derive username & platform from metadata, creator subfolder, or filename
+  const userMatch = fileName.match(/^(?:twitch_)?(.+?)_\d{4}(?:-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}|\d{4}_\d{6})/);
+  const platform = meta?.platform || ((folder && /^twitch_/i.test(folder)) || /^twitch_/i.test(fileName) ? 'twitch' : 'tiktok');
+  const username = meta?.username || (folder ? folder.replace(/^twitch_/i, '') : null) || (userMatch ? userMatch[1] : null);
 
   res.json({
-    name, username, sizeBytes: st.size, startMs, mtimeMs: st.mtimeMs,
+    name, platform, username, sizeBytes: st.size, startMs, mtimeMs: st.mtimeMs,
     eventsExists, eventCount: events.length, events,
     protected: !!meta?.protected,
     displayTitle: meta?.displayTitle ?? null,

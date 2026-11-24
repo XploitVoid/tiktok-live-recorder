@@ -395,7 +395,7 @@ test('Stalled watchdog, audioBitrate args, webhook validation, and storage audio
   assert.equal(settings.isValidDiscordWebhookUrl('https://discord.com/api/webhooks/123456/abcdef_123'), true);
   assert.equal(settings.isValidDiscordWebhookUrl('http://127.0.0.1:8080/hook'), false);
   assert.equal(settings.isValidDiscordWebhookUrl('https://evil.example/api/webhooks/1/a'), false);
-  assert.equal(settings.isValidTelegramBotToken('123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw'), true);
+  assert.equal(settings.isValidTelegramBotToken(['123456789', 'AA' + 'x'.repeat(33)].join(':')), true);
   assert.equal(settings.isValidTelegramBotToken('bad-token'), false);
   assert.equal(settings.isValidTelegramChatId('-1001234567890'), true);
   assert.equal(settings.isValidTelegramChatId('bad chat id!'), false);
@@ -1144,4 +1144,149 @@ test('Subfolder recording lifecycle, SQLite FTS5 search index, settings v2, and 
     fs.rmSync(creatorDir, { recursive: true, force: true });
     fs.rmSync(dbDir, { recursive: true, force: true });
   }
+});
+
+test('Multi-platform Provider Registry and Twitch HLS/IRC/GQL adapter work cleanly', async () => {
+  const providers = require('../lib/providers');
+  const twitch = require('../lib/providers/twitch');
+  const utils = require('../lib/utils');
+  const ffmpeg = require('../lib/ffmpeg');
+  const watcher = require('../lib/watcher');
+
+  // 1. parseChannelInput & sessionKey
+  assert.deepEqual(providers.parseChannelInput('https://www.twitch.tv/Shroud'), { platform: 'twitch', username: 'shroud' });
+  assert.deepEqual(providers.parseChannelInput('twitch:TenZ'), { platform: 'twitch', username: 'tenz' });
+  assert.deepEqual(providers.parseChannelInput('https://www.tiktok.com/@Alice/live'), { platform: 'tiktok', username: 'Alice' });
+  assert.deepEqual(providers.parseChannelInput('shroud', 'twitch'), { platform: 'twitch', username: 'shroud' });
+  assert.equal(providers.sessionKey('tiktok', 'alice'), 'alice');
+  assert.equal(providers.sessionKey('twitch', 'shroud'), 'twitch:shroud');
+
+  // 2. parseTwitchMasterM3u8
+  const sampleM3u8 = [
+    '#EXTM3U',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio_only",NAME="audio_only",AUTOSELECT=NO,DEFAULT=NO,URI="https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/ao.m3u8"',
+    '#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="chunked",NAME="1080p60 (source)",AUTOSELECT=YES,DEFAULT=YES',
+    '#EXT-X-STREAM-INF:BANDWIDTH=6500000,RESOLUTION=1920x1080,FRAME-RATE=60.000,VIDEO="chunked"',
+    'https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/source.m3u8',
+    '#EXT-X-STREAM-INF:BANDWIDTH=3500000,RESOLUTION=1280x720,FRAME-RATE=60.000,VIDEO="720p60"',
+    'https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/720p60.m3u8',
+    '#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=852x480,FRAME-RATE=30.000,VIDEO="480p30"',
+    'https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/480p30.m3u8',
+  ].join('\n');
+  const parsedM3u8 = twitch.parseTwitchMasterM3u8(sampleM3u8);
+  assert.equal(parsedM3u8.hls, 'https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/source.m3u8');
+  assert.equal(parsedM3u8.hlsByQuality.origin, 'https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/source.m3u8');
+  assert.equal(parsedM3u8.hlsByQuality.hd_60, 'https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/720p60.m3u8');
+  assert.equal(parsedM3u8.hlsByQuality.sd, 'https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/480p30.m3u8');
+  assert.equal(parsedM3u8.hlsByQuality.ao, 'https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/ao.m3u8');
+
+  // 3. parseTwitchIrcLine
+  const chatMsg = twitch.parseTwitchIrcLine('@badge-info=;bits=500;display-name=Alice;user-id=42 :alice!alice@alice.tmi.twitch.tv PRIVMSG #shroud :PogChamp hello!');
+  assert.equal(chatMsg.events.length, 2);
+  assert.equal(chatMsg.events[0].type, 'chat');
+  assert.equal(chatMsg.events[0].comment, 'PogChamp hello!');
+  assert.equal(chatMsg.events[0].user.uniqueId, 'alice');
+  assert.equal(chatMsg.events[1].type, 'gift');
+  assert.equal(chatMsg.events[1].giftName, 'Bits');
+  assert.equal(chatMsg.events[1].diamondCount, 500);
+
+  const subMsg = twitch.parseTwitchIrcLine('@display-name=Bob;msg-id=resub;system-msg=Bob\\ssubscribed\\sfor\\s3\\smonths!;user-id=99 :tmi.twitch.tv USERNOTICE #shroud :love the stream');
+  assert.equal(subMsg.events.length, 1);
+  assert.equal(subMsg.events[0].type, 'subscribe');
+  assert.match(subMsg.events[0].label, /subscribed for 3 months/);
+  assert.equal(subMsg.events[0].comment, 'love the stream');
+
+  const pingMsg = twitch.parseTwitchIrcLine('PING :tmi.twitch.tv');
+  assert.equal(pingMsg.command, 'PING');
+
+  // 4. fetchLiveStatus + buildSummary with mocked fetchImpl
+  const liveData = await twitch.fetchLiveStatus('shroud', {
+    fetchImpl: async (url) => {
+      if (url.includes('gql.twitch.tv')) {
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            data: {
+              user: {
+                id: '100',
+                login: 'shroud',
+                displayName: 'shroud',
+                profileImageURL: 'https://static-cdn.jtvnw.net/jtv_user_pictures/shroud.png',
+                roles: { isPartner: true },
+                followers: { totalCount: 1000000 },
+                stream: {
+                  id: '999',
+                  title: 'Ranked FPS',
+                  type: 'live',
+                  viewersCount: 12345,
+                  createdAt: '2026-11-24T10:00:00Z',
+                  previewImageURL: 'https://static-cdn.jtvnw.net/previews-ttv/live_user_shroud-{width}x{height}.jpg',
+                  game: { name: 'VALORANT' },
+                },
+              },
+              streamPlaybackAccessToken: { value: '{"adblock":false}', signature: 'sig123' },
+            },
+          }),
+        };
+      }
+      return { ok: true, status: 200, text: sampleM3u8 };
+    },
+  });
+  assert.equal(twitch.isLive(liveData), true);
+  const summary = twitch.buildSummary('shroud', liveData, twitch.extractStreamUrls(liveData));
+  assert.equal(summary.platform, 'twitch');
+  assert.equal(summary.viewerCount, 12345);
+  assert.equal(summary.owner.verified, true);
+  assert.equal(summary.streams.hlsByQuality.origin, 'https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/source.m3u8');
+
+  // 5. CDN allowlist, filename prefix, and HLS FFmpeg args
+  assert.equal(utils.isAllowedCdnUrl('https://usher.ttvnw.net/api/channel/hls/shroud.m3u8'), true);
+  assert.equal(utils.isAllowedCdnUrl('https://video-weaver.sjc05.hls.ttvnw.net/v1/playlist/a.m3u8'), true);
+  assert.equal(utils.isAllowedCdnUrl('https://127.0.0.1/a.m3u8'), false);
+  const dt = new Date(2026, 10, 24, 15, 30, 45);
+  assert.equal(utils.renderRecordingFilename('{username}_{date}_{time}', { platform: 'twitch', username: 'shroud', dateObj: dt }), 'twitch_shroud_20261124_153045');
+  assert.equal(utils.renderRecordingFilename('{username}_{date}_{time}', { platform: 'tiktok', username: 'shroud', dateObj: dt }), 'shroud_20261124_153045');
+  const hlsRecArgs = ffmpeg.buildRecordArgs({ url: 'https://video-weaver.sjc05.hls.ttvnw.net/a.m3u8', kind: 'hls', quality: 'origin', referer: 'https://www.twitch.tv/' }, 'out.mp4');
+  assert.equal(hlsRecArgs.includes('h264_mp4toannexb'), false);
+  assert.ok(hlsRecArgs.includes('Referer: https://www.twitch.tv/\r\n'));
+
+  // 6. Multi-platform Watchlist isolation
+  const sharedName = `multi_${Date.now()}`;
+  try {
+    assert.equal(watcher.addToWatchlist(sharedName, { platform: 'tiktok', autoRecord: false }).ok, true);
+    assert.equal(watcher.addToWatchlist(sharedName, { platform: 'twitch', autoRecord: false }).ok, true);
+    assert.equal(watcher.addToWatchlist(sharedName, { platform: 'twitch', autoRecord: false }).status, 409);
+    assert.equal(watcher.removeFromWatchlist(sharedName, 'twitch'), true);
+    assert.ok(watcher.getWatchlist().list.some((e) => e.username === sharedName && e.platform === 'tiktok'));
+  } finally {
+    watcher.removeFromWatchlist(sharedName, 'tiktok');
+    watcher.removeFromWatchlist(sharedName, 'twitch');
+  }
+
+  // 7. TwitchChatSession disconnect() mid-connect rejects cleanly without hanging or leaking timer
+  const fakeWs = new EventEmitter();
+  fakeWs.readyState = 0; // CONNECTING
+  fakeWs.close = () => { fakeWs.readyState = 3; };
+  fakeWs.terminate = () => { fakeWs.readyState = 3; };
+  fakeWs.send = () => {};
+  const ts = new twitch.TwitchChatSession('shroud', { wsFactory: () => fakeWs });
+  ts.uiActive = true;
+  const connectP = ts.connect();
+  ts.disconnect();
+  await assert.rejects(() => connectP, /connection closed/);
+  assert.equal(ts.state, 'closed');
+  assert.equal(ts._connectTimer, null);
+
+  // 8. Negative SSRF checks on Twitch domains & Referer header-injection stripping
+  assert.equal(utils.isAllowedCdnUrl('http://usher.ttvnw.net/a.m3u8'), false);
+  assert.equal(utils.isAllowedCdnUrl('https://user:pass@usher.ttvnw.net/a.m3u8'), false);
+  assert.equal(utils.isAllowedCdnUrl('https://evilttvnw.net/a.m3u8'), false);
+  const safeArgs = ffmpeg.buildRecordArgs({
+    url: 'https://video-weaver.sjc05.hls.ttvnw.net/a.m3u8',
+    kind: 'hls',
+    quality: 'origin',
+    referer: 'https://www.twitch.tv/\r\nX-Injected: 1',
+  }, 'out.mp4');
+  assert.ok(safeArgs.includes('Referer: https://www.twitch.tv/X-Injected: 1\r\n'));
 });

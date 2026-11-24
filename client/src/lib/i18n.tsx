@@ -77,7 +77,13 @@ const th = {
   accCheckDone: 'ตรวจสอบสถานะบัญชีแล้ว',
 
   // Search & Status
+  platformTikTok: 'TikTok',
+  platformTwitch: 'Twitch',
+  platformAll: 'ทุกแพลตฟอร์ม',
+  searchPlaceholderMulti: 'username / tiktok.com/@user / twitch.tv/channel',
+  watchPlaceholderMulti: 'username หรือลิงก์ช่อง (TikTok / Twitch)',
   usernameLabel: 'ชื่อผู้ใช้ TikTok',
+  usernameLabelMulti: 'ชื่อช่อง / ลิงก์',
   hintText: 'วาง @username, ลิงก์โปรไฟล์ หรือ username/live แล้วกด Enter',
   favorites: 'รายการโปรด',
   recentSearch: 'ค้นหาล่าสุด',
@@ -394,7 +400,13 @@ const en: Record<keyof typeof th, string> = {
   accHealthUnknown: 'Unknown',
   accCheckDone: 'Account health checked',
 
+  platformTikTok: 'TikTok',
+  platformTwitch: 'Twitch',
+  platformAll: 'All Platforms',
+  searchPlaceholderMulti: 'username / tiktok.com/@user / twitch.tv/channel',
+  watchPlaceholderMulti: 'username or channel URL',
   usernameLabel: 'TikTok Username',
+  usernameLabelMulti: 'Channel / URL',
   hintText: 'Paste @username, profile URL, or username/live and press Enter',
   favorites: 'Favorites',
   recentSearch: 'Recent',

@@ -2,12 +2,10 @@
 
 const { Router } = require('express');
 const {
-  normalizeUsername,
-  fetchApiLive,
-  isLiveFromApi,
-  extractStreamUrls,
-  hasStreamUrls,
-} = require('../lib/room');
+  getProvider,
+  normalizePlatform,
+  parseChannelInput,
+} = require('../lib/providers');
 const watcher = require('../lib/watcher');
 const { safeError, sanitizeQuality, sanitizeAudioBitrate } = require('../lib/utils');
 
@@ -18,9 +16,10 @@ router.get('/api/watch', (_req, res) => {
 });
 
 router.post('/api/watch', (req, res) => {
-  const username = normalizeUsername(req.body?.username);
+  const { platform, username } = parseChannelInput(req.body?.username, req.body?.platform);
   if (!username) return res.status(400).json({ error: 'missing username' });
   const result = watcher.addToWatchlist(username, {
+    platform,
     autoRecord: !!req.body?.autoRecord,
     quality: sanitizeQuality(req.body?.quality),
     audioOnly: !!req.body?.audioOnly,
@@ -37,8 +36,10 @@ router.post('/api/watch', (req, res) => {
 });
 
 router.patch('/api/watch/:username', (req, res) => {
-  const username = normalizeUsername(req.params.username);
+  const platform = normalizePlatform(req.query.platform || req.body?.platform, 'tiktok');
+  const username = getProvider(platform).normalizeUsername(req.params.username);
   const result = watcher.updateWatchEntry(username, {
+    platform,
     autoRecord: typeof req.body?.autoRecord === 'boolean' ? req.body.autoRecord : undefined,
     quality: req.body?.quality !== undefined ? sanitizeQuality(req.body.quality) : undefined,
     audioOnly: typeof req.body?.audioOnly === 'boolean' ? req.body.audioOnly : undefined,
@@ -55,8 +56,9 @@ router.patch('/api/watch/:username', (req, res) => {
 });
 
 router.delete('/api/watch/:username', (req, res) => {
-  const username = normalizeUsername(req.params.username);
-  if (!watcher.removeFromWatchlist(username)) {
+  const platform = normalizePlatform(req.query.platform || req.body?.platform, 'tiktok');
+  const username = getProvider(platform).normalizeUsername(req.params.username);
+  if (!watcher.removeFromWatchlist(username, platform)) {
     return res.status(404).json({ error: 'not in watchlist' });
   }
   res.json({ ok: true });
@@ -124,32 +126,35 @@ router.get('/api/watch/live-streams', async (_req, res) => {
   const epoch = liveStreamsEpoch;
   const p = (async () => {
     const entries = watcher.getWatchlistRaw().map((e) => ({
+      platform: normalizePlatform(e.platform, 'tiktok'),
       username: e.username,
       accountId: e.accountId || undefined,
     }));
     const out = [];
     let i = 0;
     // Worker pool: process up to N entries in parallel. Each call hits the
-    // shared apiCache in lib/room.js so duplicate queries within the TTL
-    // window collapse into one upstream request.
+    // shared apiCache so duplicate queries within the TTL window collapse.
     async function worker() {
       while (i < entries.length) {
-        const { username, accountId } = entries[i++];
+        const { platform, username, accountId } = entries[i++];
         try {
-          const apiData = await fetchApiLive(username, { accountId });
-          if (!isLiveFromApi(apiData)) continue;
-          const streams = extractStreamUrls(apiData);
-          if (!hasStreamUrls(streams)) continue;
+          const provider = getProvider(platform);
+          const apiData = await provider.fetchLiveStatus(username, { accountId });
+          if (!provider.isLive(apiData)) continue;
+          const streams = provider.extractStreamUrls(apiData);
+          if (!provider.hasStreamUrls(streams)) continue;
+          const summary = provider.buildSummary(username, apiData, streams);
           out.push({
+            platform,
             username,
             live: true,
-            title: apiData?.liveRoom?.title || null,
-            viewerCount: apiData?.liveRoom?.liveRoomStats?.userCount ?? null,
-            coverUrl: apiData?.liveRoom?.coverUrl || null,
-            owner: apiData?.user ? {
-              nickname: apiData.user.nickname || undefined,
-              uniqueId: apiData.user.uniqueId || undefined,
-              avatarThumb: extractAvatarThumb(apiData.user),
+            title: summary.title || null,
+            viewerCount: summary.viewerCount ?? null,
+            coverUrl: summary.coverUrl || null,
+            owner: summary.owner ? {
+              nickname: summary.owner.nickname || undefined,
+              uniqueId: summary.owner.uniqueId || undefined,
+              avatarThumb: summary.owner.avatarThumb || extractAvatarThumb(apiData?.user),
             } : undefined,
             streams: { hls: streams.hls, flv: streams.flv },
           });

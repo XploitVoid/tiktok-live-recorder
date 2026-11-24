@@ -6,22 +6,25 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { useI18n } from '@/lib/i18n'
 import { checkStream } from '@/lib/api'
-import { cleanUsernameInput } from '@/lib/utils'
+import { parseChannelInput } from '@/lib/utils'
+import { PlatformBadge, PlatformSwitch } from '@/components/PlatformBadge'
 import {
   getHistory, addHistory, removeHistory, clearHistory,
   getFavorites, addFavorite, removeFavorite, isFavorite,
 } from '@/lib/history'
-import type { CheckResult } from '@/lib/types'
+import type { CheckResult, Platform } from '@/lib/types'
 
 interface Props {
   onLoading?: () => void
   onResult?: (data: CheckResult) => void
   onError?: (msg: string) => void
   initialUsername?: string
+  initialPlatform?: Platform
 }
 
-export function SearchSection({ onLoading, onResult, onError, initialUsername }: Props) {
+export function SearchSection({ onLoading, onResult, onError, initialUsername, initialPlatform }: Props) {
   const { t } = useI18n()
+  const [platform, setPlatform] = useState<Platform>(initialPlatform || 'tiktok')
   const [username, setUsername] = useState(initialUsername || '')
   const [checking, setChecking] = useState(false)
   const [history, setHistory] = useState(getHistory())
@@ -35,20 +38,21 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
     setFavorites(getFavorites())
   }, [])
 
-  const runCheck = useCallback(async (rawInput: string) => {
+  const runCheck = useCallback(async (rawInput: string, overridePlatform?: Platform) => {
     const raw = rawInput.trim()
     if (!raw) return
-    const u = cleanUsernameInput(raw)
-    if (!u) return
+    const parsed = parseChannelInput(raw, overridePlatform ?? platform)
+    if (!parsed.username) return
     const reqId = ++reqIdRef.current
-    lastCheckedRef.current = u
-    setUsername(u)
+    lastCheckedRef.current = `${parsed.platform}:${parsed.username}`
+    setPlatform(parsed.platform)
+    setUsername(parsed.username)
     setChecking(true)
     onLoading?.()
     try {
-      const data = await checkStream(u)
+      const data = await checkStream(parsed.username, parsed.platform)
       if (reqId !== reqIdRef.current) return
-      addHistory(u)
+      addHistory(parsed.username, parsed.platform)
       refreshLists()
       onResult?.(data)
     } catch (e) {
@@ -59,7 +63,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
         setChecking(false)
       }
     }
-  }, [onLoading, onResult, onError, refreshLists])
+  }, [onLoading, onResult, onError, platform, refreshLists])
 
   const handleCheck = useCallback(() => {
     void runCheck(username)
@@ -71,47 +75,68 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
   }, [runCheck])
 
   useEffect(() => {
-    const normalized = initialUsername ? cleanUsernameInput(initialUsername) : null
-    if (!normalized) {
+    const targetPlat: Platform = initialPlatform === 'twitch' ? 'twitch' : 'tiktok'
+    const parsed = initialUsername ? parseChannelInput(initialUsername, targetPlat) : null
+    const normalized = parsed?.username || null
+    const initialKey = normalized ? `${parsed!.platform}:${normalized}` : null
+    if (!initialKey || !normalized) {
       lastInitialRef.current = null
       return
     }
-    if (lastInitialRef.current === normalized) return
-    if (lastCheckedRef.current === normalized) {
-      lastInitialRef.current = normalized
+    if (lastInitialRef.current === initialKey) return
+    if (lastCheckedRef.current === initialKey) {
+      lastInitialRef.current = initialKey
       return
     }
     let cancelled = false
     Promise.resolve().then(() => {
       if (cancelled) return
-      lastInitialRef.current = normalized
-      void runCheckRef.current(normalized)
+      lastInitialRef.current = initialKey
+      void runCheckRef.current(normalized, parsed!.platform)
     })
     return () => {
       cancelled = true
     }
-  }, [initialUsername])
+  }, [initialUsername, initialPlatform])
 
-  const handleToggleFav = useCallback((user: string) => {
-    const u = cleanUsernameInput(user)
-    if (!u) return
-    if (isFavorite(u)) removeFavorite(u)
-    else addFavorite(u)
+  const handleToggleFav = useCallback((user: string, overridePlatform?: Platform) => {
+    const parsed = parseChannelInput(user, overridePlatform ?? platform)
+    if (!parsed.username) return
+    if (isFavorite(parsed.username, parsed.platform)) {
+      removeFavorite(parsed.username, parsed.platform)
+    } else {
+      addFavorite(parsed.username, parsed.platform)
+    }
     refreshLists()
-  }, [refreshLists])
+  }, [platform, refreshLists])
 
   const handleClearHistory = useCallback(() => {
     clearHistory()
     refreshLists()
   }, [refreshLists])
 
-  const handleRemoveHistory = useCallback((user: string) => {
-    removeHistory(user)
+  const handleRemoveHistory = useCallback((user: string, plat: Platform) => {
+    removeHistory(user, plat)
     refreshLists()
   }, [refreshLists])
 
-  const cleanedInput = cleanUsernameInput(username)
-  const filteredHistory = history.filter((e) => !favorites.includes(e.username))
+  const parsedInput = parseChannelInput(username, platform)
+  const cleanedInput = parsedInput.username
+  const inputIsFav = !!cleanedInput && isFavorite(cleanedInput, parsedInput.platform)
+  const favKeys = new Set(
+    favorites.map((f) => `${f.platform}:${f.platform === 'twitch' ? f.username.toLowerCase() : f.username}`),
+  )
+  const filteredHistory = history.filter(
+    (e) => !favKeys.has(`${e.platform}:${e.platform === 'twitch' ? e.username.toLowerCase() : e.username}`),
+  )
+
+  const handleInputChange = (val: string) => {
+    setUsername(val)
+    if (/^(?:twitch|tiktok):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com)\//i.test(val)) {
+      const detected = parseChannelInput(val, platform)
+      if (detected.platform !== platform) setPlatform(detected.platform)
+    }
+  }
 
   return (
     <Card className="border-border/80">
@@ -120,18 +145,19 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
           htmlFor="uInput"
           className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground block"
         >
-          {t('usernameLabel')}
+          {platform === 'twitch' ? t('usernameLabelMulti') : t('usernameLabel')}
         </Label>
 
         <div className="flex flex-col sm:flex-row gap-2">
+          <PlatformSwitch value={platform} onChange={setPlatform} size="md" />
           <div className="relative flex-1 flex items-center">
             <span className="absolute left-3 text-muted-foreground font-mono text-sm select-none">@</span>
             <Input
               id="uInput"
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              onChange={(e) => handleInputChange(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleCheck()}
-              placeholder="username / tiktok.com/@user"
+              placeholder={t('searchPlaceholderMulti')}
               autoComplete="off"
               className="pl-7 pr-9 h-10 bg-background/70 border-border focus-visible:border-primary/60 text-sm font-mono"
             />
@@ -140,10 +166,10 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
                 type="button"
                 onClick={() => handleToggleFav(username)}
                 className="absolute right-2.5 text-muted-foreground hover:text-amber-400 transition-colors cursor-pointer p-1"
-                title={isFavorite(cleanedInput) ? 'Remove from favorites' : 'Add to favorites'}
+                title={inputIsFav ? 'Remove from favorites' : 'Add to favorites'}
                 aria-label="Toggle favorite"
               >
-                <Star className={`w-4 h-4 ${isFavorite(cleanedInput) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                <Star className={`w-4 h-4 ${inputIsFav ? 'fill-amber-400 text-amber-400' : ''}`} />
               </button>
             )}
           </div>
@@ -163,22 +189,23 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
               <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
               <span>{t('favorites')}</span>
             </span>
-            {favorites.map((user) => (
+            {favorites.map((fav) => (
               <div
-                key={`fav-${user}`}
+                key={`fav-${fav.platform}:${fav.username}`}
                 className="inline-flex items-center rounded-md text-xs font-medium bg-amber-500/10 text-amber-200 border border-amber-500/25 hover:border-amber-500/45 transition-colors overflow-hidden"
               >
                 <button
                   type="button"
-                  onClick={() => void runCheck(user)}
-                  className="px-2 py-1 hover:bg-amber-500/15 transition-colors cursor-pointer font-mono"
+                  onClick={() => void runCheck(fav.username, fav.platform)}
+                  className="inline-flex items-center gap-1 px-2 py-1 hover:bg-amber-500/15 transition-colors cursor-pointer font-mono"
                 >
-                  @{user}
+                  {fav.platform === 'twitch' && <PlatformBadge platform="twitch" className="text-[9px] px-1 py-0" />}
+                  <span>@{fav.username}</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleToggleFav(user)}
-                  aria-label={`Remove ${user} from favorites`}
+                  onClick={() => handleToggleFav(fav.username, fav.platform)}
+                  aria-label={`Remove ${fav.username} from favorites`}
                   className="px-1.5 py-1 text-amber-300/60 hover:text-destructive hover:bg-amber-500/15 transition-colors cursor-pointer"
                 >
                   <X className="w-3 h-3" />
@@ -196,28 +223,29 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
             </span>
             {filteredHistory.slice(0, 8).map((entry) => (
               <div
-                key={`hist-${entry.username}`}
+                key={`hist-${entry.platform}:${entry.username}`}
                 className="inline-flex items-center rounded-md text-xs bg-secondary/70 text-foreground/85 border border-border/70 hover:border-border transition-colors overflow-hidden"
               >
                 <button
                   type="button"
-                  onClick={() => void runCheck(entry.username)}
-                  className="px-2 py-1 hover:bg-secondary transition-colors cursor-pointer font-mono"
+                  onClick={() => void runCheck(entry.username, entry.platform)}
+                  className="inline-flex items-center gap-1 px-2 py-1 hover:bg-secondary transition-colors cursor-pointer font-mono"
                 >
-                  @{entry.username}
+                  {entry.platform === 'twitch' && <PlatformBadge platform="twitch" className="text-[9px] px-1 py-0" />}
+                  <span>@{entry.username}</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleToggleFav(entry.username)}
+                  onClick={() => handleToggleFav(entry.username, entry.platform)}
                   title="Pin to favorites"
                   aria-label={`Pin ${entry.username} to favorites`}
                   className="p-1 text-muted-foreground/70 hover:text-amber-400 transition-colors cursor-pointer"
                 >
-                  <Star className={`w-3 h-3 ${isFavorite(entry.username) ? 'fill-amber-400 text-amber-400' : ''}`} />
+                  <Star className={`w-3 h-3 ${isFavorite(entry.username, entry.platform) ? 'fill-amber-400 text-amber-400' : ''}`} />
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleRemoveHistory(entry.username)}
+                  onClick={() => handleRemoveHistory(entry.username, entry.platform)}
                   aria-label={`Remove ${entry.username} from history`}
                   className="pr-1.5 pl-0.5 py-1 text-muted-foreground/60 hover:text-destructive transition-colors cursor-pointer"
                 >

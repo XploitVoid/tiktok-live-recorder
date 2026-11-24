@@ -2,7 +2,7 @@
 // Replaces high-frequency polling for jobs, watchlist, chat, and dashboard.
 
 const { Router } = require('express');
-const { normalizeUsername } = require('../lib/room');
+const { getProvider, normalizePlatform } = require('../lib/providers');
 const { recorderEvents, getJobsList } = require('../lib/recorder');
 const watcher = require('../lib/watcher');
 const chat = require('../lib/chat');
@@ -48,7 +48,8 @@ router.get('/api/events/stream', (req, res) => {
   try {
     const channelsRaw = String(req.query.channels || '').split(',').map((s) => s.trim()).filter(Boolean);
     const channels = new Set(channelsRaw);
-    const chatUser = req.query.chat ? normalizeUsername(String(req.query.chat)) : '';
+    const chatPlatform = normalizePlatform(req.query.platform, 'tiktok');
+    const chatUser = req.query.chat ? getProvider(chatPlatform).normalizeUsername(String(req.query.chat)) : '';
     const sinceId = Number(req.query.sinceId) || 0;
 
     res.status(200);
@@ -95,7 +96,7 @@ router.get('/api/events/stream', (req, res) => {
 
     // ── Single-room chat channel ──
     if (chatUser) {
-      const s = chat.getSession(chatUser);
+      const s = chat.getSession(chatUser, chatPlatform);
       push('chat_snapshot', s
         ? {
             state: s.state,
@@ -106,12 +107,12 @@ router.get('/api/events/stream', (req, res) => {
           }
         : { state: 'idle', events: [], lastEventId: 0 });
 
-      const onChatEvent = ({ username, event, session }) => {
-        if (username !== chatUser) return;
+      const onChatEvent = ({ platform: evPlat, username, event, session }) => {
+        if ((evPlat || session?.platform || 'tiktok') !== chatPlatform || username !== chatUser) return;
         push('chat_event', { event, state: session.state, viewerCount: session.viewerCount });
       };
-      const onChatState = ({ username, session }) => {
-        if (username !== chatUser) return;
+      const onChatState = ({ platform: evPlat, username, session }) => {
+        if ((evPlat || session?.platform || 'tiktok') !== chatPlatform || username !== chatUser) return;
         push('chat_state', { state: session.state, error: session.error, viewerCount: session.viewerCount });
       };
       chat.chatEvents.on('event', onChatEvent);

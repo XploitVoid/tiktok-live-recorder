@@ -8,7 +8,7 @@ import { useEventStream } from '@/lib/useEventStream'
 import { fmtTime } from '@/lib/format'
 import { getKeywords, addKeyword, removeKeyword } from '@/lib/chatHighlight'
 import { ChatEventRow } from '@/components/ChatEventRow'
-import type { ChatEvent, ChatPollResult } from '@/lib/types'
+import type { ChatEvent, ChatPollResult, Platform } from '@/lib/types'
 
 function isSpam(comment: string | undefined): boolean {
   if (!comment) return false
@@ -32,10 +32,12 @@ function isSpam(comment: string | undefined): boolean {
 
 interface Props {
   username: string
+  platform?: Platform
 }
 
-export function ChatPanel({ username }: Props) {
+export function ChatPanel({ username, platform }: Props) {
   const { t } = useI18n()
+  const resolvedPlatform: Platform = platform === 'twitch' ? 'twitch' : 'tiktok'
   const [events, setEvents] = useState<ChatEvent[]>([])
   const [state, setState] = useState('')
   const [streaming, setStreaming] = useState(false)
@@ -50,21 +52,22 @@ export function ChatPanel({ username }: Props) {
   const feedRef = useRef<HTMLDivElement>(null)
   const lastIdRef = useRef(0)
   const streamingRef = useRef(false)
-  const activeUserRef = useRef<string | null>(username)
+  const activeTargetRef = useRef<string | null>(`${resolvedPlatform}:${username}`)
 
   useEffect(() => {
     streamingRef.current = streaming
   }, [streaming])
 
   useEffect(() => {
-    activeUserRef.current = username
+    const targetKey = `${resolvedPlatform}:${username}`
+    activeTargetRef.current = targetKey
     return () => {
-      activeUserRef.current = null
+      activeTargetRef.current = null
       if (streamingRef.current) {
-        void stopChat(username).catch(() => {})
+        void stopChat(username, resolvedPlatform).catch(() => {})
       }
     }
-  }, [username])
+  }, [username, resolvedPlatform])
 
   const refreshKeywords = useCallback(() => setKeywords(getKeywords()), [])
 
@@ -115,7 +118,9 @@ export function ChatPanel({ username }: Props) {
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
-  const sseQuery = streaming ? `chat=${encodeURIComponent(username)}&sinceId=${connectSinceId}` : null
+  const sseQuery = streaming
+    ? `chat=${encodeURIComponent(username)}&platform=${resolvedPlatform}&sinceId=${connectSinceId}`
+    : null
   const sseHandlers = useMemo(() => ({
     chat_snapshot: (raw: unknown) => {
       const snap = raw as ChatPollResult
@@ -144,6 +149,8 @@ export function ChatPanel({ username }: Props) {
   const handleStart = async () => {
     if (streaming || connecting) return
     const targetUser = username
+    const targetPlatform = resolvedPlatform
+    const targetKey = `${targetPlatform}:${targetUser}`
     setConnecting(true)
     lastIdRef.current = 0
     setConnectSinceId(0)
@@ -152,19 +159,19 @@ export function ChatPanel({ username }: Props) {
     setPinnedMessage(null)
     setState('connecting...')
     try {
-      await startChat(targetUser)
-      if (activeUserRef.current !== targetUser) {
-        void stopChat(targetUser).catch(() => {})
+      await startChat(targetUser, targetPlatform)
+      if (activeTargetRef.current !== targetKey) {
+        void stopChat(targetUser, targetPlatform).catch(() => {})
         return
       }
       streamingRef.current = true
       setStreaming(true)
     } catch (e: unknown) {
-      if (activeUserRef.current === targetUser) {
+      if (activeTargetRef.current === targetKey) {
         setState('error: ' + (e instanceof Error ? e.message : String(e)))
       }
     } finally {
-      if (activeUserRef.current === targetUser) {
+      if (activeTargetRef.current === targetKey) {
         setConnecting(false)
       }
     }
@@ -174,7 +181,7 @@ export function ChatPanel({ username }: Props) {
     streamingRef.current = false
     setStreaming(false)
     setState('stopping...')
-    try { await stopChat(username) } catch { /* ignore */ }
+    try { await stopChat(username, resolvedPlatform) } catch { /* ignore */ }
     setState('stopped')
   }
 

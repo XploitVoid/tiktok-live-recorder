@@ -4,6 +4,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { safeImageUrl } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
+import { PlatformBadge } from '@/components/PlatformBadge'
 import type { CheckResult } from '@/lib/types'
 
 interface Props {
@@ -47,6 +48,8 @@ export function StatusSection({ data }: Props) {
                   <span>{t('offline')}</span>
                 </Badge>
               )}
+
+              <PlatformBadge platform={data.platform || 'tiktok'} />
 
               <span className="font-semibold text-base truncate">
                 {owner.nickname || data.username}

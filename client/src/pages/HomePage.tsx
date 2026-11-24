@@ -8,13 +8,15 @@ import { ActiveJobs } from '@/components/ActiveJobs'
 import { SavedRecordings } from '@/components/SavedRecordings'
 import { SettingsPanel } from '@/components/SettingsPanel'
 import { useI18n } from '@/lib/i18n'
-import type { CheckResult } from '@/lib/types'
+import type { CheckResult, Platform } from '@/lib/types'
 import { toast } from 'sonner'
 
 export function HomePage() {
   const { t } = useI18n()
   const [searchParams, setSearchParams] = useSearchParams()
   const initialUsername = searchParams.get('u') || undefined
+  const rawPlatform = searchParams.get('platform')
+  const initialPlatform: Platform = rawPlatform === 'twitch' ? 'twitch' : 'tiktok'
 
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<CheckResult | null>(null)
@@ -30,8 +32,18 @@ export function HomePage() {
       setLoading(false)
       setResult(data)
       if (data.username) {
+        const plat: Platform = data.platform || 'tiktok'
+        const nextPlatParam = plat !== 'tiktok' ? plat : null
         setSearchParams(
-          (prev) => (prev.get('u') === data.username ? prev : { u: data.username }),
+          (prev) => {
+            if (prev.get('u') === data.username && prev.get('platform') === nextPlatParam) {
+              return prev
+            }
+            const nextParams: Record<string, string> = nextPlatParam
+              ? { u: data.username, platform: nextPlatParam }
+              : { u: data.username }
+            return nextParams
+          },
           { replace: true },
         )
       }
@@ -57,6 +69,7 @@ export function HomePage() {
     <div className="space-y-5">
       <SearchSection
         initialUsername={initialUsername}
+        initialPlatform={initialPlatform}
         onLoading={handleLoading}
         onResult={handleResult}
         onError={handleError}
@@ -65,19 +78,19 @@ export function HomePage() {
       {loading && <StatusSkeleton />}
 
       {result && !loading && (
-        <StatusSection key={`status-${result.username}`} data={result} />
+        <StatusSection key={`status-${result.platform || 'tiktok'}-${result.username}`} data={result} />
       )}
 
       {result && result.live && result.streamsAvailable && (
         <StreamPlayer
-          key={`player-${result.username}`}
+          key={`player-${result.platform || 'tiktok'}-${result.username}`}
           data={result}
           onRecordStarted={handleRecordStarted}
         />
       )}
 
       {result && result.live && !result.streamsAvailable && (
-        <BlockedStreams key={`blocked-${result.username}`} data={result} />
+        <BlockedStreams key={`blocked-${result.platform || 'tiktok'}-${result.username}`} data={result} />
       )}
 
       <Watchlist onJobsChanged={handleJobsChanged} />

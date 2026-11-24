@@ -11,9 +11,10 @@ import { Separator } from '@/components/ui/separator'
 import { useI18n } from '@/lib/i18n'
 import { useEventStream } from '@/lib/useEventStream'
 import { fmtTime } from '@/lib/format'
-import { cleanUsernameInput } from '@/lib/utils'
+import { parseChannelInput } from '@/lib/utils'
+import { PlatformBadge, PlatformSwitch } from '@/components/PlatformBadge'
 import * as api from '@/lib/api'
-import type { WatchData, WatchEvent } from '@/lib/types'
+import type { Platform, WatchData, WatchEvent } from '@/lib/types'
 import { toast } from 'sonner'
 
 interface Props {
@@ -24,6 +25,7 @@ export function Watchlist({ onJobsChanged }: Props) {
   const { t } = useI18n()
   const [watchData, setWatchData] = useState<WatchData>({ pollSeconds: 30, list: [] })
   const [events, setEvents] = useState<WatchEvent[]>([])
+  const [addPlatform, setAddPlatform] = useState<Platform>('tiktok')
   const [addUsername, setAddUsername] = useState('')
   const [addQuality, setAddQuality] = useState('')
   const [addAutoRecord, setAddAutoRecord] = useState(true)
@@ -31,7 +33,7 @@ export function Watchlist({ onJobsChanged }: Props) {
   const [pollSeconds, setPollSeconds] = useState(30)
   const [polling, setPolling] = useState(false)
   const [accounts, setAccounts] = useState<api.AccountInfo[]>([])
-  const [editingUser, setEditingUser] = useState<string | null>(null)
+  const [editingKey, setEditingKey] = useState<string | null>(null)
   const [cfgPriority, setCfgPriority] = useState<'high' | 'normal'>('normal')
   const [cfgAccountId, setCfgAccountId] = useState('default')
   const [cfgMinViewers, setCfgMinViewers] = useState('')
@@ -118,13 +120,17 @@ export function Watchlist({ onJobsChanged }: Props) {
   useEventStream('channels=watch', sseHandlers, true, notifsEnabled)
 
   const handleAdd = async () => {
-    const u = cleanUsernameInput(addUsername)
-    if (!u) return
+    const parsed = parseChannelInput(addUsername, addPlatform)
+    if (!parsed.username) return
     setAdding(true)
     try {
       const quality = addQuality && addQuality !== 'auto' ? addQuality : null
-      await api.addWatch(u, quality, addAutoRecord, { audioOnly: quality === 'ao' })
-      toast.success('Added to watchlist', { description: '@' + u })
+      await api.addWatch(parsed.username, quality, addAutoRecord, {
+        audioOnly: quality === 'ao',
+        platform: parsed.platform,
+      })
+      toast.success('Added to watchlist', { description: `@${parsed.username}` })
+      setAddPlatform(parsed.platform)
       setAddUsername('')
       void refreshWatch()
     } catch (e: unknown) {
@@ -134,9 +140,9 @@ export function Watchlist({ onJobsChanged }: Props) {
     }
   }
 
-  const handleRemove = async (username: string) => {
+  const handleRemove = async (username: string, platform?: Platform) => {
     try {
-      await api.removeWatch(username)
+      await api.removeWatch(username, platform)
       toast.info('Removed', { description: '@' + username })
       void refreshWatch()
     } catch (e: unknown) {
@@ -144,9 +150,9 @@ export function Watchlist({ onJobsChanged }: Props) {
     }
   }
 
-  const handleToggleAutoRecord = async (username: string, autoRecord: boolean) => {
+  const handleToggleAutoRecord = async (username: string, autoRecord: boolean, platform?: Platform) => {
     try {
-      await api.patchWatch(username, { autoRecord })
+      await api.patchWatch(username, { autoRecord, platform })
       toast.info(autoRecord ? 'Auto-record on' : 'Auto-record off', { description: '@' + username })
       void refreshWatch()
     } catch (e: unknown) {
@@ -156,7 +162,7 @@ export function Watchlist({ onJobsChanged }: Props) {
 
   const handleToggleAudioOnly = async (entry: WatchData['list'][number], audioOnly: boolean) => {
     try {
-      const patch: Parameters<typeof api.patchWatch>[1] = { audioOnly }
+      const patch: Parameters<typeof api.patchWatch>[1] = { audioOnly, platform: entry.platform }
       if (!audioOnly && entry.quality === 'ao') {
         patch.quality = null
       }
@@ -169,11 +175,12 @@ export function Watchlist({ onJobsChanged }: Props) {
   }
 
   const openChannelConfig = (e: WatchData['list'][number]) => {
-    if (editingUser === e.username) {
-      setEditingUser(null)
+    const key = `${e.platform || 'tiktok'}:${e.username}`
+    if (editingKey === key) {
+      setEditingKey(null)
       return
     }
-    setEditingUser(e.username)
+    setEditingKey(key)
     setCfgPriority(e.priority === 'high' ? 'high' : 'normal')
     setCfgAccountId(e.accountId || 'default')
     setCfgMinViewers(e.minViewers != null ? String(e.minViewers) : '')
@@ -183,9 +190,10 @@ export function Watchlist({ onJobsChanged }: Props) {
     api.getAccounts().then((r) => setAccounts(r.accounts || [])).catch(() => {})
   }
 
-  const saveChannelConfig = async (username: string) => {
+  const saveChannelConfig = async (username: string, platform?: Platform) => {
     try {
       await api.patchWatch(username, {
+        platform,
         priority: cfgPriority,
         accountId: cfgAccountId === 'default' ? null : cfgAccountId,
         minViewers: cfgMinViewers.trim() ? Number(cfgMinViewers) : null,
@@ -193,7 +201,7 @@ export function Watchlist({ onJobsChanged }: Props) {
         scheduleEnd: cfgSchedEnd.trim() || null,
         recordChat: cfgRecordChat,
       })
-      setEditingUser(null)
+      setEditingKey(null)
       toast.success(t('settingsSaved'), { description: '@' + username })
       void refreshWatch()
     } catch (err: unknown) {
@@ -304,13 +312,21 @@ export function Watchlist({ onJobsChanged }: Props) {
         </div>
 
         <div className="flex flex-wrap gap-2 mb-3 items-center">
+          <PlatformSwitch value={addPlatform} onChange={setAddPlatform} size="sm" />
           <div className="flex flex-1 min-w-[180px] items-center bg-secondary rounded-lg overflow-hidden border border-border focus-within:border-primary/60 transition">
             <span className="inline-flex items-center px-2.5 text-muted-foreground text-sm">@</span>
             <Input
               value={addUsername}
-              onChange={(e) => setAddUsername(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value
+                setAddUsername(val)
+                if (/^(?:twitch|tiktok):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com)\//i.test(val)) {
+                  const detected = parseChannelInput(val, addPlatform)
+                  if (detected.platform !== addPlatform) setAddPlatform(detected.platform)
+                }
+              }}
               onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
-              placeholder="username"
+              placeholder={t('watchPlaceholderMulti')}
               className="border-0 bg-transparent shadow-none text-sm h-8 focus-visible:ring-0 px-1"
               autoComplete="off"
               spellCheck={false}
@@ -349,8 +365,10 @@ export function Watchlist({ onJobsChanged }: Props) {
           {watchData.list.length === 0 ? (
             <p className="text-muted-foreground text-xs">{t('emptyList')}</p>
           ) : (
-            watchData.list.map((e) => (
-              <div key={e.username} className="bg-secondary/70 border border-border/50 rounded-lg px-2.5 py-1.5 space-y-1.5">
+            watchData.list.map((e) => {
+              const entryKey = `${e.platform || 'tiktok'}:${e.username}`
+              return (
+              <div key={entryKey} className="bg-secondary/70 border border-border/50 rounded-lg px-2.5 py-1.5 space-y-1.5">
                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                   <Badge
                     variant={e.lastStatus === 'live' ? 'destructive' : 'secondary'}
@@ -364,6 +382,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                       <span>...</span>
                     )}
                   </Badge>
+                  {e.platform === 'twitch' && <PlatformBadge platform="twitch" />}
                   <span className="text-sm font-medium font-mono">@{e.username}</span>
                   {e.priority === 'high' && (
                     <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-amber-600/30 text-amber-200 border-amber-600/40" title="High priority polling">
@@ -391,7 +410,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                   <label className="flex items-center gap-1 text-xs cursor-pointer">
                     <Checkbox
                       checked={e.autoRecord}
-                      onCheckedChange={(v) => handleToggleAutoRecord(e.username, !!v)}
+                      onCheckedChange={(v) => handleToggleAutoRecord(e.username, !!v, e.platform)}
                       className="w-3.5 h-3.5"
                     />
                     {t('autoRec')}
@@ -413,12 +432,12 @@ export function Watchlist({ onJobsChanged }: Props) {
                     size="icon-xs"
                     onClick={() => openChannelConfig(e)}
                     title="Channel rules (priority, schedule, min viewers, account)"
-                    className={editingUser === e.username ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}
+                    className={editingKey === entryKey ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}
                   >
                     <SlidersHorizontal className="w-3.5 h-3.5" />
                   </Button>
                   <ConfirmButton
-                    onConfirm={() => handleRemove(e.username)}
+                    onConfirm={() => handleRemove(e.username, e.platform)}
                     confirmLabel={t('confirm')}
                     cancelLabel={t('cancel')}
                     title={t('watchRemove')}
@@ -429,7 +448,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                     <X className="w-3.5 h-3.5" />
                   </ConfirmButton>
                 </div>
-                {editingUser === e.username && (
+                {editingKey === entryKey && (
                   <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-border/50 text-xs">
                     <Select items={priorityItems} value={cfgPriority} onValueChange={(v) => v && setCfgPriority(v as 'high' | 'normal')}>
                       <SelectTrigger className="w-[125px] h-7 text-xs">
@@ -485,13 +504,14 @@ export function Watchlist({ onJobsChanged }: Props) {
                       />
                       <span>{t('watchRecordChat')}</span>
                     </label>
-                    <Button size="xs" onClick={() => saveChannelConfig(e.username)} className="h-7 ml-auto">
+                    <Button size="xs" onClick={() => saveChannelConfig(e.username, e.platform)} className="h-7 ml-auto">
                       <Save className="w-3 h-3 mr-1" /> {t('btnSave')}
                     </Button>
                   </div>
                 )}
               </div>
-            ))
+              )
+            })
           )}
         </div>
 
@@ -518,6 +538,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                   <div key={e.id} className={`flex items-center gap-1.5 py-0.5 ${color}`}>
                     <span className="text-muted-foreground font-mono tabular-nums shrink-0">{fmtTime(e.ts)}</span>
                     <EventIcon className="w-3 h-3 shrink-0" />
+                    {e.platform === 'twitch' && <PlatformBadge platform="twitch" />}
                     <strong className="font-mono">@{e.username}</strong>
                     <span className="opacity-80">{e.type}</span>
                     {detail && <span className="truncate text-muted-foreground">{detail}</span>}

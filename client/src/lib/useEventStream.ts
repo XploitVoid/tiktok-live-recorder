@@ -26,6 +26,7 @@ function buildCombinedQuery(): { url: string | null; keepAlive: boolean } {
   const channels = new Set<string>()
   let chat: string | null = null
   let sinceId: string | null = null
+  let platform: string | null = null
   let keepAlive = false
 
   for (const sub of subscribers.values()) {
@@ -41,6 +42,7 @@ function buildCombinedQuery(): { url: string | null; keepAlive: boolean } {
     if (chatParam) {
       chat = chatParam
       sinceId = params.get('sinceId') ?? '0'
+      platform = params.get('platform')
     }
   }
 
@@ -51,6 +53,7 @@ function buildCombinedQuery(): { url: string | null; keepAlive: boolean } {
   if (chat) {
     out.set('chat', chat)
     if (sinceId !== null) out.set('sinceId', sinceId)
+    if (platform) out.set('platform', platform)
   }
   const qs = out.toString()
   return { url: qs ? `/api/events/stream?${qs}` : null, keepAlive }

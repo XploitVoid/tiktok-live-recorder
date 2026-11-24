@@ -1,7 +1,7 @@
 // routes/chat.js — /api/chat/* endpoints.
 
 const { Router } = require('express');
-const { normalizeUsername } = require('../lib/room');
+const { getProvider, normalizePlatform } = require('../lib/providers');
 const { safeError } = require('../lib/utils');
 const chat = require('../lib/chat');
 
@@ -15,9 +15,10 @@ function buildDashboardData() {
   const streams = [];
 
   for (const s of connected) {
+    const platform = s.platform || 'tiktok';
     totalViewers += s.viewerCount || 0;
     totalEvents += s.eventCount || 0;
-    const session = chat.getSession(s.username);
+    const session = chat.getSession(s.username, platform);
     const recentEvents = session ? session.snapshot(Math.max(0, session.nextId - 50)) : [];
     let recentDiamonds = 0;
     for (const ev of recentEvents) {
@@ -25,6 +26,7 @@ function buildDashboardData() {
     }
 
     streams.push({
+      platform,
       username: s.username,
       viewerCount: s.viewerCount || 0,
       eventCount: s.eventCount,
@@ -36,11 +38,12 @@ function buildDashboardData() {
 
   const allEvents = [];
   for (const s of connected) {
-    const session = chat.getSession(s.username);
+    const platform = s.platform || 'tiktok';
+    const session = chat.getSession(s.username, platform);
     if (!session) continue;
     const events = session.snapshot(Math.max(0, session.nextId - 30));
     for (const ev of events) {
-      allEvents.push({ ...ev, _username: s.username });
+      allEvents.push({ ...ev, _platform: platform, _username: s.username });
     }
   }
   allEvents.sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -56,10 +59,11 @@ function buildDashboardData() {
 }
 
 router.post('/api/chat/start', async (req, res) => {
-  const username = normalizeUsername(req.body?.username);
+  const platform = normalizePlatform(req.body?.platform, 'tiktok');
+  const username = getProvider(platform).normalizeUsername(req.body?.username);
   if (!username) return res.status(400).json({ error: 'missing username' });
   try {
-    const s = await chat.ensureSession(username, { source: 'ui' });
+    const s = await chat.ensureSession(username, { platform, source: 'ui' });
     res.json(s.info());
   } catch (e) {
     res.status(500).json({ error: safeError(e) });
@@ -67,10 +71,11 @@ router.post('/api/chat/start', async (req, res) => {
 });
 
 router.post('/api/chat/stop', (req, res) => {
-  const username = normalizeUsername(req.body?.username);
+  const platform = normalizePlatform(req.body?.platform, 'tiktok');
+  const username = getProvider(platform).normalizeUsername(req.body?.username);
   if (!username) return res.status(400).json({ error: 'missing username' });
-  const closed = chat.closeSession(username, { force: false });
-  res.json({ ok: true, closed, recordingActive: !closed && !!chat.getSession(username) });
+  const closed = chat.closeSession(username, { force: false, platform });
+  res.json({ ok: true, closed, recordingActive: !closed && !!chat.getSession(username, platform) });
 });
 
 router.get('/api/chat/sessions', (_req, res) => {
@@ -82,12 +87,14 @@ router.get('/api/chat/dashboard', (_req, res) => {
 });
 
 router.get('/api/chat/events', (req, res) => {
-  const username = normalizeUsername(req.query.username);
+  const platform = normalizePlatform(req.query.platform, 'tiktok');
+  const username = getProvider(platform).normalizeUsername(req.query.username);
   if (!username) return res.status(400).json({ error: 'missing username' });
   const sinceId = Number(req.query.sinceId) || 0;
-  const s = chat.getSession(username);
-  if (!s) return res.json({ state: 'idle', events: [], lastEventId: 0 });
+  const s = chat.getSession(username, platform);
+  if (!s) return res.json({ platform, state: 'idle', events: [], lastEventId: 0 });
   res.json({
+    platform,
     state: s.state,
     error: s.error,
     viewerCount: s.viewerCount,

@@ -114,7 +114,7 @@ const GRID_COLS: Record<number, string> = {
           <>
             {streams.slice(0, maxTiles).map((entry) => (
               <GridTile
-                key={entry.username}
+                key={`${entry.platform || 'tiktok'}:${entry.username}`}
                 entry={entry}
                 quality={quality}
                 muted={muted}

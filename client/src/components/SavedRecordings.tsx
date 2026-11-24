@@ -14,6 +14,7 @@ import type { RecordingFile } from '@/lib/types'
 import { toast } from 'sonner'
 import { Link } from 'react-router-dom'
 import { ConfirmButton } from '@/components/ConfirmButton'
+import { PlatformBadge } from '@/components/PlatformBadge'
 
 export interface SavedRecordingsRef {
   refresh: () => void
@@ -23,7 +24,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
   const { t } = useI18n()
   const [files, setFiles] = useState<RecordingFile[]>([])
   const [query, setQuery] = useState('')
-  const [filterMode, setFilterMode] = useState<'all' | 'chat' | 'highlights' | 'protected'>('all')
+  const [filterMode, setFilterMode] = useState<'all' | 'tiktok' | 'twitch' | 'chat' | 'highlights' | 'protected'>('all')
   const [sortMode, setSortMode] = useState<'newest' | 'largest' | 'longest'>('newest')
   const [extracting, setExtracting] = useState<string | null>(null)
   const [compressing, setCompressing] = useState<string | null>(null)
@@ -217,6 +218,8 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
         const hay = `${f.name} ${f.displayTitle || ''} ${f.notes || ''}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
+      if (filterMode === 'tiktok' && (f.platform || 'tiktok') !== 'tiktok') return false
+      if (filterMode === 'twitch' && f.platform !== 'twitch') return false
       if (filterMode === 'chat' && !f.hasEvents) return false
       if (filterMode === 'highlights' && !(f.highlightCount && f.highlightCount > 0)) return false
       if (filterMode === 'protected' && !f.protected) return false
@@ -231,6 +234,8 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
 
   const filterItems = useMemo(() => ({
     all: t('savedFilterAll'),
+    tiktok: t('platformTikTok'),
+    twitch: t('platformTwitch'),
     chat: t('fChat'),
     highlights: t('highlights'),
     protected: t('savedFilterProtected'),
@@ -381,6 +386,8 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">{t('savedFilterAll')}</SelectItem>
+                <SelectItem value="tiktok">{t('platformTikTok')}</SelectItem>
+                <SelectItem value="twitch">{t('platformTwitch')}</SelectItem>
                 <SelectItem value="chat">{t('fChat')}</SelectItem>
                 <SelectItem value="highlights">{t('highlights')}</SelectItem>
                 <SelectItem value="protected">{t('savedFilterProtected')}</SelectItem>
@@ -446,6 +453,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                       <div className="text-[10px] text-muted-foreground truncate">{f.notes}</div>
                     )}
                     <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                      {f.platform === 'twitch' && <PlatformBadge platform="twitch" />}
                       {f.protected && (
                         <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-emerald-700/30 text-emerald-200 border-emerald-700/40">
                           <Lock className="w-2.5 h-2.5 mr-0.5" /> {t('savedFilterProtected')}

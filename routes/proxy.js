@@ -70,7 +70,7 @@ function requestViaAgent(target, headers, agent, timeoutMs) {
         status: res.statusCode || 502,
         finalUrl: target,
         headers: hdrs,
-        nodeStream: res,
+        getNodeStream: () => res,
         cancelBody: () => { try { res.destroy(); } catch {} },
         readBuffer: (maxBytes) => new Promise((resBuf, rejBuf) => {
           const chunks = [];
@@ -94,6 +94,46 @@ function requestViaAgent(target, headers, agent, timeoutMs) {
     req.on('error', reject);
     req.end();
   });
+}
+
+function wrapFetchResponse(res, target) {
+  let cachedNodeStream = null;
+  return {
+    status: res.status,
+    finalUrl: target,
+    headers: res.headers,
+    getNodeStream: () => {
+      if (!res.body) return null;
+      if (!cachedNodeStream) cachedNodeStream = Readable.fromWeb(res.body);
+      return cachedNodeStream;
+    },
+    cancelBody: async () => {
+      try {
+        if (cachedNodeStream) {
+          cachedNodeStream.destroy();
+        } else if (res.body && !res.body.locked) {
+          await res.body.cancel();
+        }
+      } catch {}
+    },
+    readBuffer: async (maxBytes) => {
+      if (!res.body) return Buffer.alloc(0);
+      const reader = res.body.getReader();
+      const chunks = [];
+      let total = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          try { await reader.cancel(); } catch {}
+          throw new Error('manifest too large');
+        }
+        chunks.push(Buffer.from(value));
+      }
+      return Buffer.concat(chunks);
+    },
+  };
 }
 
 // Manually follow redirects so each hop is re-validated against the CDN
@@ -123,30 +163,7 @@ async function safeFetch(target, init = {}, hops = 0) {
     } finally {
       clearTimeout(headerTimer);
     }
-    upstream = {
-      status: res.status,
-      finalUrl: target,
-      headers: res.headers,
-      nodeStream: res.body ? Readable.fromWeb(res.body) : null,
-      cancelBody: async () => { try { await res.body?.cancel(); } catch {} },
-      readBuffer: async (maxBytes) => {
-        if (!res.body) return Buffer.alloc(0);
-        const reader = res.body.getReader();
-        const chunks = [];
-        let total = 0;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          total += value.byteLength;
-          if (total > maxBytes) {
-            try { await reader.cancel(); } catch {}
-            throw new Error('manifest too large');
-          }
-          chunks.push(Buffer.from(value));
-        }
-        return Buffer.concat(chunks);
-      },
-    };
+    upstream = wrapFetchResponse(res, target);
   }
 
   // Manual redirect handling — surface 3xx + Location to validate.
@@ -262,8 +279,8 @@ router.get('/api/proxy', async (req, res) => {
       return res.send(rewritten);
     }
 
-    if (upstream.nodeStream) {
-      const nodeStream = upstream.nodeStream;
+    const nodeStream = upstream.getNodeStream();
+    if (nodeStream) {
       let idleTimer = null;
       const resetIdle = () => {
         if (idleTimer) clearTimeout(idleTimer);
@@ -385,5 +402,7 @@ router.get('/api/transcode', async (req, res) => {
     else res.end();
   }
 });
+
+router.wrapFetchResponse = wrapFetchResponse;
 
 module.exports = router;

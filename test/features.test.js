@@ -1691,3 +1691,25 @@ test('Kick LIVE provider (HLS, Pusher WS chat, yt-dlp fallback) & multi-platform
     else fs.rmSync(keyFile, { force: true });
   }
 });
+
+test('proxy.wrapFetchResponse reads m3u8 manifest without locking ReadableStream', async () => {
+  const proxyRouter = require('../routes/proxy');
+  const m3u8Body = '#EXTM3U\n#EXTINF:2.0,\nhttps://b2f45bec2a55.j.cloudfront.hls.ttvnw.net/v1/segment/1.ts\n';
+  const res1 = new Response(m3u8Body, {
+    status: 200,
+    headers: { 'content-type': 'application/vnd.apple.mpegurl' },
+  });
+  const wrapped1 = proxyRouter.wrapFetchResponse(res1, 'https://aps13.playlist.ttvnw.net/v1/playlist/master.m3u8');
+  const buf = await wrapped1.readBuffer(1024 * 1024);
+  assert.equal(buf.toString('utf8'), m3u8Body);
+
+  const res2 = new Response(Buffer.from([0x47, 0x40, 0x00, 0x10]), {
+    status: 200,
+    headers: { 'content-type': 'binary/octet-stream' },
+  });
+  const wrapped2 = proxyRouter.wrapFetchResponse(res2, 'https://b2f45bec2a55.j.cloudfront.hls.ttvnw.net/v1/segment/1.ts');
+  const stream = wrapped2.getNodeStream();
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  assert.deepEqual(Buffer.concat(chunks), Buffer.from([0x47, 0x40, 0x00, 0x10]));
+});

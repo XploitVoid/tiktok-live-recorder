@@ -724,3 +724,48 @@ test('Env parsers, storage bundle isolation, meta race safety, analytics repeatC
   await assert.rejects(() => p, /connection closed/);
   assert.equal(cs2.state, 'closed');
 });
+
+test('recorder.createStderrParser buffers split progress chunks and shouldExposeStderrOnExit filters clean exits', () => {
+  const { createStderrParser, shouldExposeStderrOnExit } = require('../lib/recorder');
+
+  const statsEvents = [];
+  const errorLines = [];
+  const parser = createStderrParser({
+    onStats: (s) => statsEvents.push(s),
+    onErrorLine: (line) => errorLines.push(line),
+  });
+
+  // Chunk-split FFmpeg progress line (exact split across tokens like Windows pipe reads)
+  parser.push(Buffer.from('frame=20388 fps= 60 q=-1.'));
+  parser.push(Buffer.from('0 size= 171008KiB t'));
+  parser.push(Buffer.from('ime=00:05:40.18 bitrate=4120.5kbits/s speed=1.01x elapsed=0:05:39.50\r'));
+
+  assert.equal(statsEvents.length, 1);
+  assert.deepEqual(statsEvents[0], {
+    outTime: '00:05:40',
+    bitrate: '4120.5kbits/s',
+    speed: '1.01x',
+    fps: 60,
+  });
+  assert.deepEqual(errorLines, []);
+
+  // Final muxing summary and trailing truncated progress fragment must not be flagged as errors
+  parser.push('video:165000kB audio:6000kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 0.12%\n');
+  parser.push('frame=20758 fps= 60 q=-1.0');
+  parser.flush();
+  assert.deepEqual(errorLines, []);
+
+  // Real FFmpeg errors (terminated by newline or flushed without trailing newline) ARE captured
+  parser.push('Server returned 403 Forbidden\n');
+  parser.push('Connection reset by peer');
+  parser.flush();
+  assert.deepEqual(errorLines, [
+    'Server returned 403 Forbidden',
+    'Connection reset by peer',
+  ]);
+
+  assert.equal(shouldExposeStderrOnExit({ code: 0, manualStop: false, errMsg: null }), false);
+  assert.equal(shouldExposeStderrOnExit({ code: null, manualStop: true, errMsg: null }), false);
+  assert.equal(shouldExposeStderrOnExit({ code: 1, manualStop: false, errMsg: null }), true);
+  assert.equal(shouldExposeStderrOnExit({ code: -1, manualStop: false, errMsg: 'ENOENT' }), true);
+});

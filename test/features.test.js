@@ -1777,3 +1777,161 @@ test('proxy.wrapFetchResponse reads m3u8 manifest without locking ReadableStream
   for await (const chunk of stream) chunks.push(chunk);
   assert.deepEqual(Buffer.concat(chunks), Buffer.from([0x47, 0x40, 0x00, 0x10]));
 });
+
+test('Kick and YouTube Live regression fixes (offline yt-dlp skip, proxy header leak, followers coerce, token refresh, reconnect)', async () => {
+  const { EventEmitter } = require('node:events');
+  const kick = require('../lib/providers/kick');
+  const youtube = require('../lib/providers/youtube');
+
+  // 1. Kick cleanly offline channel skips yt-dlp fallback and coerces string followers_count
+  let kickYtDlpCalls = 0;
+  const kickOffline = await kick.fetchLiveStatus('xqc', {
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: JSON.stringify({
+        id: 668,
+        slug: 'xqc',
+        followers_count: '1857578',
+        livestream: null,
+        chatroom: { id: 668123 },
+        user: { username: 'xQc' },
+      }),
+    }),
+    ytDlpExec: async () => {
+      kickYtDlpCalls++;
+      return '{}';
+    },
+  });
+  assert.equal(kickYtDlpCalls, 0);
+  assert.equal(kick.isLive(kickOffline), false);
+  const kickOfflineSummary = kick.buildSummary('xqc', kickOffline, null);
+  assert.strictEqual(kickOfflineSummary.owner.followers, 1857578);
+
+  // 2. Kick proxy retry on 403 does not leak __retriedProxy into outbound headers
+  const prevProxyUrl = settings.getSettings().proxyUrl || '';
+  const seenHeaderKeys = [];
+  let proxyTryCalls = 0;
+  try {
+    settings.updateSettings({ proxyUrl: 'http://127.0.0.1:8001,http://127.0.0.1:8002' });
+    const proxyRes = await kick.fetchLiveStatus('xqc', {
+      fetchImpl: async (_url, opts) => {
+        proxyTryCalls++;
+        seenHeaderKeys.push(...Object.keys(opts?.headers || {}));
+        if (proxyTryCalls === 1) return { ok: false, status: 403, text: 'cf' };
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ id: 1, slug: 'xqc', livestream: null, chatroom: { id: 1 } }),
+        };
+      },
+    });
+    assert.equal(proxyTryCalls, 2);
+    assert.equal(proxyRes.channel?.id, 1);
+    assert.equal(seenHeaderKeys.includes('__retriedProxy'), false);
+  } finally {
+    settings.updateSettings({ proxyUrl: prevProxyUrl });
+  }
+
+  // 3. KickChatSession sets state='error' on pre-WS failure (no chatroomId)
+  const failKickChat = new kick.KickChatSession('offlinechan', {
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: JSON.stringify({ id: 2, slug: 'offlinechan', livestream: null }),
+    }),
+    useYtDlpFallback: false,
+  });
+  failKickChat.uiActive = true;
+  await assert.rejects(() => failKickChat.connect(), /Kick chatroom unavailable/);
+  assert.equal(failKickChat.state, 'error');
+  assert.equal(failKickChat.health.errorsCount, 1);
+  assert.match(failKickChat.error || '', /Kick chatroom unavailable/);
+
+  // 4. KickChatSession arms _refreshTimer when connect grants expiring TTL and clears it on disconnect()
+  const wsRefresh = new EventEmitter();
+  wsRefresh.readyState = 1;
+  wsRefresh.send = () => {};
+  wsRefresh.close = () => { wsRefresh.readyState = 3; };
+  wsRefresh.terminate = () => { wsRefresh.readyState = 3; };
+  const refreshSession = new kick.KickChatSession('xqc', { chatroomId: '668123', wsFactory: () => wsRefresh });
+  refreshSession.uiActive = true;
+  const rp = refreshSession.connect();
+  await new Promise((r) => setImmediate(r));
+  wsRefresh.emit('open');
+  wsRefresh.emit('message', JSON.stringify({ id: 1, connect: { client: 'c1', expires: true, ttl: 2699 } }));
+  await rp;
+  assert.ok(refreshSession._refreshTimer);
+  refreshSession.disconnect();
+  assert.equal(refreshSession._refreshTimer, null);
+
+  // 5. YouTube offline page skips yt-dlp fallback and populates author from channelMetadataRenderer.title
+  let ytDlpCalls = 0;
+  const offlineYtHtml = [
+    '<script>',
+    'var ytInitialData = {"metadata":{"channelMetadataRenderer":{"title":"Veritasium","avatar":{"thumbnails":[{"url":"https://yt3.ggpht.com/v.jpg"}]}}}};',
+    '</script>',
+  ].join('\n');
+  const ytOffline = await youtube.fetchLiveStatus('Veritasium', {
+    fetchImpl: async () => ({ ok: true, status: 200, text: offlineYtHtml }),
+    ytDlpExec: async () => {
+      ytDlpCalls++;
+      return '{}';
+    },
+  });
+  assert.equal(ytDlpCalls, 0);
+  assert.equal(youtube.isLive(ytOffline), false);
+  assert.equal(ytOffline.author, 'Veritasium');
+  assert.equal(youtube.buildSummary('veritasium', ytOffline, null).owner.nickname, 'Veritasium');
+
+  // 6. YouTube parseYouTubeChatAction supports giftMessageViewModel & liveChatSponsorshipsGiftRedemptionAnnouncementRenderer
+  const giftVm = youtube.parseYouTubeChatAction({
+    addChatItemAction: {
+      item: {
+        giftMessageViewModel: {
+          id: 'gvm-1',
+          timestampUsec: '1700000005000000',
+          authorName: { content: 'JewelSender' },
+          authorPhoto: { image: { sources: [{ url: 'https://yt3.ggpht.com/j.jpg' }] } },
+          text: { content: 'Sent 1x Galaxy' },
+          jewelsCount: 250,
+        },
+      },
+    },
+  });
+  assert.equal(giftVm.event.type, 'gift');
+  assert.equal(giftVm.event.user.nickname, 'JewelSender');
+  assert.equal(giftVm.event.giftName, 'Sent 1x Galaxy');
+  assert.equal(giftVm.event.diamondCount, 250);
+
+  const redeemed = youtube.parseYouTubeChatAction({
+    addChatItemAction: {
+      item: {
+        liveChatSponsorshipsGiftRedemptionAnnouncementRenderer: {
+          id: 'red-1',
+          timestampUsec: '1700000006000000',
+          authorName: { simpleText: 'LuckyViewer' },
+          message: { runs: [{ text: 'was gifted a membership!' }] },
+        },
+      },
+    },
+  });
+  assert.equal(redeemed.event.type, 'subscribe');
+  assert.equal(redeemed.event.label, 'was gifted a membership!');
+
+  // 7. YouTubeChatSession clears stale continuation on 5 consecutive poll errors before reconnect
+  const staleChat = new youtube.YouTubeChatSession('lofigirl', {
+    apiKey: 'KEY',
+    continuation: 'STALE_CONT',
+    fetchImpl: async () => ({ ok: false, status: 400, text: '{}' }),
+  });
+  staleChat.uiActive = true;
+  await staleChat.connect();
+  staleChat._clearPollTimer();
+  for (let i = 0; i < 5; i++) {
+    await staleChat._pollOnce();
+  }
+  assert.equal(staleChat.continuation, null);
+  assert.equal(staleChat.state, 'reconnecting');
+  staleChat.disconnect();
+});

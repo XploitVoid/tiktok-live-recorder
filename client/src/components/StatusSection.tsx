@@ -61,7 +61,11 @@ export function StatusSection({ data }: Props) {
                 {owner.nickname || data.username}
               </span>
               <span className="text-muted-foreground text-xs font-mono">
-                @{data.username}
+                {data.platform === 'youtube' && /^v_[A-Za-z0-9_-]{11}$/.test(data.username)
+                  ? `watch?v=${data.username.slice(2)}`
+                  : data.platform === 'youtube' && /^UC[A-Za-z0-9_-]{22}$/.test(data.username)
+                    ? data.username
+                    : `@${data.username}`}
               </span>
             </div>
 

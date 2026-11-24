@@ -93,7 +93,7 @@ function ReplayContent({ file }: { file: string }) {
     if (activeFilter === 'chat') return ev.type === 'chat'
     if (activeFilter === 'gift') return ev.type === 'gift'
     if (activeFilter === 'like') return ev.type === 'like'
-    if (activeFilter === 'member') return ev.type === 'member' || ev.type === 'follow' || ev.type === 'social'
+    if (activeFilter === 'member') return ev.type === 'member' || ev.type === 'follow' || ev.type === 'social' || ev.type === 'subscribe'
     // PK events always show in 'all', never in specific filters (they're system events)
     return false
   }, [])

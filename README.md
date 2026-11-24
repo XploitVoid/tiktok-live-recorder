@@ -1,6 +1,6 @@
 # TikTok LIVE Recorder
 
-[![Release](https://img.shields.io/github/v/release/XploitVoid/tiktok-live-recorder)](https://github.com/XploitVoid/tiktok-live-recorder/releases/latest)
+[![Release](https://img.shields.io/badge/Release-v1.5.0-blue)](https://github.com/XploitVoid/tiktok-live-recorder/releases/latest)
 ![License](https://img.shields.io/github/license/XploitVoid/tiktok-live-recorder)
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green)
 ![Docker](https://img.shields.io/badge/Docker-Supported-blue)

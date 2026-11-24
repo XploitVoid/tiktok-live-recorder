@@ -1377,6 +1377,37 @@ test('YouTube Live provider (URL parser, InnerTube/HTML HLS, Live Chat/Super Cha
   assert.equal(ytSummary.owner.nickname, 'Lofi Girl');
   assert.equal(ytSummary.streams.hlsByQuality.uhd_60, 'https://rr1---sn.googlevideo.com/1080p60.m3u8');
 
+  // 3b. InnerTube ANDROID player fallback when web HTML omits hlsManifestUrl + prefer continuations[0] over subMenuItems
+  const htmlNeedAndroid = [
+    '<script>',
+    'var ytInitialPlayerResponse = {"videoDetails":{"videoId":"LiveVid1234","title":"Chilled Live","channelId":"UC1234567890123456789012","author":"Lofi Girl","isLive":true},"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[]}};',
+    'var ytInitialData = {"contents":{"twoColumnWatchNextResults":{"conversationBar":{"liveChatRenderer":{"header":{"liveChatHeaderRenderer":{"viewSelector":{"sortFilterSubMenuRenderer":{"subMenuItems":[{"continuation":{"reloadContinuationData":{"continuation":"SUBMENU_BAD_400"}}}]}}}},"continuations":[{"reloadContinuationData":{"continuation":"CONT_GOOD_200"}}]}}}}};',
+    '</script>',
+    '<script>ytcfg.set({"INNERTUBE_API_KEY":"TEST_YT_KEY","VISITOR_DATA":"VISITOR_123"});</script>',
+  ].join('\n');
+  let playerClientUsed = null;
+  const statusAndroidFallback = await youtube.fetchLiveStatus('LofiGirl', {
+    fetchImpl: async (url, init) => {
+      if (url.includes('youtube.com/@lofigirl/live')) return { ok: true, status: 200, text: htmlNeedAndroid };
+      if (url.includes('/youtubei/v1/player')) {
+        const body = JSON.parse(init.body);
+        playerClientUsed = body?.context?.client?.clientName;
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            streamingData: { hlsManifestUrl: 'https://manifest.googlevideo.com/android/master.m3u8' },
+          }),
+        };
+      }
+      if (url.includes('manifest.googlevideo.com')) return { ok: true, status: 200, text: ytM3u8 };
+      return { ok: false, status: 404, text: '' };
+    },
+  });
+  assert.equal(playerClientUsed, 'ANDROID');
+  assert.equal(youtube.isLive(statusAndroidFallback), true);
+  assert.equal(statusAndroidFallback.liveChatContinuation, 'CONT_GOOD_200');
+
   // yt-dlp fallback when web page yields no manifest
   const statusFromYtDlp = await youtube.fetchLiveStatus('fallbackchan', {
     fetchImpl: async () => ({ ok: true, status: 200, text: '<html>offline placeholder</html>' }),
@@ -1627,7 +1658,7 @@ test('Kick LIVE provider (HLS, Pusher WS chat, yt-dlp fallback) & multi-platform
   assert.equal(giftFrame.events[0].diamondCount, 1000);
   assert.equal(kick.parseKickPusherMessage(JSON.stringify({ event: 'pusher:ping' })).command, 'PING');
 
-  // 4. KickChatSession subscribe, message push, ping/pong, and clean mid-connect disconnect
+  // 4. KickChatSession Centrifugo connect, subscribe, message push, {} ping/pong, and clean mid-connect disconnect
   const sentFrames = [];
   const fakeWs = new EventEmitter();
   fakeWs.readyState = 1;
@@ -1640,17 +1671,25 @@ test('Kick LIVE provider (HLS, Pusher WS chat, yt-dlp fallback) & multi-platform
   const ks = new kick.KickChatSession('xqc', { chatroomId: '668123', chatEvents: bus, wsFactory: () => fakeWs });
   ks.uiActive = true;
   const kp = ks.connect();
-  await Promise.resolve();
+  await new Promise((r) => setImmediate(r));
   fakeWs.emit('open');
+  assert.equal(sentFrames[0].connect.name, 'js');
+  fakeWs.emit('message', JSON.stringify({ id: 1, connect: { client: 'c1', version: '6.9.7' } }));
   await kp;
   assert.equal(ks.state, 'connected');
-  assert.equal(sentFrames[0].event, 'pusher:subscribe');
-  assert.equal(sentFrames[0].data.channel, 'chatrooms.668123.v2');
-  fakeWs.emit('message', JSON.stringify({ event: 'pusher:ping' }));
-  assert.equal(sentFrames[1].event, 'pusher:pong');
+  assert.equal(sentFrames[1].subscribe.channel, 'chatrooms.668123.v2');
+  fakeWs.emit('message', '{}');
+  assert.deepEqual(sentFrames[2], {});
   fakeWs.emit('message', JSON.stringify({
-    event: 'App\\Events\\ChatMessageEvent',
-    data: JSON.stringify({ content: 'GGs', sender: { id: 1, username: 'Fan', slug: 'fan' } }),
+    push: {
+      channel: 'chatrooms.668123.v2',
+      pub: {
+        data: {
+          event: 'App\\Events\\ChatMessageEvent',
+          data: JSON.stringify({ content: 'GGs', sender: { id: 1, username: 'Fan', slug: 'fan' } }),
+        },
+      },
+    },
   }));
   assert.equal(ks.events.length, 1);
   assert.equal(busEvents[0].platform, 'kick');
@@ -1658,16 +1697,19 @@ test('Kick LIVE provider (HLS, Pusher WS chat, yt-dlp fallback) & multi-platform
   assert.equal(ks.state, 'closed');
   assert.equal(ks._pingTimer, null);
 
-  // Mid-connect disconnect rejects cleanly
+  // Mid-connect disconnect terminates safely without crashing on ws pre-open error
   const hangWs = new EventEmitter();
   hangWs.readyState = 0;
   hangWs.send = () => {};
   hangWs.close = () => { hangWs.readyState = 3; };
-  hangWs.terminate = () => { hangWs.readyState = 3; };
+  hangWs.terminate = () => {
+    hangWs.readyState = 3;
+    hangWs.emit('error', new Error('WebSocket was closed before the connection was established'));
+  };
   const ks2 = new kick.KickChatSession('xqc', { chatroomId: '668123', wsFactory: () => hangWs });
   ks2.uiActive = true;
   const kp2 = ks2.connect();
-  await Promise.resolve();
+  await new Promise((r) => setImmediate(r));
   ks2.disconnect();
   await assert.rejects(() => kp2, /connection closed/);
   assert.equal(ks2._connectTimer, null);

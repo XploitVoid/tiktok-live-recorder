@@ -1,5 +1,5 @@
 # Stage 1: Build the React client
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 COPY client/package*.json ./client/
@@ -9,7 +9,7 @@ COPY client/ ./client/
 RUN npm run build --prefix client
 
 # Stage 2: Production environment
-FROM node:20-alpine
+FROM node:22-alpine
 
 # Install ffmpeg for recording/transcoding
 RUN apk add --no-cache ffmpeg
@@ -28,8 +28,8 @@ COPY routes/ ./routes/
 # Copy the built client from Stage 1
 COPY --from=builder /app/client/dist ./client/dist
 
-# Ensure the recordings directory exists and drop root privileges
-RUN mkdir -p recordings/highlights && chown -R node:node /app
+# Ensure the recordings directories exist and drop root privileges
+RUN mkdir -p recordings/highlights recordings/thumbs recordings/audio && chown -R node:node /app
 
 USER node
 

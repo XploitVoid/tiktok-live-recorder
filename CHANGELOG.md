@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-24
+
+### Added
+- **Live Instant Clip:** Cut the last 30s or 60s of any active recording on-the-fly (`POST /api/record/live-clip`) without interrupting the main stream capture.
+- **Auto-Merge Split Parts & Manual Merge:** Automatically or manually concatenate split recording parts (`_p1`, `_p2`, ...) and merge their `.events.jsonl` chat logs chronologically (`POST /api/recordings/merge`), preserving `protected` pins.
+- **Account Cookie Health Check:** Validate saved `sessionid` cookies manually or every 6 hours (`POST /api/accounts/:id/check`, `POST /api/accounts/check-all`) with UI status badges and Discord/Telegram expiry alerts.
+- **Creator Subfolders & Filename Templates:** Optionally organize recordings into `@username/` folders (`organizeByCreator`) and customize filenames with `{username}`, `{date}`, `{time}`, `{date_iso}`, `{time_hms}`, and `{title}` tokens.
+- **Multi-Format Capture & Per-Channel Chat Toggle:** Capture streams as MPEG-TS (`.ts`) with automatic `+faststart` MP4 remux on exit (`recordFormat`), and toggle chat capture per channel (`recordChat`) in Watchlist.
+- **Local SQLite FTS5 Search Index (`recorder.db`):** Built-in `node:sqlite` FTS5 (`trigram`) full-text index with cross-recording chat search UI and reindex controls (`/api/search/status`, `/api/search/reindex`), alongside `.events.jsonl` sidecars.
+
+### Fixed
+- Buffered FFmpeg `stderr` chunks by CR/LF lines and suppressed clean exit (`EXITED 0`) progress fragments from appearing as error output.
+- Hardened recording path resolution for 1-level creator subfolders and blocked path traversal / reserved directory escapes.
+
 ## [1.5.0] - 2026-11-24
 
 ### Added

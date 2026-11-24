@@ -37,6 +37,7 @@ export function Watchlist({ onJobsChanged }: Props) {
   const [cfgMinViewers, setCfgMinViewers] = useState('')
   const [cfgSchedStart, setCfgSchedStart] = useState('')
   const [cfgSchedEnd, setCfgSchedEnd] = useState('')
+  const [cfgRecordChat, setCfgRecordChat] = useState(true)
   const [notifsEnabled, setNotifsEnabled] = useState(
     () => typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted',
   )
@@ -178,6 +179,7 @@ export function Watchlist({ onJobsChanged }: Props) {
     setCfgMinViewers(e.minViewers != null ? String(e.minViewers) : '')
     setCfgSchedStart(e.scheduleStart || '')
     setCfgSchedEnd(e.scheduleEnd || '')
+    setCfgRecordChat(e.recordChat !== false)
     api.getAccounts().then((r) => setAccounts(r.accounts || [])).catch(() => {})
   }
 
@@ -189,6 +191,7 @@ export function Watchlist({ onJobsChanged }: Props) {
         minViewers: cfgMinViewers.trim() ? Number(cfgMinViewers) : null,
         scheduleStart: cfgSchedStart.trim() || null,
         scheduleEnd: cfgSchedEnd.trim() || null,
+        recordChat: cfgRecordChat,
       })
       setEditingUser(null)
       toast.success(t('settingsSaved'), { description: '@' + username })
@@ -367,6 +370,11 @@ export function Watchlist({ onJobsChanged }: Props) {
                       <Zap className="w-2.5 h-2.5 mr-0.5" /> Fast
                     </Badge>
                   )}
+                  {e.recordChat === false && (
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30">
+                      {t('watchNoChat')}
+                    </Badge>
+                  )}
                   {(e.scheduleStart && e.scheduleEnd) && (
                     <span className="text-[10px] font-mono text-muted-foreground">{e.scheduleStart}-{e.scheduleEnd}</span>
                   )}
@@ -469,6 +477,14 @@ export function Watchlist({ onJobsChanged }: Props) {
                         aria-label="Schedule end"
                       />
                     </div>
+                    <label className="flex items-center gap-1.5 cursor-pointer px-1">
+                      <Checkbox
+                        checked={cfgRecordChat}
+                        onCheckedChange={(v) => setCfgRecordChat(!!v)}
+                        className="w-3.5 h-3.5"
+                      />
+                      <span>{t('watchRecordChat')}</span>
+                    </label>
                     <Button size="xs" onClick={() => saveChannelConfig(e.username)} className="h-7 ml-auto">
                       <Save className="w-3 h-3 mr-1" /> {t('btnSave')}
                     </Button>

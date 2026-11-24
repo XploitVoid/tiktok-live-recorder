@@ -4,16 +4,19 @@ const { Router } = require('express');
 const fs = require('fs');
 const path = require('path');
 const { normalizeUsername } = require('../lib/room');
-const { safeError, sanitizeQuality, sanitizeAudioBitrate, resolveInsideDir, readEvents, parseStartTimeFromName } = require('../lib/utils');
+const { safeError, sanitizeQuality, sanitizeAudioBitrate, resolveRecordingPath, readEvents, parseStartTimeFromName } = require('../lib/utils');
+const db = require('../lib/db');
 const {
   RECORDINGS_DIR,
   recorderEvents,
   startRecording,
   stopJob,
+  cutLiveClip,
   getJobsList,
   activeFilePaths,
 } = require('../lib/recorder');
 const {
+  listRecordingFiles,
   deleteRecordingBundle,
   readMeta,
   updateRecordingMeta,
@@ -21,7 +24,9 @@ const {
   isMediaProbeCoolingDown,
   extractAudio,
   compressRecording,
+  mergeRecordingParts,
 } = require('../lib/storage');
+const { analyzeRecording } = require('../lib/highlights');
 
 const router = Router();
 
@@ -31,12 +36,13 @@ router.post('/api/record/start', async (req, res) => {
   const username = normalizeUsername(req.body?.username);
   const quality = sanitizeQuality(req.body?.quality, undefined);
   const audioOnly = !!req.body?.audioOnly;
+  const recordChat = req.body?.recordChat !== false;
   const audioBitrate = req.body?.audioBitrate !== undefined
     ? sanitizeAudioBitrate(req.body.audioBitrate, null)
     : undefined;
   if (!username) return res.status(400).json({ error: 'missing username' });
   try {
-    const result = await startRecording(username, quality, { audioOnly, audioBitrate });
+    const result = await startRecording(username, quality, { audioOnly, audioBitrate, recordChat });
     invalidateRecordingsCache();
     console.log(`[audit] record start: @${username} q=${quality || 'auto'} ao=${audioOnly} abr=${audioBitrate ?? 'default'} -> ${result.file}`);
     res.json(result);
@@ -62,6 +68,24 @@ router.post('/api/record/stop', async (req, res) => {
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: safeError(e) });
+  }
+});
+
+router.post('/api/record/live-clip', async (req, res) => {
+  const id = Number(req.body?.id);
+  const seconds = req.body?.seconds !== undefined ? Number(req.body.seconds) : 30;
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+  try {
+    const result = await cutLiveClip(id, seconds);
+    invalidateRecordingsCache();
+    console.log(`[audit] live-clip: job#${id} -> ${result.name} (${result.durSec}s)`);
+    res.json(result);
+  } catch (e) {
+    const status =
+      e.code === 'NOT_FOUND' ? 404 :
+      (e.code === 'JOB_EXITED' || e.code === 'TOO_SHORT') ? 409 :
+      e.code === 'NO_FFMPEG' ? 503 : 500;
+    res.status(status).json({ error: safeError(e), code: e.code });
   }
 });
 
@@ -93,16 +117,15 @@ router.get('/api/recordings', (_req, res) => {
     try { clipFiles = fs.readdirSync(clipsDir); } catch {}
     const activeFiles = activeFilePaths();
 
-    const files = fs.readdirSync(RECORDINGS_DIR, { withFileTypes: true })
-      .filter((d) => d.isFile() && !d.name.startsWith('.') && d.name.endsWith('.mp4'))
-      .map((d) => {
-        const f = d.name;
-        const fullPath = path.join(RECORDINGS_DIR, f);
+    const files = listRecordingFiles()
+      .map((f) => {
+        const resolved = resolveRecordingPath(RECORDINGS_DIR, f, '.mp4');
+        if (!resolved) return null;
+        const fullPath = resolved.full;
         let st;
         try { st = fs.statSync(fullPath); } catch { return null; }
-        const base = f.replace(/\.mp4$/i, '');
-        const sidecar = path.join(RECORDINGS_DIR, `${base}.events.jsonl`);
-        const highlightsFile = path.join(RECORDINGS_DIR, `${base}.highlights.json`);
+        const sidecar = fullPath.replace(/\.mp4$/i, '.events.jsonl');
+        const highlightsFile = fullPath.replace(/\.mp4$/i, '.highlights.json');
         let highlightCount = 0;
         try {
           if (fs.existsSync(highlightsFile)) {
@@ -111,7 +134,7 @@ router.get('/api/recordings', (_req, res) => {
           }
         } catch {}
         // Count generated clips matching this recording's prefix.
-        const prefix = `${base}_clip_`;
+        const prefix = `${resolved.artifactStem}_clip_`;
         let clipCount = 0;
         for (const c of clipFiles) {
           if (c.startsWith(prefix) && c.endsWith('.mp4')) clipCount++;
@@ -155,14 +178,15 @@ router.get('/api/recordings', (_req, res) => {
 });
 
 router.get('/api/recordings/:name', (req, res) => {
-  const resolved = resolveInsideDir(RECORDINGS_DIR, req.params.name, '.mp4');
+  const resolved = resolveRecordingPath(RECORDINGS_DIR, req.params.name, '.mp4');
   if (!resolved) return res.status(400).json({ error: 'bad name' });
-  const { name, full } = resolved;
+  const { name, full, folder, fileName } = resolved;
 
   let st;
   try { st = fs.statSync(full); } catch { return res.status(404).json({ error: 'not found' }); }
 
-  const startMs = parseStartTimeFromName(name);
+  const meta = readMeta(name);
+  const startMs = parseStartTimeFromName(name) || (Number.isFinite(Number(meta?.startedAt)) ? Number(meta.startedAt) : null);
   const eventsFile = full.replace(/\.mp4$/i, '.events.jsonl');
   let events = [];
   let eventsExists = false;
@@ -178,11 +202,10 @@ router.get('/api/recordings/:name', (req, res) => {
     return res.status(500).json({ error: safeError(e) });
   }
 
-  // Derive username from filename: <user>_YYYYMMDD_HHMMSS[_pN][_balanced|_compact].mp4
-  const userMatch = name.match(/^(.+)_\d{4}\d{2}\d{2}_\d{2}\d{2}\d{2}(?:_p\d+)?(?:_(?:balanced|compact))?\.mp4$/i);
-  const username = userMatch ? userMatch[1] : null;
+  // Derive username from metadata, creator subfolder, or filename
+  const userMatch = fileName.match(/^(.+?)_\d{4}(?:-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}|\d{4}_\d{6})/);
+  const username = meta?.username || folder || (userMatch ? userMatch[1] : null);
 
-  const meta = readMeta(name);
   res.json({
     name, username, sizeBytes: st.size, startMs, mtimeMs: st.mtimeMs,
     eventsExists, eventCount: events.length, events,
@@ -194,8 +217,37 @@ router.get('/api/recordings/:name', (req, res) => {
   });
 });
 
+router.post('/api/recordings/merge', async (req, res) => {
+  const files = req.body?.files;
+  const deleteSources = !!req.body?.deleteSources;
+  try {
+    const out = await mergeRecordingParts(files, {
+      deleteSources,
+      activeFiles: activeFilePaths(),
+    });
+    if (out.hasEvents) {
+      try { analyzeRecording(out.name); } catch {}
+    }
+    try {
+      db.indexRecording(out.name);
+      for (const del of out.deletedSources || []) db.removeRecording(del);
+    } catch {}
+    invalidateRecordingsCache();
+    recorderEvents.emit('recordings');
+    console.log(`[audit] merge: ${out.parts.length} parts -> ${out.name} (deleted=${out.deletedSources.length})`);
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    const status =
+      e.code === 'BAD_INPUT' ? 400 :
+      e.code === 'NOT_FOUND' ? 404 :
+      e.code === 'ACTIVE_RECORDING' ? 409 :
+      e.code === 'NO_FFMPEG' ? 503 : 500;
+    res.status(status).json({ error: safeError(e), code: e.code });
+  }
+});
+
 router.patch('/api/recordings/:name', (req, res) => {
-  const resolved = resolveInsideDir(RECORDINGS_DIR, req.params.name, '.mp4');
+  const resolved = resolveRecordingPath(RECORDINGS_DIR, req.params.name, '.mp4');
   if (!resolved) return res.status(400).json({ error: 'bad name' });
   try {
     const updated = updateRecordingMeta(resolved.name, {
@@ -203,6 +255,7 @@ router.patch('/api/recordings/:name', (req, res) => {
       displayTitle: req.body?.displayTitle,
       notes: req.body?.notes,
     });
+    try { db.indexRecording(resolved.name); } catch {}
     invalidateRecordingsCache();
     res.json({ ok: true, meta: updated });
   } catch (e) {
@@ -212,7 +265,7 @@ router.patch('/api/recordings/:name', (req, res) => {
 });
 
 router.post('/api/recordings/:name/audio', async (req, res) => {
-  const resolved = resolveInsideDir(RECORDINGS_DIR, req.params.name, '.mp4');
+  const resolved = resolveRecordingPath(RECORDINGS_DIR, req.params.name, '.mp4');
   if (!resolved) return res.status(400).json({ error: 'bad name' });
   const format = req.body?.format === 'mp3' ? 'mp3' : 'm4a';
   const bitrate = sanitizeAudioBitrate(req.body?.bitrate, null);
@@ -226,11 +279,12 @@ router.post('/api/recordings/:name/audio', async (req, res) => {
 });
 
 router.post('/api/recordings/:name/compress', async (req, res) => {
-  const resolved = resolveInsideDir(RECORDINGS_DIR, req.params.name, '.mp4');
+  const resolved = resolveRecordingPath(RECORDINGS_DIR, req.params.name, '.mp4');
   if (!resolved) return res.status(400).json({ error: 'bad name' });
   const preset = req.body?.preset === 'compact' ? 'compact' : 'balanced';
   try {
     const out = await compressRecording(resolved.name, preset);
+    try { db.indexRecording(out.name); } catch {}
     invalidateRecordingsCache();
     console.log(`[audit] compress: ${resolved.name} (${preset}) -> ${out.name} (${out.sizeBytes} bytes)`);
     res.json({ ok: true, ...out });
@@ -244,7 +298,7 @@ router.post('/api/recordings/:name/compress', async (req, res) => {
 });
 
 router.delete('/api/recordings/:name', (req, res) => {
-  const resolved = resolveInsideDir(RECORDINGS_DIR, req.params.name, '.mp4');
+  const resolved = resolveRecordingPath(RECORDINGS_DIR, req.params.name, '.mp4');
   if (!resolved) return res.status(400).json({ error: 'bad name' });
   if (activeFilePaths().has(resolved.full)) {
     return res.status(409).json({ error: 'recording is active' });
@@ -254,6 +308,7 @@ router.delete('/api/recordings/:name', (req, res) => {
   }
   try {
     deleteRecordingBundle(resolved.name);
+    try { db.removeRecording(resolved.name); } catch {}
     invalidateRecordingsCache();
     console.log(`[audit] file deleted: ${resolved.name}`);
     res.json({ ok: true });

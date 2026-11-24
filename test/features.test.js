@@ -769,3 +769,379 @@ test('recorder.createStderrParser buffers split progress chunks and shouldExpose
   assert.equal(shouldExposeStderrOnExit({ code: 1, manualStop: false, errMsg: null }), true);
   assert.equal(shouldExposeStderrOnExit({ code: -1, manualStop: false, errMsg: 'ENOENT' }), true);
 });
+
+test('mergeRecordingParts combines mp4s, events.jsonl, protected flag, and deletes unprotected sources', async () => {
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+  const utils = require('../lib/utils');
+
+  const stamp = `mergetest_${Date.now()}_20261124_120000`;
+  const p1 = `${stamp}_p1.mp4`;
+  const p2 = `${stamp}_p2.mp4`;
+  const p1Path = path.join(storage.RECORDINGS_DIR, p1);
+  const p2Path = path.join(storage.RECORDINGS_DIR, p2);
+  const ev1Path = path.join(storage.RECORDINGS_DIR, `${stamp}_p1.events.jsonl`);
+  const ev2Path = path.join(storage.RECORDINGS_DIR, `${stamp}_p2.events.jsonl`);
+  let mergedName = null;
+
+  try {
+    const ffBin = ffmpeg.resolveFfmpeg();
+    const fpBin = ffmpeg.resolveFfprobe();
+    for (const out of [p1Path, p2Path]) {
+      const gen = spawnSync(ffBin, [
+        '-y', '-f', 'lavfi', '-i', 'testsrc=size=128x128:rate=10',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+        '-t', '1', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', out,
+      ], { encoding: 'utf8' });
+      assert.equal(gen.status, 0);
+    }
+
+    const baseTs = utils.parseStartTimeFromName(p1);
+    fs.writeFileSync(ev1Path, JSON.stringify({ id: 1, ts: baseTs + 500, type: 'chat', user: { uniqueId: 'u1' }, comment: 'p1' }) + '\n');
+    fs.writeFileSync(ev2Path, [
+      JSON.stringify({ id: 1, ts: baseTs + 500, type: 'chat', user: { uniqueId: 'u1' }, comment: 'p1' }),
+      JSON.stringify({ id: 2, ts: baseTs + 1500, type: 'chat', user: { uniqueId: 'u2' }, comment: 'p2' }),
+    ].join('\n') + '\n');
+
+    storage.updateRecordingMeta(p1, { protected: true });
+
+    await assert.rejects(() => storage.mergeRecordingParts(['../evil.mp4', p1]), { code: 'BAD_INPUT' });
+    await assert.rejects(() => storage.mergeRecordingParts(['..\\evil.mp4', p1]), { code: 'BAD_INPUT' });
+    await assert.rejects(() => storage.mergeRecordingParts([p1]), { code: 'BAD_INPUT' });
+    await assert.rejects(() => storage.mergeRecordingParts([p1, p2], { activeFiles: new Set([p1Path]) }), { code: 'ACTIVE_RECORDING' });
+
+    const res = await storage.mergeRecordingParts([p1, p2], { deleteSources: true });
+    mergedName = res.name;
+    assert.match(mergedName, /_merged\.mp4$/);
+    assert.equal(res.hasEvents, true);
+    assert.deepEqual(res.deletedSources, [p2]);
+    assert.equal(fs.existsSync(p1Path), true);
+    assert.equal(fs.existsSync(p2Path), false);
+
+    assert.equal(utils.parseStartTimeFromName(mergedName), baseTs);
+    assert.equal(utils.parseStartTimeFromName(`${stamp}_balanced_merged.mp4`), baseTs);
+    assert.equal(storage.readMeta(mergedName)?.protected, true);
+
+    const durOut = spawnSync(fpBin, [
+      '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1',
+      path.join(storage.RECORDINGS_DIR, mergedName),
+    ], { encoding: 'utf8' }).stdout.trim();
+    assert.ok(Number(durOut) >= 1.8 && Number(durOut) <= 2.5, `expected ~2s duration, got ${durOut}`);
+
+    const mergedEvents = utils.readEvents(path.join(storage.RECORDINGS_DIR, mergedName.replace(/\.mp4$/i, '.events.jsonl')));
+    assert.equal(mergedEvents.length, 2);
+    assert.equal(mergedEvents[0].comment, 'p1');
+    assert.equal(mergedEvents[1].comment, 'p2');
+  } finally {
+    try { storage.deleteRecordingBundle(p1); } catch {}
+    try { storage.deleteRecordingBundle(p2); } catch {}
+    if (mergedName) try { storage.deleteRecordingBundle(mergedName); } catch {}
+  }
+});
+
+test('cutLiveClipFromFile cuts fragmented MP4 and cutLiveClip rejects missing job', async () => {
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+  const { cutLiveClip, cutLiveClipFromFile } = require('../lib/recorder');
+  const { CLIPS_DIR } = require('../lib/highlights');
+
+  await assert.rejects(() => cutLiveClip(999999, 30), { code: 'NOT_FOUND' });
+
+  const base = `livecliptest_${Date.now()}`;
+  const recPath = path.join(storage.RECORDINGS_DIR, `${base}.mp4`);
+  let clipPath = null;
+  try {
+    const gen = spawnSync(ffmpeg.resolveFfmpeg(), [
+      '-y', '-f', 'lavfi', '-i', 'testsrc=size=128x128:rate=10',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+      '-t', '5', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+      '-movflags', '+empty_moov+default_base_moof+frag_keyframe', '-frag_duration', '1000000',
+      recPath,
+    ], { encoding: 'utf8' });
+    assert.equal(gen.status, 0);
+
+    const res = await cutLiveClipFromFile(recPath, 5, 2);
+    assert.equal(res.ok, true);
+    assert.match(res.name, /_clip_\d+_\d+s_live\.mp4$/);
+    clipPath = path.join(CLIPS_DIR, res.name);
+    assert.equal(fs.existsSync(clipPath), true);
+    assert.ok(res.sizeBytes > 0);
+  } finally {
+    fs.rmSync(recPath, { force: true });
+    if (clipPath) fs.rmSync(clipPath, { force: true });
+  }
+});
+
+test('accounts.validateCookie, settings.autoMergeParts, and v2 notifications work properly', async () => {
+  const accounts = require('../lib/accounts');
+  const { formatMessage } = require('../lib/notifications');
+
+  const valid = await accounts.validateCookie(
+    { sessionId: 'dummy_session_value_1234' },
+    { requestImpl: async () => ({ statusCode: 200, body: JSON.stringify({ message: 'success', data: { user_id_str: '123', username: 'alice' } }) }) },
+  );
+  assert.equal(valid.status, 'valid');
+  assert.equal(valid.username, 'alice');
+
+  const expired = await accounts.validateCookie(
+    { sessionId: 'dummy_session_value_1234' },
+    { requestImpl: async () => ({ statusCode: 200, body: JSON.stringify({ message: 'error', data: { error_code: 10009, description: 'Session expired' } }) }) },
+  );
+  assert.equal(expired.status, 'expired');
+
+  const unknown = await accounts.validateCookie(
+    { sessionId: 'dummy_session_value_1234' },
+    { requestImpl: async () => { throw new Error('network down'); } },
+  );
+  assert.equal(unknown.status, 'unknown');
+
+  const rateLimited = await accounts.validateCookie(
+    { sessionId: 'dummy_session_value_1234' },
+    { requestImpl: async () => ({ statusCode: 429, body: '' }) },
+  );
+  assert.equal(rateLimited.status, 'unknown');
+
+  const missing = await accounts.validateCookie({ sessionId: '' });
+  assert.equal(missing.status, 'expired');
+
+  const prev = settings.getSettings();
+  try {
+    const pub = settings.updateSettings({ autoMergeParts: false });
+    assert.equal(pub.autoMergeParts, false);
+    assert.equal(settings.getSettings().autoMergeParts, false);
+  } finally {
+    settings.updateSettings({ autoMergeParts: prev.autoMergeParts });
+  }
+
+  const mCookie = formatMessage('cookie_expired', { label: 'Main', reason: 'Session expired' });
+  assert.match(mCookie.title, /expired/i);
+  assert.match(mCookie.body, /Main/);
+
+  const mMerge = formatMessage('parts_merged', { username: 'creator', partsCount: 3, file: 'a_merged.mp4', sizeMb: '12.5' });
+  assert.match(mMerge.title, /@creator/);
+  assert.match(mMerge.body, /3 parts/);
+});
+
+test('resolveRecordingPath, renderRecordingFilename, and TS capture + remuxTsToMp4 work safely', async () => {
+  const os = require('node:os');
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+  const utils = require('../lib/utils');
+
+  // 1. resolveRecordingPath accepts flat & 1-level creator folders, rejects traversal/reserved/nested
+  const flat = utils.resolveRecordingPath(storage.RECORDINGS_DIR, 'alice_20261124_120000.mp4', '.mp4');
+  assert.equal(flat?.name, 'alice_20261124_120000.mp4');
+  assert.equal(flat?.folder, null);
+  assert.equal(flat?.artifactStem, 'alice_20261124_120000');
+
+  const sub = utils.resolveRecordingPath(storage.RECORDINGS_DIR, 'alice/alice_20261124_120000.mp4', '.mp4');
+  assert.equal(sub?.name, 'alice/alice_20261124_120000.mp4');
+  assert.equal(sub?.folder, 'alice');
+  assert.equal(sub?.artifactStem, 'alice__alice_20261124_120000');
+
+  for (const bad of [
+    '../evil.mp4',
+    '..\\evil.mp4',
+    'alice\\file.mp4',
+    'a/b/c.mp4',
+    'thumbs/a.mp4',
+    'audio/a.mp4',
+    'highlights/a.mp4',
+    '.hidden/a.mp4',
+    'alice/.secret.mp4',
+  ]) {
+    assert.equal(utils.resolveRecordingPath(storage.RECORDINGS_DIR, bad, '.mp4'), null, `expected null for ${bad}`);
+  }
+
+  // 2. renderRecordingFilename + parseStartTimeFromName
+  const dt = new Date(2026, 10, 24, 15, 30, 45);
+  const f1 = utils.renderRecordingFilename('{username}_{date}_{time}_{title}', {
+    username: 'alice',
+    title: 'PK Night!! #1',
+    dateObj: dt,
+    part: 2,
+  });
+  assert.equal(f1, 'alice_20261124_153045_PK_Night_1_p2');
+  assert.equal(utils.parseStartTimeFromName(`${f1}.mp4`), dt.getTime());
+
+  const f2 = utils.renderRecordingFilename('{username}_{date_iso}_{time_hms}', {
+    username: 'bob',
+    dateObj: dt,
+  });
+  assert.equal(f2, 'bob_2026-11-24_15-30-45');
+  assert.equal(utils.parseStartTimeFromName(`${f2}.mp4`), dt.getTime());
+
+  // 3. buildRecordArgs({ format: 'ts' }) + remuxTsToMp4
+  const tsArgs = ffmpeg.buildRecordArgs({ url: 'https://example.com/live.flv', quality: 'hd', format: 'ts' }, 'out.ts');
+  assert.ok(tsArgs.includes('-f'));
+  assert.ok(tsArgs.includes('mpegts'));
+  assert.equal(tsArgs.includes('aac_adtstoasc'), false);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-remux-test-'));
+  try {
+    const ffBin = ffmpeg.resolveFfmpeg();
+    const fpBin = ffmpeg.resolveFfprobe();
+    const tsPath = path.join(dir, 'sample.ts');
+    const mp4Path = path.join(dir, 'sample.mp4');
+    const gen = spawnSync(ffBin, [
+      '-y', '-f', 'lavfi', '-i', 'testsrc=size=128x128:rate=10',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+      '-t', '1', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+      '-f', 'mpegts', tsPath,
+    ], { encoding: 'utf8' });
+    assert.equal(gen.status, 0);
+
+    const ok = await storage.remuxTsToMp4(tsPath, mp4Path);
+    assert.equal(ok, true);
+    assert.equal(fs.existsSync(tsPath), false);
+    assert.equal(fs.existsSync(mp4Path), true);
+    const probe = spawnSync(fpBin, ['-v', 'error', '-show_entries', 'format=format_name', '-of', 'default=noprint_wrappers=1:nokey=1', mp4Path], { encoding: 'utf8' });
+    assert.equal(probe.status, 0);
+    assert.match(probe.stdout, /mp4/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Subfolder recording lifecycle, SQLite FTS5 search index, settings v2, and watcher recordChat', async () => {
+  const os = require('node:os');
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+  const db = require('../lib/db');
+  const bookmarks = require('../lib/bookmarks');
+  const watcher = require('../lib/watcher');
+
+  const creator = `subtest_${Date.now()}`;
+  const fileName = `${creator}_20261124_180000.mp4`;
+  const relName = `${creator}/${fileName}`;
+  const creatorDir = path.join(storage.RECORDINGS_DIR, creator);
+  const mp4Path = path.join(creatorDir, fileName);
+  const evPath = path.join(creatorDir, `${creator}_20261124_180000.events.jsonl`);
+  const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlr-db-test-'));
+  const prevDbEnv = process.env.RECORDER_DB_PATH;
+  const prevSettings = settings.getSettings();
+
+  try {
+    fs.mkdirSync(creatorDir, { recursive: true });
+    const gen = spawnSync(ffmpeg.resolveFfmpeg(), [
+      '-y', '-f', 'lavfi', '-i', 'testsrc=size=128x128:rate=5',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+      '-t', '1', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', mp4Path,
+    ], { encoding: 'utf8' });
+    assert.equal(gen.status, 0);
+
+    const baseTs = Date.now();
+    fs.writeFileSync(evPath, [
+      JSON.stringify({ id: 1, ts: baseTs + 1000, type: 'chat', user: { uniqueId: 'u1' }, comment: 'สวัสดีครับทุกคน' }),
+      JSON.stringify({ id: 2, ts: baseTs + 2000, type: 'chat', user: { uniqueId: 'u2' }, comment: 'GG nice play' }),
+      JSON.stringify({ id: 3, ts: baseTs + 3000, type: 'chat', user: { uniqueId: 'u3' }, comment: 'ok' }),
+    ].join('\n') + '\n');
+
+    assert.ok(storage.listRecordingFiles().includes(relName));
+    storage.updateRecordingMeta(relName, { protected: true, displayTitle: 'Subfolder Live' });
+    const meta = await storage.ensureThumbnailAndMeta(relName, { force: true });
+    assert.equal(meta.protected, true);
+    assert.equal(meta.displayTitle, 'Subfolder Live');
+    assert.match(meta.thumbUrl || '', new RegExp(`${creator}__`));
+
+    // SQLite FTS5 indexing & search
+    if (db.isAvailable()) {
+      process.env.RECORDER_DB_PATH = path.join(dbDir, 'test.db');
+      db.closeDb();
+      assert.equal(db.indexRecording(relName), true);
+      const stats = db.getIndexStats();
+      assert.equal(stats.available, true);
+      assert.ok(stats.recordingsIndexed >= 1);
+      assert.ok(stats.chatMessagesIndexed >= 3);
+
+      const thaiHits = bookmarks.searchChat('สวัสดี');
+      assert.ok(thaiHits.some((r) => r.recording === relName && r.comment.includes('สวัสดี')));
+
+      const enHits = bookmarks.searchChat('nice');
+      assert.ok(enHits.some((r) => r.recording === relName && r.user === 'u2'));
+
+      const shortHits = bookmarks.searchChat('ok');
+      assert.ok(shortHits.some((r) => r.recording === relName && r.comment === 'ok'));
+
+      // Adversarial FTS5 / LIKE queries must not throw syntax errors
+      for (const adv of ['"quoted"', 'a*b', 'OR AND NEAR', 'comment:foo', '50%', 'a_b']) {
+        assert.ok(Array.isArray(db.searchChatIndexed(adv)));
+      }
+
+      db.removeRecording(relName);
+      assert.equal(db.searchChatIndexed('สวัสดี').some((r) => r.recording === relName), false);
+    }
+
+    // mergeRecordingParts preserves startedAt & username from first source meta.json for dateless templates
+    const m1 = `${creator}_title_one.mp4`;
+    const m2 = `${creator}_title_two.mp4`;
+    const m1Full = path.join(creatorDir, m1);
+    const m2Full = path.join(creatorDir, m2);
+    let mergedDateless = null;
+    try {
+      fs.copyFileSync(mp4Path, m1Full);
+      fs.copyFileSync(mp4Path, m2Full);
+      storage.updateRecordingMeta(`${creator}/${m1}`, { startedAt: baseTs, username: creator });
+      const mRes = await storage.mergeRecordingParts([`${creator}/${m1}`, `${creator}/${m2}`], { deleteSources: true });
+      mergedDateless = mRes.name;
+      const mergedMeta = storage.readMeta(mergedDateless);
+      assert.equal(mergedMeta.startedAt, baseTs);
+      assert.equal(mergedMeta.username, creator);
+    } finally {
+      try { storage.deleteRecordingBundle(`${creator}/${m1}`); } catch {}
+      try { storage.deleteRecordingBundle(`${creator}/${m2}`); } catch {}
+      if (mergedDateless) try { storage.deleteRecordingBundle(mergedDateless); } catch {}
+    }
+
+    // Orphaned .ts cleanup in enforceRetention
+    const orphanTs = path.join(creatorDir, `${creator}_orphan.ts`);
+    fs.writeFileSync(orphanTs, 'ts-data');
+    const oldTsMs = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    fs.utimesSync(orphanTs, oldTsMs / 1000, oldTsMs / 1000);
+    const prevRet = settings.getSettings().retentionDays;
+    try {
+      settings.updateSettings({ retentionDays: 1 });
+      const retRes = storage.enforceRetention(new Set());
+      assert.ok(retRes.deletedTs.includes(`${creator}/${creator}_orphan.ts`));
+      assert.equal(fs.existsSync(orphanTs), false);
+    } finally {
+      settings.updateSettings({ retentionDays: prevRet });
+      try { fs.rmSync(orphanTs, { force: true }); } catch {}
+    }
+
+    // Delete removes bundle + empty creator folder
+    assert.equal(storage.deleteRecordingBundle(relName), true);
+    assert.equal(fs.existsSync(creatorDir), false);
+
+    // Settings v2 persistence
+    const updated = settings.updateSettings({
+      organizeByCreator: true,
+      filenameTemplate: '{username}_{date_iso}_{time_hms}',
+      recordFormat: 'ts',
+    });
+    assert.equal(updated.organizeByCreator, true);
+    assert.equal(updated.filenameTemplate, '{username}_{date_iso}_{time_hms}');
+    assert.equal(updated.recordFormat, 'ts');
+
+    // Watcher recordChat flag
+    const wUser = `wchat_${Date.now()}`;
+    const added = watcher.addToWatchlist(wUser, { autoRecord: false, recordChat: false });
+    assert.equal(added.ok, true);
+    assert.equal(watcher.getWatchlist().list.find((e) => e.username === wUser)?.recordChat, false);
+    watcher.updateWatchEntry(wUser, { recordChat: true });
+    assert.equal(watcher.getWatchlist().list.find((e) => e.username === wUser)?.recordChat, true);
+    watcher.removeFromWatchlist(wUser);
+  } finally {
+    db.closeDb();
+    if (prevDbEnv === undefined) delete process.env.RECORDER_DB_PATH;
+    else process.env.RECORDER_DB_PATH = prevDbEnv;
+    settings.updateSettings({
+      organizeByCreator: prevSettings.organizeByCreator,
+      filenameTemplate: prevSettings.filenameTemplate,
+      recordFormat: prevSettings.recordFormat,
+    });
+    try { storage.deleteRecordingBundle(relName); } catch {}
+    fs.rmSync(creatorDir, { recursive: true, force: true });
+    fs.rmSync(dbDir, { recursive: true, force: true });
+  }
+});

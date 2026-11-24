@@ -36,3 +36,7 @@ export function fmtViewers(n?: number | null): string {
   if (n >= 1000) return (n / 1000).toFixed(1) + 'K'
   return n.toLocaleString()
 }
+
+export function recordingFileUrl(name: string): string {
+  return '/files/' + name.split('/').map(encodeURIComponent).join('/')
+}

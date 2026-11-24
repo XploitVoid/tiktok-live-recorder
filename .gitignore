@@ -16,6 +16,9 @@ watchlist.json
 watchlist.json.tmp
 settings.json
 settings.json.tmp
+recorder.db
+recorder.db-wal
+recorder.db-shm
 recordings/
 
 # ── Build output ──

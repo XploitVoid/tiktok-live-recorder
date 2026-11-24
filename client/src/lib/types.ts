@@ -46,6 +46,8 @@ export interface RecordJob {
   sizeBytes?: number
   retryCount?: number
   part?: number
+  recordChat?: boolean
+  format?: 'mp4' | 'ts'
   stats?: {
     outTime: string | null
     bitrate: string | null
@@ -90,6 +92,7 @@ export interface WatchEntry {
   autoRecord: boolean
   audioOnly?: boolean
   audioBitrate?: string | null
+  recordChat?: boolean
   priority?: 'high' | 'normal'
   accountId?: string | null
   minViewers?: number | null
@@ -172,8 +175,12 @@ export interface AppSettings {
   retentionDays: number
   segmentMinutes: number
   autoRetryRecord: boolean
+  autoMergeParts: boolean
   stalledTimeoutSec: number
   defaultAudioBitrate: string | null
+  organizeByCreator: boolean
+  filenameTemplate: string
+  recordFormat: 'mp4' | 'ts'
   hasProxy: boolean
   proxyPreview: string
   hasDiscordWebhook: boolean
@@ -182,6 +189,20 @@ export interface AppSettings {
   hasTelegramToken?: boolean
   telegramBotPreview: string
   telegramChatId: string
+}
+
+export interface SearchIndexStatus {
+  available: boolean
+  recordingsIndexed: number
+  chatMessagesIndexed: number
+  dbBytes: number
+}
+
+export interface AccountHealth {
+  status: 'valid' | 'expired' | 'unknown'
+  checkedAt: number
+  username: string | null
+  reason: string | null
 }
 
 export interface DiskStatus {

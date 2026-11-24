@@ -18,6 +18,7 @@ router.get('/api/accounts', (_req, res) => {
     label: a.label,
     hasSession: !!a.sessionId,
     sessionPreview: maskSession(a.sessionId),
+    health: accounts.getAccountHealth(a.id),
   }));
   const active = accounts.getActive();
   res.json({
@@ -46,6 +47,31 @@ router.post('/api/accounts', (req, res) => {
   const safeLabel = stripControlChars(label, 64);
   const account = accounts.add(safeLabel, sessionId, ttTargetIdc || '');
   res.json({ ok: true, id: account.id, label: account.label });
+});
+
+// Check health of all saved accounts (must be registered before :id route)
+router.post('/api/accounts/check-all', async (_req, res) => {
+  try {
+    const results = await accounts.checkAllAccountsHealth();
+    res.json({ ok: true, results });
+  } catch (e) {
+    res.status(500).json({ error: safeError(e) });
+  }
+});
+
+// Check health of a single saved account
+router.post('/api/accounts/:id/check', async (req, res) => {
+  const id = String(req.params.id || '');
+  if (!/^[A-Za-z0-9]+$/.test(id) || id.length > 32) {
+    return res.status(400).json({ error: 'invalid id' });
+  }
+  try {
+    const health = await accounts.checkAccountHealth(id);
+    if (!health) return res.status(404).json({ error: 'account not found' });
+    res.json({ ok: true, id, health });
+  } catch (e) {
+    res.status(500).json({ error: safeError(e) });
+  }
 });
 
 // Delete an account

@@ -1,13 +1,14 @@
-import { useState, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react'
-import { FolderOpen, RefreshCw, Trash2, Download, Play, MessageSquare, Sparkles, Scissors, Search, Music, FileArchive, Loader2, Lock, Unlock, Pencil, Check, X } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, useRef, forwardRef, useImperativeHandle } from 'react'
+import { FolderOpen, RefreshCw, Trash2, Download, Play, MessageSquare, Sparkles, Scissors, Search, Music, FileArchive, Loader2, Lock, Unlock, Pencil, Check, X, Layers } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
-import { fmtBytes, fmtTimeSec } from '@/lib/format'
-import { getRecordings, deleteRecording, extractRecordingAudio, compressRecording, updateRecordingMeta } from '@/lib/api'
+import { fmtBytes, fmtTimeSec, recordingFileUrl } from '@/lib/format'
+import { getRecordings, deleteRecording, extractRecordingAudio, compressRecording, updateRecordingMeta, mergeRecordings, searchChatAll, type ChatSearchResult } from '@/lib/api'
 import { useEventStream } from '@/lib/useEventStream'
 import type { RecordingFile } from '@/lib/types'
 import { toast } from 'sonner'
@@ -29,6 +30,22 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
   const [editingName, setEditingName] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
   const [editNotes, setEditNotes] = useState('')
+  const [mergeMode, setMergeMode] = useState(false)
+  const [selectedFiles, setSelectedFiles] = useState<string[]>([])
+  const [deleteSources, setDeleteSources] = useState(false)
+  const [merging, setMerging] = useState(false)
+  const [chatSearchOpen, setChatSearchOpen] = useState(false)
+  const [chatQuery, setChatQuery] = useState('')
+  const [chatResults, setChatResults] = useState<ChatSearchResult[] | null>(null)
+  const [chatSearching, setChatSearching] = useState(false)
+  const [chatSearchTooShort, setChatSearchTooShort] = useState(false)
+  const chatReqIdRef = useRef(0)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   const refresh = useCallback(async () => {
     try {
@@ -127,6 +144,72 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
     }
   }
 
+  const exitMergeMode = () => {
+    setMergeMode(false)
+    setSelectedFiles([])
+    setDeleteSources(false)
+  }
+
+  const toggleSelectFile = (name: string) => {
+    setSelectedFiles((prev) =>
+      prev.includes(name) ? prev.filter((item) => item !== name) : [...prev, name],
+    )
+  }
+
+  const orderedSelectedFiles = useMemo(() => {
+    const byName = new Map(files.map((f) => [f.name, f]))
+    return [...selectedFiles]
+      .filter((name) => byName.has(name))
+      .sort((a, b) => {
+        const diff = (byName.get(a)?.mtime || 0) - (byName.get(b)?.mtime || 0)
+        return diff !== 0 ? diff : a.localeCompare(b)
+      })
+  }, [files, selectedFiles])
+
+  const handleMerge = async () => {
+    if (orderedSelectedFiles.length < 2) {
+      toast.error(t('mergeNeedTwo'))
+      return
+    }
+    setMerging(true)
+    try {
+      const res = await mergeRecordings(orderedSelectedFiles, deleteSources)
+      toast.success(t('mergeSuccess'), {
+        description: `${res.name} (${fmtBytes(res.sizeBytes)})`,
+      })
+      exitMergeMode()
+      void refresh()
+    } catch (e: unknown) {
+      toast.error(t('mergeFail'), { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setMerging(false)
+    }
+  }
+
+  const handleChatSearch = async () => {
+    const q = chatQuery.trim()
+    if (q.length < 2) {
+      setChatSearchTooShort(true)
+      setChatResults(null)
+      return
+    }
+    setChatSearchTooShort(false)
+    const reqId = ++chatReqIdRef.current
+    setChatSearching(true)
+    try {
+      const res = await searchChatAll(q)
+      if (!mountedRef.current || reqId !== chatReqIdRef.current) return
+      setChatResults(res.results || [])
+    } catch (e: unknown) {
+      if (!mountedRef.current || reqId !== chatReqIdRef.current) return
+      toast.error('Search failed', { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      if (mountedRef.current && reqId === chatReqIdRef.current) {
+        setChatSearching(false)
+      }
+    }
+  }
+
   const visibleFiles = useMemo(() => {
     const q = query.trim().toLowerCase()
     const filtered = files.filter((f) => {
@@ -168,10 +251,117 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
             {t('savedRec')}
             <span className="text-xs text-muted-foreground font-normal">({visibleFiles.length})</span>
           </h2>
-          <Button variant="ghost" size="xs" onClick={refresh}>
-            <RefreshCw className="w-3 h-3 mr-1" /> {t('btnRefresh')}
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant={chatSearchOpen ? 'secondary' : 'outline'}
+              size="xs"
+              onClick={() => setChatSearchOpen((v) => !v)}
+            >
+              <MessageSquare className="w-3 h-3 mr-1" /> {t('chatSearchToggle')}
+            </Button>
+            {files.length >= 2 && (
+              <Button
+                variant={mergeMode ? 'secondary' : 'outline'}
+                size="xs"
+                onClick={() => mergeMode ? exitMergeMode() : setMergeMode(true)}
+                disabled={merging}
+              >
+                <Layers className="w-3 h-3 mr-1" /> {t('mergeMode')}
+              </Button>
+            )}
+            <Button variant="ghost" size="xs" onClick={refresh}>
+              <RefreshCw className="w-3 h-3 mr-1" /> {t('btnRefresh')}
+            </Button>
+          </div>
         </div>
+
+        {chatSearchOpen && (
+          <div className="rounded-lg border border-border bg-secondary/40 p-2.5 space-y-2 text-xs">
+            <div className="flex items-center gap-1.5">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <Input
+                  value={chatQuery}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setChatQuery(v)
+                    if (v.trim().length >= 2) setChatSearchTooShort(false)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void handleChatSearch()
+                  }}
+                  placeholder={t('chatSearchPlaceholder')}
+                  className="h-7 pl-8 text-xs"
+                />
+              </div>
+              <Button size="xs" onClick={() => void handleChatSearch()} disabled={chatSearching} className="h-7">
+                {chatSearching ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Search className="w-3 h-3 mr-1" />}
+                {t('chatSearchToggle')}
+              </Button>
+            </div>
+            {(chatSearchTooShort || (chatQuery.trim().length > 0 && chatQuery.trim().length < 2)) && (
+              <p className="text-[11px] text-muted-foreground">{t('chatSearchMinChars')}</p>
+            )}
+            {chatResults !== null && (
+              chatResults.length === 0 ? (
+                <p className="text-muted-foreground text-xs">{t('chatSearchEmpty')}</p>
+              ) : (
+                <div className="max-h-60 overflow-y-auto space-y-1 pr-1">
+                  {chatResults.map((r, idx) => (
+                    <Link
+                      key={`${r.recording}:${r.ts}:${idx}`}
+                      to={`/replay?file=${encodeURIComponent(r.recording)}`}
+                      className="block rounded-md border border-border/60 bg-background/70 hover:bg-muted/80 px-2.5 py-1.5 transition-colors"
+                    >
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="font-medium text-foreground truncate">{r.user || 'unknown'}</span>
+                        <div className="flex items-center gap-2 text-[10px] text-muted-foreground font-mono shrink-0">
+                          <span className="truncate max-w-[200px]">{r.recording}</span>
+                          {r.ts > 0 && <span>{new Date(r.ts).toLocaleString()}</span>}
+                        </div>
+                      </div>
+                      <p className="text-xs text-foreground/90 break-words mt-0.5">{r.comment}</p>
+                    </Link>
+                  ))}
+                </div>
+              )
+            )}
+          </div>
+        )}
+
+        {mergeMode && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-secondary/60 px-2.5 py-2 text-xs">
+            <div className="flex flex-wrap items-center gap-3">
+              <Badge variant="secondary" className="font-mono text-[11px]">
+                {orderedSelectedFiles.length}
+              </Badge>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <Checkbox
+                  checked={deleteSources}
+                  onCheckedChange={(v) => setDeleteSources(!!v)}
+                  disabled={merging}
+                  className="w-3.5 h-3.5"
+                />
+                <span>{t('mergeDeleteOriginals')}</span>
+              </label>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="xs"
+                onClick={handleMerge}
+                disabled={merging || orderedSelectedFiles.length < 2}
+              >
+                {merging
+                  ? <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                  : <Layers className="w-3 h-3 mr-1" />}
+                {t('mergeSelected')} ({orderedSelectedFiles.length})
+              </Button>
+              <Button size="xs" variant="ghost" onClick={exitMergeMode} disabled={merging}>
+                {t('btnCancel')}
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Search / Filter / Sort */}
         {files.length > 0 && (
@@ -215,9 +405,20 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
           ) : (
             visibleFiles.map((f) => {
               const isAudioOnly = f.vcodec === null && f.durationSec != null
+              const isMp4 = f.name.toLowerCase().endsWith('.mp4')
+              const isSelected = selectedFiles.includes(f.name)
               return (
               <div key={f.name} className="bg-secondary rounded-lg px-2 py-1.5 space-y-1.5">
                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                  {mergeMode && (
+                    <Checkbox
+                      checked={isSelected}
+                      disabled={merging || !isMp4}
+                      onCheckedChange={() => toggleSelectFile(f.name)}
+                      aria-label={f.name}
+                      className="shrink-0"
+                    />
+                  )}
                   {f.thumbUrl ? (
                     <img
                       src={f.thumbUrl}
@@ -326,7 +527,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                     </Button>
                   )}
                   <a
-                    href={`/files/${encodeURIComponent(f.name)}`}
+                    href={recordingFileUrl(f.name)}
                     download
                     className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-secondary hover:bg-muted border border-border text-foreground/80 rounded-md transition-colors"
                   >

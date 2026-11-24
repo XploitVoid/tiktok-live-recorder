@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useImperativeHandle, forwardRef, useMemo } from 'react'
-import { Circle, RefreshCw, Square } from 'lucide-react'
+import { Circle, RefreshCw, Square, Scissors, Loader2 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/lib/i18n'
 import { useEventStream } from '@/lib/useEventStream'
 import { fmtBytes, fmtDuration, fmtTime } from '@/lib/format'
-import { getJobs, stopRecord } from '@/lib/api'
+import { getJobs, stopRecord, cutLiveClip } from '@/lib/api'
 import type { RecordJob } from '@/lib/types'
 import { toast } from 'sonner'
 
@@ -14,11 +14,21 @@ export interface ActiveJobsRef {
   refresh: () => void
 }
 
+function triggerDownload(url: string, filename: string) {
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
 export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, ref) {
   const { t } = useI18n()
   const [jobs, setJobs] = useState<RecordJob[]>([])
   const jobsRef = useRef<RecordJob[]>([])
   const [now, setNow] = useState(() => Date.now())
+  const [cutting, setCutting] = useState<{ id: number; seconds: number } | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -59,6 +69,24 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
       void refresh()
     } catch (e: unknown) {
       toast.error('Stop failed', { description: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  const handleLiveClip = async (id: number, seconds: number) => {
+    setCutting({ id, seconds })
+    try {
+      const res = await cutLiveClip(id, seconds)
+      toast.success(t('liveClipSaved'), {
+        description: res.name,
+        action: {
+          label: t('btnDownload'),
+          onClick: () => triggerDownload(res.url, res.name),
+        },
+      })
+    } catch (e: unknown) {
+      toast.error(t('liveClipFail'), { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setCutting(null)
     }
   }
 
@@ -120,9 +148,33 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
                     <span className="text-xs text-muted-foreground">{fmtBytes(j.sizeBytes)}</span>
                     <span className="text-xs text-muted-foreground">{fmtTime(j.startedAt)}</span>
                     {!j.exited && (
-                      <Button variant="destructive" size="icon-xs" onClick={() => handleStop(j.id)}>
-                        <Square className="w-3 h-3" />
-                      </Button>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {([30, 60] as const).map((sec) => {
+                          const isJobCutting = cutting?.id === j.id
+                          const isThisCutting = isJobCutting && cutting?.seconds === sec
+                          const label = sec === 30 ? t('liveClip30') : t('liveClip60')
+                          return (
+                            <Button
+                              key={sec}
+                              variant="outline"
+                              size="xs"
+                              disabled={isJobCutting}
+                              onClick={() => handleLiveClip(j.id, sec)}
+                              title={label}
+                              aria-label={label}
+                              className="h-6 px-1.5 text-[11px] font-mono gap-1"
+                            >
+                              {isThisCutting
+                                ? <Loader2 className="w-3 h-3 animate-spin" />
+                                : <Scissors className="w-3 h-3" />}
+                              <span>{sec}s</span>
+                            </Button>
+                          )
+                        })}
+                        <Button variant="destructive" size="icon-xs" onClick={() => handleStop(j.id)}>
+                          <Square className="w-3 h-3" />
+                        </Button>
+                      </div>
                     )}
                   </div>
                   {j.lastErr && (

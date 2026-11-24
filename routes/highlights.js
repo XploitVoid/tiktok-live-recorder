@@ -8,7 +8,8 @@
 const { Router } = require('express');
 const fs = require('fs');
 const path = require('path');
-const { resolveInsideDir, safeError } = require('../lib/utils');
+const { resolveInsideDir, resolveRecordingPath, safeError } = require('../lib/utils');
+const db = require('../lib/db');
 const {
   CLIPS_DIR,
   analyzeRecording,
@@ -28,7 +29,7 @@ const RECORDINGS_DIR = path.resolve(__dirname, '..', 'recordings');
 // Validate that the requested recording name corresponds to an actual mp4
 // inside RECORDINGS_DIR — prevents path traversal and pointing at random files.
 function resolveRecording(rawName) {
-  const resolved = resolveInsideDir(RECORDINGS_DIR, rawName, '.mp4');
+  const resolved = resolveRecordingPath(RECORDINGS_DIR, rawName, '.mp4');
   if (!resolved) return null;
   if (!fs.existsSync(resolved.full)) return null;
   return resolved.name;
@@ -181,6 +182,23 @@ router.get('/api/search/chat', (req, res) => {
   try {
     const results = searchChat(q);
     res.json({ query: q, results });
+  } catch (e) {
+    res.status(500).json({ error: safeError(e) });
+  }
+});
+
+router.get('/api/search/status', (_req, res) => {
+  try {
+    res.json(db.getIndexStats());
+  } catch (e) {
+    res.status(500).json({ error: safeError(e) });
+  }
+});
+
+router.post('/api/search/reindex', (_req, res) => {
+  try {
+    const syncRes = db.syncAllRecordings({ force: true });
+    res.json({ ok: true, ...syncRes, ...db.getIndexStats() });
   } catch (e) {
     res.status(500).json({ error: safeError(e) });
   }

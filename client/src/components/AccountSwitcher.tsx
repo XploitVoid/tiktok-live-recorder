@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { User, UserCheck, Plus, Trash2, Check, ShieldAlert, EyeOff, Eye } from 'lucide-react'
+import { User, UserCheck, Plus, Trash2, Check, ShieldAlert, EyeOff, Eye, AlertTriangle, RefreshCw, ShieldCheck, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { ConfirmButton } from '@/components/ConfirmButton'
-import { getAccounts, addAccount, deleteAccount, switchAccount, toggleStealth } from '@/lib/api'
+import { getAccounts, addAccount, deleteAccount, switchAccount, toggleStealth, checkAccountHealth, checkAllAccountsHealth } from '@/lib/api'
 import type { AccountInfo, AccountsResponse } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { toast } from 'sonner'
@@ -17,6 +18,8 @@ export function AccountSwitcher() {
   const [sessionId, setSessionId] = useState('')
   const [ttTargetIdc, setTtTargetIdc] = useState('')
   const [saving, setSaving] = useState(false)
+  const [checkingId, setCheckingId] = useState<string | null>(null)
+  const [checkingAll, setCheckingAll] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
 
   const refresh = useCallback(async () => {
@@ -107,9 +110,50 @@ export function AccountSwitcher() {
     }
   }
 
+  const handleCheckOne = async (id: string) => {
+    setCheckingId(id)
+    try {
+      const res = await checkAccountHealth(id)
+      await refresh()
+      const statusLabel =
+        res.health.status === 'valid'
+          ? t('accHealthValid')
+          : res.health.status === 'expired'
+            ? t('accHealthExpired')
+            : t('accHealthUnknown')
+      const detail = res.health.username ? `@${res.health.username}` : res.health.reason || undefined
+      toast(t('accCheckDone'), {
+        description: `${statusLabel}${detail ? ` · ${detail}` : ''}`,
+      })
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setCheckingId(null)
+    }
+  }
+
+  const handleCheckAll = async () => {
+    setCheckingAll(true)
+    try {
+      const res = await checkAllAccountsHealth()
+      await refresh()
+      const values = Object.values(res.results || {})
+      const validCount = values.filter((h) => h.status === 'valid').length
+      const expiredCount = values.filter((h) => h.status === 'expired').length
+      toast.success(t('accCheckDone'), {
+        description: `${t('accHealthValid')}: ${validCount}, ${t('accHealthExpired')}: ${expiredCount}`,
+      })
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setCheckingAll(false)
+    }
+  }
+
   const activeAcc = data?.accounts.find((a) => a.id === data.active.id)
   const isStealth = data?.stealth ?? false
   const hasSession = data?.active.hasSession ?? false
+  const activeExpired = !isStealth && activeAcc?.health?.status === 'expired'
 
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
@@ -132,14 +176,17 @@ export function AccountSwitcher() {
           type="button"
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
+          title={activeExpired ? (activeAcc?.health?.reason || t('accHealthExpired')) : undefined}
           className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium border transition-colors cursor-pointer ${
-            hasSession && !isStealth
-              ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/15'
-              : 'bg-secondary/70 border-border/80 text-muted-foreground hover:text-foreground'
+            activeExpired
+              ? 'bg-amber-500/10 text-amber-600 dark:text-amber-300 border-amber-500/40 hover:bg-amber-500/15'
+              : hasSession && !isStealth
+                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/15'
+                : 'bg-secondary/70 border-border/80 text-muted-foreground hover:text-foreground'
           }`}
         >
           {hasSession && !isStealth ? (
-            <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <UserCheck className={`w-3.5 h-3.5 ${activeExpired ? 'text-amber-500 dark:text-amber-400' : 'text-emerald-500 dark:text-emerald-400'}`} />
           ) : (
             <User className="w-3.5 h-3.5" />
           )}
@@ -152,17 +199,37 @@ export function AccountSwitcher() {
                   ? 'Session'
                   : t('accAnonymous')}
           </span>
+          {activeExpired && (
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400 shrink-0" />
+          )}
         </button>
 
         {open && (
           <div className="fixed right-4 top-16 sm:absolute sm:right-0 sm:top-full sm:mt-1.5 w-80 max-w-[calc(100vw-2rem)] rounded-lg bg-popover border border-border shadow-xl z-50 p-3 space-y-2.5">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold">{t('accTitle')}</span>
-              {isStealth && (
-                <span className="inline-flex items-center gap-1 text-[10px] text-amber-400">
-                  <ShieldAlert className="w-3 h-3" /> {t('stealthOn')}
-                </span>
-              )}
+              <div className="flex items-center gap-1.5">
+                {isStealth && (
+                  <span className="inline-flex items-center gap-1 text-[10px] text-amber-500 dark:text-amber-400">
+                    <ShieldAlert className="w-3 h-3" /> {t('stealthOn')}
+                  </span>
+                )}
+                {!!data?.accounts.length && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    disabled={checkingAll || checkingId !== null}
+                    onClick={handleCheckAll}
+                    className="h-6 px-2 text-[11px] gap-1"
+                  >
+                    {checkingAll
+                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                      : <ShieldCheck className="w-3 h-3" />}
+                    <span>{t('accCheckAll')}</span>
+                  </Button>
+                )}
+              </div>
             </div>
 
             <div className="space-y-1 max-h-48 overflow-y-auto">
@@ -187,7 +254,7 @@ export function AccountSwitcher() {
                 return (
                   <div
                     key={acc.id}
-                    className={`flex items-center justify-between gap-1 px-2 py-1.5 rounded-md text-xs transition-colors ${
+                    className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md text-xs transition-colors ${
                       active
                         ? 'bg-secondary font-medium text-foreground'
                         : 'hover:bg-secondary/60 text-muted-foreground'
@@ -196,16 +263,67 @@ export function AccountSwitcher() {
                     <button
                       type="button"
                       onClick={() => handleSwitch(acc.id)}
-                      className="flex-1 flex items-center gap-2 min-w-0 text-left cursor-pointer"
+                      className="flex-1 min-w-0 text-left cursor-pointer space-y-0.5"
                     >
-                      <UserCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      <span className="truncate">{acc.label}</span>
-                      <span className="text-[10px] font-mono text-muted-foreground/70 shrink-0 tabular-nums">
-                        {acc.sessionPreview}
-                      </span>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <UserCheck className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400 shrink-0" />
+                        <span className="truncate">{acc.label}</span>
+                        <span className="text-[10px] font-mono text-muted-foreground/70 shrink-0 tabular-nums">
+                          {acc.sessionPreview}
+                        </span>
+                      </div>
+                      {acc.health && (
+                        <div className="flex items-center gap-1.5 pl-5 min-w-0">
+                          {acc.health.status === 'valid' && (
+                            <Badge
+                              variant="secondary"
+                              className="h-4 px-1.5 py-0 text-[10px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/30 gap-1 max-w-full"
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400 shrink-0" />
+                              <span>{t('accHealthValid')}</span>
+                              {acc.health.username && (
+                                <span className="font-mono truncate">@{acc.health.username}</span>
+                              )}
+                            </Badge>
+                          )}
+                          {acc.health.status === 'expired' && (
+                            <Badge
+                              variant="destructive"
+                              title={acc.health.reason || undefined}
+                              className="h-4 px-1.5 py-0 text-[10px] gap-1"
+                            >
+                              <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                              <span>{t('accHealthExpired')}</span>
+                            </Badge>
+                          )}
+                          {acc.health.status === 'unknown' && (
+                            <Badge
+                              variant="secondary"
+                              title={acc.health.reason || undefined}
+                              className="h-4 px-1.5 py-0 text-[10px] text-muted-foreground"
+                            >
+                              {t('accHealthUnknown')}
+                            </Badge>
+                          )}
+                        </div>
+                      )}
                     </button>
                     <div className="flex items-center gap-1 shrink-0">
-                      {active && <Check className="w-3.5 h-3.5 text-emerald-400" />}
+                      {active && <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        disabled={checkingAll || checkingId === acc.id}
+                        onClick={() => handleCheckOne(acc.id)}
+                        title={t('accCheck')}
+                        aria-label={t('accCheck')}
+                        className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                      >
+                        {checkingId === acc.id
+                          ? <RefreshCw className="w-3 h-3 animate-spin" />
+                          : <ShieldCheck className="w-3 h-3" />}
+                      </Button>
                       <ConfirmButton
                         onConfirm={() => handleDelete(acc.id)}
                         confirmLabel={t('confirm')}

@@ -8,11 +8,12 @@ const path = require('path');
 const compression = require('compression');
 const { resolveFfmpeg } = require('./lib/ffmpeg');
 const { getEncoder, ENCODER_LABELS, shutdownTranscodes } = require('./lib/transcode');
-const { RECORDINGS_DIR, shutdownAll } = require('./lib/recorder');
-const { shutdownMediaProcs } = require('./lib/storage');
+const { RECORDINGS_DIR, shutdownAll, activeFilePaths } = require('./lib/recorder');
+const { shutdownMediaProcs, recoverOrphanedTsFiles } = require('./lib/storage');
 const { shutdownCutProcs } = require('./lib/highlights');
 const chat = require('./lib/chat');
 const watcher = require('./lib/watcher');
+const db = require('./lib/db');
 const {
   AUTH_COOKIE_NAME,
   parseTrustProxy,
@@ -306,6 +307,7 @@ async function shutdown() {
   try { shutdownMediaProcs(); } catch {}
   try { shutdownCutProcs(); } catch {}
   try { chat.closeAll(); } catch {}
+  try { db.closeDb(); } catch {}
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
@@ -325,4 +327,10 @@ httpServer = app.listen(PORT, HOST, () => {
   watcher.schedulePoller();
   // Probe once immediately so the UI gets quick initial status.
   watcher.pollAll().catch(() => {});
+  if (process.env.QUIET_LOGS !== '1') {
+    setImmediate(async () => {
+      try { await recoverOrphanedTsFiles(activeFilePaths()); } catch {}
+      try { db.syncAllRecordings({ force: true }); } catch {}
+    });
+  }
 });

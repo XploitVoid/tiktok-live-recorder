@@ -1,15 +1,15 @@
 import { useState, useEffect } from 'react'
-import { HardDrive, Settings2, Trash2, ChevronDown, ChevronUp, Save, BellRing } from 'lucide-react'
+import { HardDrive, Settings2, Trash2, ChevronDown, ChevronUp, Save, BellRing, Database, RefreshCw } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { getSettings, saveSettings, runStorageCleanup, testWebhookSettings } from '@/lib/api'
+import { getSettings, saveSettings, runStorageCleanup, testWebhookSettings, getSearchIndexStatus, reindexSearchIndex } from '@/lib/api'
 import { fmtBytes } from '@/lib/format'
 import { useI18n } from '@/lib/i18n'
-import type { AppSettings, DiskStatus } from '@/lib/types'
+import type { AppSettings, DiskStatus, SearchIndexStatus } from '@/lib/types'
 import { toast } from 'sonner'
 
 export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
@@ -22,8 +22,14 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
   const [retentionDays, setRetentionDays] = useState('0')
   const [segmentMinutes, setSegmentMinutes] = useState('0')
   const [autoRetryRecord, setAutoRetryRecord] = useState(true)
+  const [autoMergeParts, setAutoMergeParts] = useState(true)
   const [stalledTimeoutSec, setStalledTimeoutSec] = useState('25')
   const [defaultAudioBitrate, setDefaultAudioBitrate] = useState('copy')
+  const [organizeByCreator, setOrganizeByCreator] = useState(false)
+  const [filenameTemplate, setFilenameTemplate] = useState('{username}_{date}_{time}')
+  const [recordFormat, setRecordFormat] = useState<'mp4' | 'ts'>('mp4')
+  const [searchIndex, setSearchIndex] = useState<SearchIndexStatus | null>(null)
+  const [reindexing, setReindexing] = useState(false)
   const [proxyUrl, setProxyUrl] = useState('')
   const [discordWebhookUrl, setDiscordWebhookUrl] = useState('')
   const [telegramBotToken, setTelegramBotToken] = useState('')
@@ -43,13 +49,29 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
         setRetentionDays(String(res.settings.retentionDays))
         setSegmentMinutes(String(res.settings.segmentMinutes))
         setAutoRetryRecord(res.settings.autoRetryRecord)
+        setAutoMergeParts(res.settings.autoMergeParts ?? true)
         setStalledTimeoutSec(String(res.settings.stalledTimeoutSec ?? 25))
         setDefaultAudioBitrate(res.settings.defaultAudioBitrate || 'copy')
+        setOrganizeByCreator(!!res.settings.organizeByCreator)
+        setFilenameTemplate(res.settings.filenameTemplate || '{username}_{date}_{time}')
+        setRecordFormat(res.settings.recordFormat === 'ts' ? 'ts' : 'mp4')
         setTelegramChatId(res.settings.telegramChatId || '')
       })
       .catch(() => { /* ignore */ })
+    getSearchIndexStatus()
+      .then((s) => { if (active) setSearchIndex(s) })
+      .catch(() => { /* ignore */ })
     return () => { active = false }
   }, [])
+
+  useEffect(() => {
+    if (!open) return
+    let active = true
+    getSearchIndexStatus()
+      .then((s) => { if (active) setSearchIndex(s) })
+      .catch(() => { /* ignore */ })
+    return () => { active = false }
+  }, [open])
 
   const handleSave = async () => {
     setSaving(true)
@@ -60,8 +82,12 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
         retentionDays: Number(retentionDays),
         segmentMinutes: Number(segmentMinutes),
         autoRetryRecord,
+        autoMergeParts,
         stalledTimeoutSec: Number(stalledTimeoutSec),
         defaultAudioBitrate: defaultAudioBitrate === 'copy' ? null : defaultAudioBitrate,
+        organizeByCreator,
+        filenameTemplate: filenameTemplate.trim() || '{username}_{date}_{time}',
+        recordFormat,
         telegramChatId: telegramChatId.trim(),
       }
       if (proxyUrl.trim()) patch.proxyUrl = proxyUrl.trim()
@@ -70,6 +96,9 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
       const res = await saveSettings(patch)
       setSettings(res.settings)
       setDisk(res.disk)
+      setOrganizeByCreator(!!res.settings.organizeByCreator)
+      setFilenameTemplate(res.settings.filenameTemplate || '{username}_{date}_{time}')
+      setRecordFormat(res.settings.recordFormat === 'ts' ? 'ts' : 'mp4')
       setProxyUrl('')
       setDiscordWebhookUrl('')
       setTelegramBotToken('')
@@ -138,12 +167,32 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
     }
   }
 
+  const handleReindex = async () => {
+    setReindexing(true)
+    try {
+      const res = await reindexSearchIndex()
+      setSearchIndex(res)
+      toast.success(t('settingsReindexDone'), {
+        description: `${res.recordingsIndexed} rec / ${res.chatMessagesIndexed.toLocaleString()} msg (+${res.synced}, -${res.pruned})`,
+      })
+    } catch (e: unknown) {
+      toast.error(t('settingsSaveFail'), { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setReindexing(false)
+    }
+  }
+
   const audioBitrateItems = {
     copy: t('audioBitrateCopy'),
     '64k': '64 kbps',
     '96k': '96 kbps',
     '128k': '128 kbps',
     '192k': '192 kbps',
+  }
+
+  const recordFormatItems = {
+    mp4: t('settingsFormatMp4'),
+    ts: t('settingsFormatTs'),
   }
 
   return (
@@ -225,12 +274,73 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex items-end pb-1">
+              <div className="flex flex-col justify-end gap-1.5 pb-1">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <Checkbox checked={autoRetryRecord} onCheckedChange={(v) => setAutoRetryRecord(!!v)} className="w-3.5 h-3.5" />
                   <span>{t('settingsRetry')}</span>
                 </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox checked={autoMergeParts} onCheckedChange={(v) => setAutoMergeParts(!!v)} className="w-3.5 h-3.5" />
+                  <span>{t('settingsAutoMerge')}</span>
+                </label>
               </div>
+            </div>
+
+            <div className="grid sm:grid-cols-3 gap-3 items-start pt-0.5">
+              <div>
+                <label className="text-muted-foreground block mb-1">{t('settingsRecordFormat')}</label>
+                <Select items={recordFormatItems} value={recordFormat} onValueChange={(v) => v && setRecordFormat(v as 'mp4' | 'ts')}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="mp4">{t('settingsFormatMp4')}</SelectItem>
+                    <SelectItem value="ts">{t('settingsFormatTs')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="sm:col-span-2 space-y-1.5">
+                <div>
+                  <label className="text-muted-foreground block mb-1">{t('settingsFilenameTemplate')}</label>
+                  <Input
+                    value={filenameTemplate}
+                    onChange={(e) => setFilenameTemplate(e.target.value)}
+                    placeholder="{username}_{date}_{time}"
+                    className="h-8 text-xs font-mono"
+                  />
+                  <p className="text-[11px] text-muted-foreground mt-1">{t('settingsFilenameHint')}</p>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer pt-0.5">
+                  <Checkbox checked={organizeByCreator} onCheckedChange={(v) => setOrganizeByCreator(!!v)} className="w-3.5 h-3.5" />
+                  <span>{t('settingsOrganizeByCreator')}</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border/70 bg-secondary/40 px-2.5 py-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Database className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                <span className="font-medium text-foreground">{t('settingsSearchIndex')}</span>
+                {searchIndex && (
+                  searchIndex.available ? (
+                    <span className="text-muted-foreground font-mono tabular-nums">
+                      {searchIndex.recordingsIndexed} rec / {searchIndex.chatMessagesIndexed.toLocaleString()} msg ({fmtBytes(searchIndex.dbBytes)})
+                    </span>
+                  ) : (
+                    <Badge variant="secondary" className="text-[10px]">N/A</Badge>
+                  )
+                )}
+              </div>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={handleReindex}
+                disabled={reindexing || searchIndex?.available === false}
+                className="h-7"
+              >
+                <RefreshCw className={reindexing ? 'w-3 h-3 mr-1 animate-spin' : 'w-3 h-3 mr-1'} />
+                {t('settingsReindex')}
+              </Button>
             </div>
 
             <div className="grid sm:grid-cols-2 gap-2 pt-0.5">

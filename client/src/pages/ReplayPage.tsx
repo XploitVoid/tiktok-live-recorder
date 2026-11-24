@@ -15,7 +15,7 @@ import { ChatEventRow } from '@/components/ChatEventRow'
 import { VideoPlayerBox } from '@/components/VideoPlayerBox'
 import { useI18n } from '@/lib/i18n'
 import { getReplayData, extractRecordingAudio } from '@/lib/api'
-import { fmtTimeSec } from '@/lib/format'
+import { fmtTimeSec, recordingFileUrl } from '@/lib/format'
 import type { ChatEvent, SpriteMeta } from '@/lib/types'
 import { getKeywords } from '@/lib/chatHighlight'
 import { toast } from 'sonner'
@@ -387,7 +387,7 @@ function ReplayContent({ file }: { file: string }) {
             ) : (
               <VideoPlayerBox
                 videoRef={videoRef}
-                src={`/files/${encodeURIComponent(file)}`}
+                src={recordingFileUrl(file)}
                 overlay={shown.length > 0 ? (
                   <>
                     {shown.slice(-6).map((ev) => (

@@ -14,6 +14,8 @@ import type {
   SettingsResponse,
   AppSettings,
   DiskStatus,
+  AccountHealth,
+  SearchIndexStatus,
 } from './types'
 
 export const UNAUTHORIZED_EVENT = 'tlr:unauthorized'
@@ -75,13 +77,14 @@ export async function checkStream(username: string): Promise<CheckResult> {
 export const startRecord = (
   username: string,
   quality?: string,
-  opts?: { audioOnly?: boolean; audioBitrate?: string | null },
+  opts?: { audioOnly?: boolean; audioBitrate?: string | null; recordChat?: boolean },
 ) =>
   post<{ file: string; reused?: boolean }>('/api/record/start', {
     username,
     quality,
     audioOnly: opts?.audioOnly,
     audioBitrate: opts?.audioBitrate,
+    recordChat: opts?.recordChat,
   })
 
 export const stopRecord = (id: number) =>
@@ -95,6 +98,17 @@ export const stopRecord = (id: number) =>
   }>('/api/record/stop', { id })
 
 export const getJobs = () => json<RecordJob[]>('/api/record/jobs')
+
+export const cutLiveClip = (id: number, seconds: number) =>
+  post<{
+    ok: boolean
+    name: string
+    url: string
+    sizeBytes: number
+    startSec: number
+    durSec: number
+    recording: string
+  }>('/api/record/live-clip', { id, seconds })
 
 // ── Recordings ──
 export const getRecordings = () => json<RecordingFile[]>('/api/recordings')
@@ -144,6 +158,16 @@ export const compressRecording = (name: string, preset: 'balanced' | 'compact' =
     `/api/recordings/${encodeURIComponent(name)}/compress`,
     { preset },
   )
+
+export const mergeRecordings = (files: string[], deleteSources = false) =>
+  post<{
+    ok: boolean
+    name: string
+    sizeBytes: number
+    parts: string[]
+    hasEvents: boolean
+    deletedSources: string[]
+  }>('/api/recordings/merge', { files, deleteSources })
 
 // ── Settings & Storage ──
 export const getSettings = () => json<SettingsResponse>('/api/settings')
@@ -201,6 +225,11 @@ export interface ChatSearchResult {
 export const searchChatAll = (query: string) =>
   json<{ query: string; results: ChatSearchResult[] }>(`/api/search/chat?q=${encodeURIComponent(query)}`)
 
+export const getSearchIndexStatus = () => json<SearchIndexStatus>('/api/search/status')
+
+export const reindexSearchIndex = () =>
+  post<{ ok: boolean; synced: number; pruned: number } & SearchIndexStatus>('/api/search/reindex')
+
 // ── Tags ──
 export const getRecordingTags = (recording: string) =>
   json<{ recording: string; tags: string[] }>(`/api/tags/${encodeURIComponent(recording)}`)
@@ -215,6 +244,7 @@ export const addWatch = (
   opts?: {
     audioOnly?: boolean
     audioBitrate?: string | null
+    recordChat?: boolean
     priority?: 'high' | 'normal'
     accountId?: string | null
     minViewers?: number | null
@@ -228,6 +258,7 @@ export const addWatch = (
     autoRecord,
     audioOnly: opts?.audioOnly,
     audioBitrate: opts?.audioBitrate,
+    recordChat: opts?.recordChat,
     priority: opts?.priority,
     accountId: opts?.accountId,
     minViewers: opts?.minViewers,
@@ -245,6 +276,7 @@ export const patchWatch = (
     autoRecord?: boolean
     audioOnly?: boolean
     audioBitrate?: string | null
+    recordChat?: boolean
     priority?: 'high' | 'normal'
     accountId?: string | null
     minViewers?: number | null
@@ -288,6 +320,7 @@ export interface AccountInfo {
   label: string
   hasSession: boolean
   sessionPreview: string
+  health?: AccountHealth | null
 }
 
 export interface AccountsResponse {
@@ -309,3 +342,9 @@ export const switchAccount = (id?: string) =>
 
 export const toggleStealth = (enabled: boolean) =>
   post<{ ok: boolean; stealth: boolean }>('/api/accounts/stealth', { enabled })
+
+export const checkAccountHealth = (id: string) =>
+  post<{ ok: boolean; id: string; health: AccountHealth }>(`/api/accounts/${encodeURIComponent(id)}/check`)
+
+export const checkAllAccountsHealth = () =>
+  post<{ ok: boolean; results: Record<string, AccountHealth> }>('/api/accounts/check-all')

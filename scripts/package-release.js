@@ -25,6 +25,9 @@ const FORBIDDEN_RELEASE_FILES = new Set([
   '.accounts.key',
   'watchlist.json',
   'settings.json',
+  'recorder.db',
+  'recorder.db-wal',
+  'recorder.db-shm',
 ]);
 
 const TARGETS = {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Lock } from 'lucide-react'
+import { Lock, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -8,7 +8,8 @@ import { useI18n } from '@/lib/i18n'
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const { t } = useI18n()
-  const [status, setStatus] = useState<'loading' | 'ok' | 'locked'>('loading')
+  const [status, setStatus] = useState<'loading' | 'ok' | 'locked' | 'error'>('loading')
+  const [retryTick, setRetryTick] = useState(0)
   const [token, setToken] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -21,18 +22,28 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         setStatus(!s.authRequired || s.authenticated ? 'ok' : 'locked')
       })
       .catch(() => {
-        if (active) setStatus('ok')
+        if (active) setStatus('error')
       })
+    return () => {
+      active = false
+    }
+  }, [retryTick])
+
+  useEffect(() => {
     const onUnauth = () => {
       setStatus('locked')
       setError('')
     }
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauth)
     return () => {
-      active = false
       window.removeEventListener(UNAUTHORIZED_EVENT, onUnauth)
     }
   }, [])
+
+  const handleRetry = () => {
+    setStatus('loading')
+    setRetryTick((n) => n + 1)
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -54,6 +65,29 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     return (
       <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">
         {t('loading')}
+      </div>
+    )
+  }
+
+  if (status === 'error') {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4 bg-background">
+        <Card className="w-full max-w-sm border-border">
+          <CardHeader className="space-y-1.5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-destructive/15 border border-destructive/30 flex items-center justify-center text-destructive">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <CardTitle className="text-base">{t('authNetworkError')}</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={handleRetry} className="w-full cursor-pointer">
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+              {t('authRetry')}
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     )
   }

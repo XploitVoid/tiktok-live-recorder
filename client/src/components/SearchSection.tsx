@@ -27,6 +27,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
   const [history, setHistory] = useState(getHistory())
   const [favorites, setFavorites] = useState(getFavorites())
   const autoCheckedRef = useRef<string | null>(null)
+  const reqIdRef = useRef(0)
 
   const refreshLists = useCallback(() => {
     setHistory(getHistory())
@@ -38,19 +39,24 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
     if (!raw) return
     const u = cleanUsernameInput(raw)
     if (!u) return
+    const reqId = ++reqIdRef.current
     autoCheckedRef.current = u
     setUsername(u)
     setChecking(true)
     onLoading?.()
     try {
       const data = await checkStream(u)
+      if (reqId !== reqIdRef.current) return
       addHistory(u)
       refreshLists()
       onResult?.(data)
     } catch (e) {
+      if (reqId !== reqIdRef.current) return
       onError?.((e as Error).message)
     } finally {
-      setChecking(false)
+      if (reqId === reqIdRef.current) {
+        setChecking(false)
+      }
     }
   }, [username, onLoading, onResult, onError, refreshLists])
 

@@ -53,12 +53,16 @@ router.post('/api/record/start', async (req, res) => {
 router.post('/api/record/stop', async (req, res) => {
   const id = Number(req.body?.id);
   if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
-  const result = await stopJob(id);
-  if (!result) return res.status(404).json({ error: 'job not found' });
-  if (!result.alreadyExited) {
-    console.log(`[audit] record stop: job#${id} @${result.username} graceful=${result.graceful}`);
+  try {
+    const result = await stopJob(id);
+    if (!result) return res.status(404).json({ error: 'job not found' });
+    if (!result.alreadyExited) {
+      console.log(`[audit] record stop: job#${id} @${result.username} graceful=${result.graceful}`);
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: safeError(e) });
   }
-  res.json(result);
 });
 
 router.get('/api/record/jobs', (_req, res) => {
@@ -90,11 +94,12 @@ router.get('/api/recordings', (_req, res) => {
     const activeFiles = activeFilePaths();
 
     const files = fs.readdirSync(RECORDINGS_DIR, { withFileTypes: true })
-      .filter((d) => d.isFile() && d.name.endsWith('.mp4'))
+      .filter((d) => d.isFile() && !d.name.startsWith('.') && d.name.endsWith('.mp4'))
       .map((d) => {
         const f = d.name;
         const fullPath = path.join(RECORDINGS_DIR, f);
-        const st = fs.statSync(fullPath);
+        let st;
+        try { st = fs.statSync(fullPath); } catch { return null; }
         const base = f.replace(/\.mp4$/i, '');
         const sidecar = path.join(RECORDINGS_DIR, `${base}.events.jsonl`);
         const highlightsFile = path.join(RECORDINGS_DIR, `${base}.highlights.json`);
@@ -131,6 +136,7 @@ router.get('/api/recordings', (_req, res) => {
           width: meta?.width ?? null,
           height: meta?.height ?? null,
           fps: meta?.fps ?? null,
+          vcodec: meta?.vcodec ?? null,
           thumbUrl: meta?.thumbUrl ?? null,
           spriteUrl: meta?.spriteUrl ?? null,
           spriteMeta: meta?.spriteMeta ?? null,
@@ -139,6 +145,7 @@ router.get('/api/recordings', (_req, res) => {
           notes: meta?.notes ?? '',
         };
       })
+      .filter(Boolean)
       .sort((a, b) => b.mtime - a.mtime);
     recordingsCache = { ts: Date.now(), data: files };
     res.json(files);
@@ -228,7 +235,10 @@ router.post('/api/recordings/:name/compress', async (req, res) => {
     console.log(`[audit] compress: ${resolved.name} (${preset}) -> ${out.name} (${out.sizeBytes} bytes)`);
     res.json({ ok: true, ...out });
   } catch (e) {
-    const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'NO_FFMPEG' ? 503 : 500;
+    const status =
+      e.code === 'NOT_FOUND' ? 404 :
+      e.code === 'NO_FFMPEG' ? 503 :
+      (e.code === 'ALREADY_COMPRESSED' || e.code === 'AUDIO_ONLY') ? 400 : 500;
     res.status(status).json({ error: safeError(e) });
   }
 });
@@ -236,13 +246,20 @@ router.post('/api/recordings/:name/compress', async (req, res) => {
 router.delete('/api/recordings/:name', (req, res) => {
   const resolved = resolveInsideDir(RECORDINGS_DIR, req.params.name, '.mp4');
   if (!resolved) return res.status(400).json({ error: 'bad name' });
+  if (activeFilePaths().has(resolved.full)) {
+    return res.status(409).json({ error: 'recording is active' });
+  }
+  if (!fs.existsSync(resolved.full)) {
+    return res.status(404).json({ error: 'not found' });
+  }
   try {
     deleteRecordingBundle(resolved.name);
     invalidateRecordingsCache();
     console.log(`[audit] file deleted: ${resolved.name}`);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: safeError(e) });
+    const status = e.code === 'ENOENT' ? 404 : 500;
+    res.status(status).json({ error: safeError(e) });
   }
 });
 

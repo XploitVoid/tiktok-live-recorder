@@ -25,9 +25,9 @@ function initialOf(name: string): string {
 }
 
 export function Avatar({ url, name = '', size = 18, className = '' }: Props) {
-  const [errored, setErrored] = useState(false)
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
   const safeUrl = safeImageUrl(url)
-  const showImg = safeUrl && !errored
+  const showImg = !!safeUrl && failedUrl !== safeUrl
   const px = `${size}px`
 
   if (showImg) {
@@ -38,7 +38,7 @@ export function Avatar({ url, name = '', size = 18, className = '' }: Props) {
         loading="lazy"
         decoding="async"
         referrerPolicy="no-referrer"
-        onError={() => setErrored(true)}
+        onError={() => setFailedUrl(safeUrl)}
         className={`rounded-full object-cover bg-zinc-700 inline-block flex-shrink-0 ${className}`}
         style={{ width: px, height: px }}
       />

@@ -146,6 +146,19 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
     })
   }, [files, query, filterMode, sortMode])
 
+  const filterItems = useMemo(() => ({
+    all: t('savedFilterAll'),
+    chat: t('fChat'),
+    highlights: t('highlights'),
+    protected: t('savedFilterProtected'),
+  }), [t])
+
+  const sortItems = useMemo(() => ({
+    newest: t('savedSortNewest'),
+    largest: t('savedSortLargest'),
+    longest: 'Longest',
+  }), [t])
+
   return (
     <Card>
       <CardContent className="pt-5 space-y-3">
@@ -172,7 +185,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                 className="h-7 pl-8 text-xs"
               />
             </div>
-            <Select value={filterMode} onValueChange={(v) => v && setFilterMode(v as typeof filterMode)}>
+            <Select items={filterItems} value={filterMode} onValueChange={(v) => v && setFilterMode(v as typeof filterMode)}>
               <SelectTrigger className="w-[130px] h-7 text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -183,7 +196,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                 <SelectItem value="protected">{t('savedFilterProtected')}</SelectItem>
               </SelectContent>
             </Select>
-            <Select value={sortMode} onValueChange={(v) => v && setSortMode(v as typeof sortMode)}>
+            <Select items={sortItems} value={sortMode} onValueChange={(v) => v && setSortMode(v as typeof sortMode)}>
               <SelectTrigger className="w-[115px] h-7 text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -200,7 +213,9 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
           {visibleFiles.length === 0 ? (
             <p className="text-muted-foreground text-xs">{t('emptyList')}</p>
           ) : (
-            visibleFiles.map((f) => (
+            visibleFiles.map((f) => {
+              const isAudioOnly = f.vcodec === null && f.durationSec != null
+              return (
               <div key={f.name} className="bg-secondary rounded-lg px-2 py-1.5 space-y-1.5">
                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                   {f.thumbUrl ? (
@@ -212,7 +227,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                     />
                   ) : (
                     <div className="w-12 h-7 rounded bg-zinc-800/80 border border-border flex items-center justify-center text-[10px] text-muted-foreground shrink-0">
-                      MP4
+                      {isAudioOnly ? 'Audio' : 'MP4'}
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
@@ -295,7 +310,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                   >
                     <Music className="w-3 h-3 mr-1" /> M4A
                   </Button>
-                  {!/_(balanced|compact)\.mp4$/i.test(f.name) && (
+                  {!isAudioOnly && !/_(balanced|compact)\.mp4$/i.test(f.name) && (
                     <Button
                       variant="outline"
                       size="xs"
@@ -321,7 +336,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                     onConfirm={() => handleDelete(f.name)}
                     confirmLabel={t('confirm')}
                     cancelLabel={t('cancel')}
-                    title={t('accDelete')}
+                    title={t('savedDelete')}
                     variant="ghost"
                     size="icon-xs"
                     className="text-muted-foreground hover:text-destructive"
@@ -352,7 +367,8 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                   </div>
                 )}
               </div>
-            ))
+              )
+            })
           )}
         </div>
       </CardContent>

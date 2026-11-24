@@ -68,6 +68,7 @@ function requestViaAgent(target, headers, agent, timeoutMs) {
       };
       resolve({
         status: res.statusCode || 502,
+        finalUrl: target,
         headers: hdrs,
         nodeStream: res,
         cancelBody: () => { try { res.destroy(); } catch {} },
@@ -108,20 +109,42 @@ async function safeFetch(target, init = {}, hops = 0) {
   if (agent) {
     upstream = await requestViaAgent(target, init.headers || {}, agent, UPSTREAM_TIMEOUT_MS);
   } else {
-    const res = await fetch(target, {
-      ...init,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
+    // Only apply UPSTREAM_TIMEOUT_MS to connecting & receiving response headers;
+    // do not kill long-lived FLV live streams after 15s while data is flowing.
+    const ac = new AbortController();
+    const headerTimer = setTimeout(() => ac.abort(new Error('upstream timeout')), UPSTREAM_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(target, {
+        ...init,
+        redirect: 'manual',
+        signal: ac.signal,
+      });
+    } finally {
+      clearTimeout(headerTimer);
+    }
     upstream = {
       status: res.status,
+      finalUrl: target,
       headers: res.headers,
       nodeStream: res.body ? Readable.fromWeb(res.body) : null,
       cancelBody: async () => { try { await res.body?.cancel(); } catch {} },
       readBuffer: async (maxBytes) => {
-        const buf = Buffer.from(await res.arrayBuffer());
-        if (buf.byteLength > maxBytes) throw new Error('manifest too large');
-        return buf;
+        if (!res.body) return Buffer.alloc(0);
+        const reader = res.body.getReader();
+        const chunks = [];
+        let total = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > maxBytes) {
+            try { await reader.cancel(); } catch {}
+            throw new Error('manifest too large');
+          }
+          chunks.push(Buffer.from(value));
+        }
+        return Buffer.concat(chunks);
       },
     };
   }
@@ -184,7 +207,8 @@ router.get('/api/proxy', async (req, res) => {
     });
 
     // Rewrite m3u8 manifests so segments also go through this proxy.
-    if (/mpegurl|m3u8/i.test(ct) || /\.m3u8(\?|$)/i.test(target)) {
+    const effectiveUrl = upstream.finalUrl || target;
+    if (upstream.status >= 200 && upstream.status < 300 && (/mpegurl|m3u8/i.test(ct) || /\.m3u8(\?|$)/i.test(effectiveUrl))) {
       const contentLen = Number(upstream.headers.get('content-length') || 0);
       if (contentLen > MAX_MANIFEST_BYTES) {
         await upstream.cancelBody();
@@ -192,7 +216,7 @@ router.get('/api/proxy', async (req, res) => {
       }
       const buf = await upstream.readBuffer(MAX_MANIFEST_BYTES);
       const text = buf.toString('utf8');
-      const baseUrl = new URL(target);
+      const baseUrl = new URL(effectiveUrl);
       const rewriteProxyUri = (rawUri) => {
         const abs = new URL(rawUri, baseUrl).toString();
         if (!isAllowedCdnUrl(abs)) return null;
@@ -223,11 +247,27 @@ router.get('/api/proxy', async (req, res) => {
 
     if (upstream.nodeStream) {
       const nodeStream = upstream.nodeStream;
+      let idleTimer = null;
+      const resetIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          if (!nodeStream.destroyed) nodeStream.destroy(new Error('upstream idle timeout'));
+        }, 30_000);
+        idleTimer.unref?.();
+      };
+      const clearIdle = () => {
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+      };
+      resetIdle();
+      nodeStream.on('data', resetIdle);
+      nodeStream.on('end', clearIdle);
       nodeStream.on('error', () => {
+        clearIdle();
         if (!res.headersSent) res.status(502).end();
         else res.end();
       });
       res.on('close', () => {
+        clearIdle();
         if (!nodeStream.destroyed) nodeStream.destroy();
       });
       nodeStream.pipe(res);
@@ -265,54 +305,68 @@ router.get('/api/transcode', async (req, res) => {
     return res.status(400).send(safeError(e));
   }
 
-  // Re-check limits after async DNS lookup to close race condition
+  // Re-check limits and client socket after async DNS lookup to close race conditions
+  if (req.destroyed || res.destroyed || res.writableEnded) return;
   const ipActiveAfter = transcodeCountByIp.get(ip) || 0;
   if (ipActiveAfter >= MAX_TRANSCODES_PER_IP || transcodeProcs.size >= MAX_CONCURRENT_TRANSCODES) {
     return res.status(429).send('max concurrent transcodes reached');
   }
 
-  const ffmpegBin = resolveFfmpeg();
-  const encoder = getEncoder();
-  const args = buildTranscodeArgs(target, encoder);
-  const proc = spawn(ffmpegBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-  transcodeProcs.add(proc);
-  transcodeCountByIp.set(ip, ipActiveAfter + 1);
-  console.log(`[transcode] start enc=${encoder} (${transcodeProcs.size}/${MAX_CONCURRENT_TRANSCODES})`);
-
-  res.setHeader('content-type', 'video/x-flv');
-  res.setHeader('cache-control', 'no-store');
-  proc.stdout.pipe(res);
-
-  let stderrTail = '';
-  proc.stderr.on('data', (b) => { stderrTail = (stderrTail + b.toString()).slice(-500); });
-
+  let proc;
   let cleaned = false;
+  let counted = false;
   const cleanup = () => {
     if (cleaned) return;
     cleaned = true;
-    if (!proc.killed) {
+    if (proc && !proc.killed) {
       try { proc.kill('SIGKILL'); } catch {}
     }
-    transcodeProcs.delete(proc);
-    const cur = transcodeCountByIp.get(ip) || 1;
-    if (cur <= 1) transcodeCountByIp.delete(ip);
-    else transcodeCountByIp.set(ip, cur - 1);
+    if (proc) transcodeProcs.delete(proc);
+    if (counted) {
+      counted = false;
+      const cur = transcodeCountByIp.get(ip) || 1;
+      if (cur <= 1) transcodeCountByIp.delete(ip);
+      else transcodeCountByIp.set(ip, cur - 1);
+    }
     console.log(`[transcode] end (${transcodeProcs.size}/${MAX_CONCURRENT_TRANSCODES})`);
   };
-  proc.on('error', (err) => {
-    console.warn('[transcode] ffmpeg spawn error:', err?.message || err);
+
+  try {
+    const ffmpegBin = resolveFfmpeg();
+    const encoder = getEncoder();
+    const args = buildTranscodeArgs(target, encoder);
+    proc = spawn(ffmpegBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    transcodeProcs.add(proc);
+    transcodeCountByIp.set(ip, ipActiveAfter + 1);
+    counted = true;
+    console.log(`[transcode] start enc=${encoder} (${transcodeProcs.size}/${MAX_CONCURRENT_TRANSCODES})`);
+
+    res.setHeader('content-type', 'video/x-flv');
+    res.setHeader('cache-control', 'no-store');
+    proc.stdout.pipe(res);
+
+    let stderrTail = '';
+    proc.stderr.on('data', (b) => { stderrTail = (stderrTail + b.toString()).slice(-500); });
+
+    proc.on('error', (err) => {
+      console.warn('[transcode] ffmpeg spawn error:', err?.message || err);
+      cleanup();
+      if (!res.headersSent) res.status(502).end();
+      else res.end();
+    });
+    proc.on('exit', (code) => {
+      if (code !== 0 && code !== null) console.warn('[transcode] ffmpeg exit', code, stderrTail);
+      cleanup();
+      if (!res.headersSent) res.status(502).end();
+      else res.end();
+    });
+    req.on('close', cleanup);
+    res.on('close', cleanup);
+  } catch (e) {
     cleanup();
-    if (!res.headersSent) res.status(502).end();
+    if (!res.headersSent) res.status(502).send(safeError(e));
     else res.end();
-  });
-  proc.on('exit', (code) => {
-    if (code !== 0 && code !== null) console.warn('[transcode] ffmpeg exit', code, stderrTail);
-    cleanup();
-    if (!res.headersSent) res.status(502).end();
-    else res.end();
-  });
-  req.on('close', cleanup);
-  res.on('close', cleanup);
+  }
 });
 
 module.exports = router;

@@ -7,12 +7,15 @@ const fs = require('fs');
 const path = require('path');
 const compression = require('compression');
 const { resolveFfmpeg } = require('./lib/ffmpeg');
-const { getEncoder, ENCODER_LABELS } = require('./lib/transcode');
+const { getEncoder, ENCODER_LABELS, shutdownTranscodes } = require('./lib/transcode');
 const { RECORDINGS_DIR, shutdownAll } = require('./lib/recorder');
+const { shutdownMediaProcs } = require('./lib/storage');
+const { shutdownCutProcs } = require('./lib/highlights');
 const chat = require('./lib/chat');
 const watcher = require('./lib/watcher');
 const {
   AUTH_COOKIE_NAME,
+  parseTrustProxy,
   tokenEquals,
   createSessionCookieValue,
   verifySessionCookieValue,
@@ -27,7 +30,7 @@ const {
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '127.0.0.1'; // bind to localhost only by default
-const TRUST_PROXY = process.env.TRUST_PROXY || '';
+const TRUST_PROXY = parseTrustProxy(process.env.TRUST_PROXY);
 const APP_TOKEN = process.env.APP_TOKEN || '';
 
 const app = express();
@@ -36,7 +39,7 @@ app.disable('x-powered-by');
 // Trust X-Forwarded-For only when explicitly configured (i.e. when running
 // behind a reverse proxy / tunnel). Otherwise a malicious client could
 // spoof its IP and bypass the per-IP rate limiter.
-if (TRUST_PROXY) {
+if (TRUST_PROXY !== false) {
   app.set('trust proxy', TRUST_PROXY);
 }
 
@@ -46,7 +49,8 @@ if (TRUST_PROXY) {
 app.use(compression({
   threshold: 1024,
   filter: (req, res) => {
-    if (req.path.startsWith('/files/') || req.path.startsWith('/api/transcode') || req.path === '/api/events/stream') return false;
+    const p = req.path.toLowerCase();
+    if (p.startsWith('/files/') || p.startsWith('/api/transcode') || p.replace(/\/+$/, '') === '/api/events/stream') return false;
     const ct = res.getHeader('Content-Type') || '';
     if (typeof ct === 'string' && /^(video|audio|image|text\/event-stream)\b/i.test(ct)) return false;
     return compression.filter(req, res);
@@ -56,7 +60,7 @@ app.use(compression({
 // ── Host validation (DNS rebinding defense) ──
 const allowedHosts = buildAllowedHosts(PORT, HOST, process.env.ALLOWED_HOSTS);
 app.use((req, res, next) => {
-  if (!hostAllowed(req.headers.host, { port: PORT, host: HOST, allowedHosts, trustProxy: !!TRUST_PROXY })) {
+  if (!hostAllowed(req.headers.host, { port: PORT, host: HOST, allowedHosts, trustProxy: TRUST_PROXY !== false })) {
     return res.status(421).type('text/plain').send('host not allowed');
   }
   next();
@@ -93,9 +97,10 @@ app.use((_req, res, next) => {
 // Skip the high-frequency polling endpoints by default — they otherwise
 // flood the console at ~10 req/sec per active client and dominate stdout
 // IO. Set VERBOSE_LOGS=1 to see them.
-const QUIET_ROUTES = /^\/api\/(record\/jobs|recordings$|recordings\/.+|chat\/dashboard|chat\/events|watch(\?|$)|watch\/events|events\/stream|health$)/;
+const QUIET_ROUTES = /^\/api\/(record\/jobs|recordings$|recordings\/.+|chat\/dashboard|chat\/events|watch(\?|$)|watch\/events|events\/stream|health$)/i;
 app.use((req, _res, next) => {
-  if (req.path.startsWith('/api/')) {
+  const p = req.path.toLowerCase();
+  if (p.startsWith('/api/')) {
     if (process.env.VERBOSE_LOGS || !QUIET_ROUTES.test(req.url)) {
       console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
     }
@@ -113,19 +118,21 @@ app.use((req, res, next) => {
   next();
 });
 
-// Stricter origin guard for GET endpoints that trigger outbound network IO
-// or return sensitive account metadata.
-const SENSITIVE_GET_ROUTES = [
-  /^\/api\/check(\?|$)/,
-  /^\/api\/stream(\?|$)/,
-  /^\/api\/watch\/live-streams(\?|$)/,
-  /^\/api\/proxy(\?|$)/,
-  /^\/api\/transcode(\?|$)/,
-  /^\/api\/accounts(\?|$)/,
-];
+// Stricter origin guard for GET endpoints that trigger outbound network IO,
+// consume persistent SSE slots, or return sensitive account metadata.
+const SENSITIVE_GET_PATHS = new Set([
+  '/api/check',
+  '/api/stream',
+  '/api/watch/live-streams',
+  '/api/proxy',
+  '/api/transcode',
+  '/api/accounts',
+  '/api/events/stream',
+]);
 app.use((req, res, next) => {
   if (req.method !== 'GET') return next();
-  if (!SENSITIVE_GET_ROUTES.some((r) => r.test(req.url))) return next();
+  const normPath = req.path.toLowerCase().replace(/\/+$/, '');
+  if (!SENSITIVE_GET_PATHS.has(normPath)) return next();
   if (isCrossSiteRequest(req)) {
     return res.status(403).type('text/plain').send('cross-origin GET blocked');
   }
@@ -173,7 +180,7 @@ app.post('/api/auth/login', loginLimiter, (req, res) => {
     return res.status(401).json({ error: 'invalid token' });
   }
   const cookieVal = createSessionCookieValue(APP_TOKEN);
-  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const isHttps = req.secure || (TRUST_PROXY !== false && req.headers['x-forwarded-proto'] === 'https');
   res.cookie(AUTH_COOKIE_NAME, cookieVal, {
     httpOnly: true,
     sameSite: 'strict',
@@ -184,17 +191,19 @@ app.post('/api/auth/login', loginLimiter, (req, res) => {
   res.json({ ok: true, authRequired: true });
 });
 
-app.post('/api/auth/logout', (_req, res) => {
-  res.clearCookie(AUTH_COOKIE_NAME, { path: '/', sameSite: 'strict', httpOnly: true });
+app.post('/api/auth/logout', (req, res) => {
+  const isHttps = req.secure || (TRUST_PROXY !== false && req.headers['x-forwarded-proto'] === 'https');
+  res.clearCookie(AUTH_COOKIE_NAME, { path: '/', sameSite: 'strict', httpOnly: true, secure: !!isHttps });
   res.json({ ok: true });
 });
 
 if (APP_TOKEN) {
   app.use((req, res, next) => {
-    if (!req.path.startsWith('/api/') && !req.path.startsWith('/files/')) return next();
-    if (req.path === '/api/health' || req.path.startsWith('/api/auth/')) return next();
+    const p = req.path.toLowerCase();
+    if (!p.startsWith('/api/') && !p.startsWith('/files/')) return next();
+    if (p === '/api/health' || p.startsWith('/api/auth/')) return next();
     if (!isRequestAuthenticated(req)) {
-      if (req.path.startsWith('/api/')) {
+      if (p.startsWith('/api/')) {
         return res.status(401).json({ error: 'unauthorized' });
       }
       return res.status(401).type('text/plain').send('unauthorized');
@@ -280,16 +289,22 @@ app.use((err, _req, res, _next) => {
 
 // ── Graceful shutdown ──
 let shuttingDown = false;
+let httpServer = null;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   const force = setTimeout(() => process.exit(1), 10000);
   force.unref();
+  try { watcher.stopPoller?.(); } catch {}
+  try { httpServer?.close?.(); } catch {}
   try {
     await shutdownAll();
   } catch (e) {
     console.warn('[shutdown] error:', e?.message || e);
   }
+  try { shutdownTranscodes(); } catch {}
+  try { shutdownMediaProcs(); } catch {}
+  try { shutdownCutProcs(); } catch {}
   try { chat.closeAll(); } catch {}
   process.exit(0);
 }
@@ -300,7 +315,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // ── Start server ──
-app.listen(PORT, HOST, () => {
+httpServer = app.listen(PORT, HOST, () => {
   console.log(`\n  TikTok LIVE Recorder  →  http://localhost:${PORT}\n`);
   console.log(`  ffmpeg: ${resolveFfmpeg()}`);
   const encoder = getEncoder();

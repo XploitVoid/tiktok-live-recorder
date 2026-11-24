@@ -65,14 +65,20 @@ async function main() {
   const args = buildRecordArgs(pick, outFile, getFfmpegProxyArgs());
 
   const ff = spawn(ffmpegBin, args, { stdio: ['pipe', 'inherit', 'inherit'] });
+  ff.stdin?.on('error', () => {});
 
   let stopping = false;
   const stop = () => {
     if (stopping || ff.killed) return;
     stopping = true;
-    try { ff.stdin?.write('q'); ff.stdin?.end(); } catch {}
+    try {
+      if (ff.stdin && !ff.stdin.destroyed && !ff.stdin.writableEnded) {
+        ff.stdin.write('q');
+        ff.stdin.end();
+      }
+    } catch {}
     // Force-kill only if ffmpeg doesn't finalize within 8s.
-    setTimeout(() => { try { ff.kill(); } catch {} }, 8000);
+    setTimeout(() => { try { ff.kill('SIGKILL'); } catch {} }, 8000).unref();
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);

@@ -592,3 +592,135 @@ test('Compressed _balanced/_compact recordings preserve startMs, highlights, and
     s.disconnect();
   }
 });
+
+test('Env parsers, storage bundle isolation, meta race safety, analytics repeatCount, and ChatSession timer/manualClose fixes', async () => {
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+  const utils = require('../lib/utils');
+  const { buildGiftEconomy } = require('../lib/analytics');
+  const { cutClip } = require('../lib/highlights');
+
+  // 1. Env var parsing: '0' stays 0, DISABLE_AUTO_RETRY=0 keeps retry enabled
+  assert.equal(settings.parseEnvNumber('0', 25), 0);
+  assert.equal(settings.parseEnvNumber('', 25), 25);
+  assert.equal(settings.parseEnvBoolFlag('0'), false);
+  assert.equal(settings.parseEnvBoolFlag('false'), false);
+  assert.equal(settings.parseEnvBoolFlag('1'), true);
+
+  // 2. deleteRecordingBundle must NOT delete _balanced/_p2 audio, and compressRecording rejects double compression
+  const base = `isoltest_${Date.now()}`;
+  const origMp4 = `${base}.mp4`;
+  const balMp4 = `${base}_balanced.mp4`;
+  const origMp4Path = path.join(storage.RECORDINGS_DIR, origMp4);
+  const balMp4Path = path.join(storage.RECORDINGS_DIR, balMp4);
+  const balAudioPath = path.join(storage.AUDIO_DIR, `${base}_balanced.m4a`);
+  try {
+    const gen = spawnSync(ffmpeg.resolveFfmpeg(), [
+      '-y', '-f', 'lavfi', '-i', 'testsrc=size=128x128:rate=5',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+      '-t', '1', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', origMp4Path,
+    ], { encoding: 'utf8' });
+    assert.equal(gen.status, 0);
+
+    await storage.compressRecording(origMp4, 'balanced');
+    fs.writeFileSync(balAudioPath, 'm4a-balanced');
+
+    // Re-compressing _balanced with compact produces _compact.mp4 AND _compact.events.jsonl (not _balanced_compact.events.jsonl)
+    const balEvPath = path.join(storage.RECORDINGS_DIR, `${base}_balanced.events.jsonl`);
+    const compMp4 = `${base}_compact.mp4`;
+    const compEvPath = path.join(storage.RECORDINGS_DIR, `${base}_compact.events.jsonl`);
+    const badCompEvPath = path.join(storage.RECORDINGS_DIR, `${base}_balanced_compact.events.jsonl`);
+    fs.writeFileSync(balEvPath, '{"id":1,"ts":1000,"type":"chat","comment":"hi"}\n');
+    try {
+      const reComp = await storage.compressRecording(balMp4, 'compact');
+      assert.equal(reComp.name, compMp4);
+      assert.equal(fs.existsSync(compEvPath), true);
+      assert.equal(fs.existsSync(badCompEvPath), false);
+    } finally {
+      try { storage.deleteRecordingBundle(compMp4); } catch {}
+      try { fs.unlinkSync(balEvPath); } catch {}
+      try { fs.unlinkSync(compEvPath); } catch {}
+      try { fs.unlinkSync(badCompEvPath); } catch {}
+    }
+
+    // Compressing already-balanced with balanced rejects with ALREADY_COMPRESSED
+    await assert.rejects(() => storage.compressRecording(balMp4, 'balanced'), { code: 'ALREADY_COMPRESSED' });
+
+    // Deleting original must leave _balanced.m4a intact
+    storage.deleteRecordingBundle(origMp4);
+    assert.equal(fs.existsSync(balAudioPath), true);
+
+    // Concurrent meta update during ensureThumbnailAndMeta is preserved
+    const meta = await storage.ensureThumbnailAndMeta(balMp4, { force: true });
+    assert.ok(meta?.hasMeta);
+    storage.updateRecordingMeta(balMp4, { protected: true, displayTitle: 'Keep Me' });
+    const meta2 = await storage.ensureThumbnailAndMeta(balMp4, { force: true });
+    assert.equal(meta2.protected, true);
+    assert.equal(meta2.displayTitle, 'Keep Me');
+  } finally {
+    try { storage.deleteRecordingBundle(origMp4); } catch {}
+    try { storage.deleteRecordingBundle(balMp4); } catch {}
+    try { fs.unlinkSync(balAudioPath); } catch {}
+  }
+
+  // 3. Analytics: malformed ts does not throw RangeError, totals.gifts sums repeatCount, cutClip rejects bad name asynchronously
+  const abase = `anatest_20261117_120000`;
+  const amp4 = `${abase}.mp4`;
+  const amp4Path = path.join(storage.RECORDINGS_DIR, amp4);
+  const aevPath = path.join(storage.RECORDINGS_DIR, `${abase}.events.jsonl`);
+  const t0 = utils.parseStartTimeFromName(amp4);
+  try {
+    fs.writeFileSync(amp4Path, 'mp4');
+    fs.writeFileSync(aevPath, [
+      JSON.stringify({ id: 1, ts: t0 + 1000, type: 'gift', giftName: 'Rose', diamondCount: 2, repeatCount: 5 }),
+      JSON.stringify({ id: 2, ts: 'bad-ts', type: 'chat', comment: 'oops' }),
+    ].join('\n') + '\n');
+    const ge = buildGiftEconomy(amp4);
+    assert.equal(ge.ok, true);
+    assert.equal(ge.totals.gifts, 5);
+    assert.equal(ge.totals.diamonds, 10);
+    await assert.rejects(() => cutClip('bad.txt', 0, 5), { code: 'BAD_NAME' });
+    await assert.rejects(() => cutClip(amp4, -10, -5), { code: 'BAD_RANGE' });
+  } finally {
+    fs.rmSync(amp4Path, { force: true });
+    fs.rmSync(aevPath, { force: true });
+  }
+
+  // 4. ChatSession clears stale reconnectTimer when fallback connect() succeeds, and respects manualClose
+  const cs = new ChatSession('timer_test_user');
+  cs.uiActive = true;
+  let connectCount = 0;
+  cs._createConnection = () => {
+    const conn = new EventEmitter();
+    conn.disconnect = async () => {};
+    conn.connect = async () => {
+      connectCount++;
+      if (connectCount === 1) {
+        conn.emit('disconnected'); // would arm reconnectTimer if not ignored/cleared
+        throw new Error('Error connecting to WebSocket with message: DEVICE_BLOCKED');
+      }
+      return { roomId: '999' };
+    };
+    return conn;
+  };
+  await cs.connect();
+  assert.equal(cs.state, 'connected');
+  assert.equal(cs.reconnectTimer, null);
+  cs.disconnect();
+
+  const cs2 = new ChatSession('manual_close_test');
+  cs2.uiActive = true;
+  cs2._createConnection = () => {
+    const conn = new EventEmitter();
+    conn.disconnect = async () => {};
+    conn.connect = async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      return { roomId: '123' };
+    };
+    return conn;
+  };
+  const p = cs2.connect();
+  cs2.disconnect();
+  await assert.rejects(() => p, /connection closed/);
+  assert.equal(cs2.state, 'closed');
+});

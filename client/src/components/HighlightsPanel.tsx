@@ -29,6 +29,8 @@ interface Props {
   onJump: (sec: number) => void
 }
 
+const MAX_CLIP_SEC = 240
+
 export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime = 0, spriteUrl, spriteMeta, onJump }: Props) {
   const { t } = useI18n()
   const [candidates, setCandidates] = useState<HighlightCandidate[]>([])
@@ -45,8 +47,19 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
   const [hoverSec, setHoverSec] = useState<number | null>(null)
 
   const trimOut = durationSec && durationSec > 0
-    ? Math.min(durationSec, Math.max(trimIn + 1, trimOutRaw > durationSec ? Math.min(30, durationSec) : trimOutRaw))
-    : trimOutRaw
+    ? Math.min(
+        durationSec,
+        trimIn + MAX_CLIP_SEC,
+        Math.max(trimIn + 1, trimOutRaw > durationSec ? Math.min(30, durationSec) : trimOutRaw),
+      )
+    : Math.min(trimIn + MAX_CLIP_SEC, trimOutRaw)
+
+  const verticalItems = {
+    none: 'Original (fast copy)',
+    blur: '9:16 Blur BG',
+    crop: '9:16 Center Crop',
+    'pk-split': '9:16 PK Split (Top/Bot)',
+  }
 
   const sseHandlers = useMemo(() => ({
     cut_progress: (raw: unknown) => {
@@ -73,7 +86,6 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
   }, [recording])
 
   useEffect(() => {
-    if (!hasEvents) return
     let active = true
     getHighlights(recording)
       .then((data) => {
@@ -84,9 +96,10 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
       })
       .catch((e) => console.error('getHighlights:', e))
     return () => { active = false }
-  }, [hasEvents, recording])
+  }, [recording])
 
   const handleAnalyze = async () => {
+    if (!hasEvents) return
     setAnalyzing(true)
     try {
       await analyzeHighlights(recording)
@@ -103,11 +116,12 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
   }
 
   const handleCut = async (c: HighlightCandidate) => {
+    if (cuttingId !== null) return
     setCuttingId(c.id)
     try {
       const r = await cutHighlightClip(recording, c.startSec, c.endSec, {
         vertical: verticalMode,
-        burnSubtitles,
+        burnSubtitles: hasEvents ? burnSubtitles : false,
       })
       toast.success(t('hlGenerate'), { description: r.clip.name })
       await refresh()
@@ -120,13 +134,13 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
   }
 
   const handleCutRange = async () => {
-    if (trimOut <= trimIn) return
+    if (cuttingId !== null || trimOut <= trimIn) return
     setCuttingId('custom_trim')
     setCutPercent(0)
     try {
       const r = await cutHighlightClip(recording, trimIn, trimOut, {
         vertical: verticalMode,
-        burnSubtitles,
+        burnSubtitles: hasEvents ? burnSubtitles : false,
       })
       toast.success(t('hlGenerate'), { description: r.clip.name })
       await refresh()
@@ -148,20 +162,6 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
     }
   }
 
-  if (!hasEvents) {
-    return (
-      <Card>
-        <CardContent className="pt-5">
-          <div className="flex items-center gap-2 mb-2">
-            <Sparkles className="w-4 h-4 text-amber-400" />
-            <h2 className="font-semibold">{t('highlights')}</h2>
-          </div>
-          <p className="text-xs text-muted-foreground">{t('hlNoEvents')}</p>
-        </CardContent>
-      </Card>
-    )
-  }
-
   return (
     <Card>
       <CardContent className="pt-5 space-y-3">
@@ -177,7 +177,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <Select value={verticalMode} onValueChange={(v) => v && setVerticalMode(v as typeof verticalMode)}>
+            <Select items={verticalItems} value={verticalMode} onValueChange={(v) => v && setVerticalMode(v as typeof verticalMode)}>
               <SelectTrigger className="w-[170px] h-7 text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -188,14 +188,18 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                 <SelectItem value="pk-split">9:16 PK Split (Top/Bot)</SelectItem>
               </SelectContent>
             </Select>
-            <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-              <Checkbox checked={burnSubtitles} onCheckedChange={(v) => setBurnSubtitles(!!v)} className="w-3.5 h-3.5" />
-              <span>{t('hlBurnSubs')}</span>
-            </label>
-            <Button variant="ghost" size="xs" onClick={handleAnalyze} disabled={analyzing}>
-              <RefreshCw className={`w-3 h-3 mr-1 ${analyzing ? 'animate-spin' : ''}`} />
-              {analyzing ? t('hlAnalyzing') : t('hlReanalyze')}
-            </Button>
+            {hasEvents && (
+              <>
+                <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                  <Checkbox checked={burnSubtitles} onCheckedChange={(v) => setBurnSubtitles(!!v)} className="w-3.5 h-3.5" />
+                  <span>{t('hlBurnSubs')}</span>
+                </label>
+                <Button variant="ghost" size="xs" onClick={handleAnalyze} disabled={analyzing}>
+                  <RefreshCw className={`w-3 h-3 mr-1 ${analyzing ? 'animate-spin' : ''}`} />
+                  {analyzing ? t('hlAnalyzing') : t('hlReanalyze')}
+                </Button>
+              </>
+            )}
           </div>
         </div>
 
@@ -275,12 +279,16 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                 <Button size="xs" variant="outline" onClick={() => {
                   const v = Math.floor(currentTime)
                   setTrimIn(v)
-                  if (trimOut <= v) setTrimOutRaw(Math.min(Math.floor(durationSec), v + 15))
+                  if (trimOut <= v) {
+                    setTrimOutRaw(Math.min(Math.floor(durationSec), v + 15))
+                  } else if (trimOut - v > MAX_CLIP_SEC) {
+                    setTrimOutRaw(Math.min(Math.floor(durationSec), v + MAX_CLIP_SEC))
+                  }
                 }}>
                   {t('trimmerSetIn')} ({fmtTimeSec(trimIn)})
                 </Button>
                 <Button size="xs" variant="outline" onClick={() => {
-                  const v = Math.max(trimIn + 1, Math.ceil(currentTime))
+                  const v = Math.min(trimIn + MAX_CLIP_SEC, Math.max(trimIn + 1, Math.ceil(currentTime)))
                   setTrimOutRaw(Math.min(Math.floor(durationSec), v))
                 }}>
                   {t('trimmerSetOut')} ({fmtTimeSec(trimOut)})
@@ -294,7 +302,11 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                 onChange={(e) => {
                   const v = Number(e.target.value)
                   setTrimIn(v)
-                  if (trimOut <= v) setTrimOutRaw(Math.min(Math.floor(durationSec), v + 1))
+                  if (trimOut <= v) {
+                    setTrimOutRaw(Math.min(Math.floor(durationSec), v + 1))
+                  } else if (trimOut - v > MAX_CLIP_SEC) {
+                    setTrimOutRaw(Math.min(Math.floor(durationSec), v + MAX_CLIP_SEC))
+                  }
                 }}
                 className="w-24 accent-primary"
                 aria-label="Trim In"
@@ -302,14 +314,14 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
               <input
                 type="range"
                 min={Math.min(Math.floor(durationSec), trimIn + 1)}
-                max={Math.max(1, Math.floor(durationSec))}
+                max={Math.min(Math.max(1, Math.floor(durationSec)), trimIn + MAX_CLIP_SEC)}
                 value={trimOut}
-                onChange={(e) => setTrimOutRaw(Math.max(trimIn + 1, Number(e.target.value)))}
+                onChange={(e) => setTrimOutRaw(Math.min(trimIn + MAX_CLIP_SEC, Math.max(trimIn + 1, Number(e.target.value))))}
                 className="w-24 accent-primary"
                 aria-label="Trim Out"
               />
               <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
-                {Math.max(0, Math.round(trimOut - trimIn))}s
+                {Math.max(0, Math.round(trimOut - trimIn))}s <span className="opacity-70">(max {MAX_CLIP_SEC}s)</span>
               </span>
               <Button
                 size="xs"
@@ -338,12 +350,23 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
 
         {/* Candidates list */}
         <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
-          {loading && candidates.length === 0 ? (
+          {!hasEvents ? (
+            <p className="text-xs text-muted-foreground">{t('hlNoEvents')}</p>
+          ) : loading && candidates.length === 0 ? (
             <p className="text-xs text-muted-foreground">{t('loading')}</p>
           ) : candidates.length === 0 ? (
             <p className="text-xs text-muted-foreground">{t('hlNone')}</p>
           ) : (
-            candidates.map((c) => <CandidateRow key={c.id} c={c} onJump={onJump} onCut={handleCut} cutting={cuttingId === c.id} />)
+            candidates.map((c) => (
+              <CandidateRow
+                key={c.id}
+                c={c}
+                onJump={onJump}
+                onCut={handleCut}
+                cutting={cuttingId === c.id}
+                disabled={cuttingId !== null}
+              />
+            ))
           )}
         </div>
 
@@ -378,7 +401,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                   onConfirm={() => handleDeleteClip(cl.name)}
                   confirmLabel={t('confirm')}
                   cancelLabel={t('cancel')}
-                  title={t('accDelete')}
+                  title={t('hlDeleteClip')}
                   variant="ghost"
                   size="icon-xs"
                   className="text-muted-foreground hover:text-destructive"
@@ -401,11 +424,13 @@ function CandidateRow({
   onJump,
   onCut,
   cutting,
+  disabled,
 }: {
   c: HighlightCandidate
   onJump: (sec: number) => void
   onCut: (c: HighlightCandidate) => void
   cutting: boolean
+  disabled: boolean
 }) {
   const { t } = useI18n()
   const reasonLabel =
@@ -445,7 +470,7 @@ function CandidateRow({
         <Button variant="ghost" size="xs" onClick={() => onJump(c.startSec)}>
           <Play className="w-3 h-3 mr-1" />{t('hlJump')}
         </Button>
-        <Button variant="ghost" size="xs" onClick={() => onCut(c)} disabled={cutting}>
+        <Button variant="ghost" size="xs" onClick={() => onCut(c)} disabled={disabled || cutting}>
           <Scissors className={`w-3 h-3 mr-1 ${cutting ? 'animate-pulse' : ''}`} />
           {cutting ? t('hlGenerating') : t('hlGenerate')}
         </Button>

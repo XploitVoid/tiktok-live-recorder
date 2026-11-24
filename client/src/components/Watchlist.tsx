@@ -42,6 +42,8 @@ export function Watchlist({ onJobsChanged }: Props) {
   )
   const notifsRef = useRef(notifsEnabled)
   const lastEventIdRef = useRef(0)
+  const pollDirtyRef = useRef(false)
+  const pollFocusedRef = useRef(false)
 
   useEffect(() => {
     notifsRef.current = notifsEnabled
@@ -81,7 +83,9 @@ export function Watchlist({ onJobsChanged }: Props) {
     try {
       const data = await api.getWatch()
       setWatchData(data)
-      setPollSeconds(data.pollSeconds)
+      if (!pollDirtyRef.current && !pollFocusedRef.current) {
+        setPollSeconds(data.pollSeconds)
+      }
     } catch { /* ignore */ }
   }, [])
 
@@ -90,7 +94,9 @@ export function Watchlist({ onJobsChanged }: Props) {
       const data = raw as WatchData
       if (data && Array.isArray(data.list)) {
         setWatchData(data)
-        setPollSeconds(data.pollSeconds)
+        if (!pollDirtyRef.current && !pollFocusedRef.current) {
+          setPollSeconds(data.pollSeconds)
+        }
       }
       void syncMissedEvents()
     },
@@ -147,10 +153,14 @@ export function Watchlist({ onJobsChanged }: Props) {
     }
   }
 
-  const handleToggleAudioOnly = async (username: string, audioOnly: boolean) => {
+  const handleToggleAudioOnly = async (entry: WatchData['list'][number], audioOnly: boolean) => {
     try {
-      await api.patchWatch(username, { audioOnly })
-      toast.info(audioOnly ? 'Audio-only on' : 'Audio-only off', { description: '@' + username })
+      const patch: Parameters<typeof api.patchWatch>[1] = { audioOnly }
+      if (!audioOnly && entry.quality === 'ao') {
+        patch.quality = null
+      }
+      await api.patchWatch(entry.username, patch)
+      toast.info(audioOnly ? 'Audio-only on' : 'Audio-only off', { description: '@' + entry.username })
       void refreshWatch()
     } catch (e: unknown) {
       toast.error('Update failed', { description: e instanceof Error ? e.message : String(e) })
@@ -168,6 +178,7 @@ export function Watchlist({ onJobsChanged }: Props) {
     setCfgMinViewers(e.minViewers != null ? String(e.minViewers) : '')
     setCfgSchedStart(e.scheduleStart || '')
     setCfgSchedEnd(e.scheduleEnd || '')
+    api.getAccounts().then((r) => setAccounts(r.accounts || [])).catch(() => {})
   }
 
   const saveChannelConfig = async (username: string) => {
@@ -194,6 +205,7 @@ export function Watchlist({ onJobsChanged }: Props) {
     }
     try {
       await api.savePollSeconds(pollSeconds)
+      pollDirtyRef.current = false
       toast.success('Poll interval saved', { description: pollSeconds + 's' })
       void refreshWatch()
     } catch (e: unknown) {
@@ -224,6 +236,30 @@ export function Watchlist({ onJobsChanged }: Props) {
     toast[enabled ? 'success' : 'warning'](enabled ? 'Notifications enabled' : 'Notifications denied')
   }
 
+  const addQualityItems = useMemo(() => ({
+    auto: t('qAuto'),
+    origin: 'origin',
+    uhd: 'uhd (1080p)',
+    hd: 'hd (720p)',
+    sd: 'sd',
+    ld: 'ld (360p)',
+    ao: 'ao (audio only)',
+  }), [t])
+
+  const priorityItems = {
+    normal: 'Normal Poll',
+    high: 'High Priority',
+  }
+
+  const accountItems = useMemo(() => {
+    const map: Record<string, string> = {
+      default: 'Active Account',
+      anon: 'Anonymous',
+    }
+    for (const a of accounts) map[a.id] = a.label
+    return map
+  }, [accounts])
+
   return (
     <Card>
       <CardContent className="pt-5">
@@ -240,7 +276,12 @@ export function Watchlist({ onJobsChanged }: Props) {
                 min={10}
                 step={5}
                 value={pollSeconds}
-                onChange={(e) => setPollSeconds(Number(e.target.value))}
+                onFocus={() => { pollFocusedRef.current = true }}
+                onBlur={() => { pollFocusedRef.current = false }}
+                onChange={(e) => {
+                  pollDirtyRef.current = true
+                  setPollSeconds(Number(e.target.value))
+                }}
                 className="poll-every-input w-9 h-full text-center text-xs bg-transparent border-0 p-0 m-0 outline-none leading-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
               />
               <span className="text-muted-foreground">{t('secLabel')}</span>
@@ -272,7 +313,7 @@ export function Watchlist({ onJobsChanged }: Props) {
               spellCheck={false}
             />
           </div>
-          <Select value={addQuality} onValueChange={(v) => v !== null && setAddQuality(v)}>
+          <Select items={addQualityItems} value={addQuality} onValueChange={(v) => v !== null && setAddQuality(v)}>
             <SelectTrigger className="w-[140px] h-8 text-xs">
               <SelectValue placeholder={t('qAuto')} />
             </SelectTrigger>
@@ -350,7 +391,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                   <label className="flex items-center gap-1 text-xs cursor-pointer text-muted-foreground" title={t('audioOnlyForce')}>
                     <Checkbox
                       checked={!!e.audioOnly || e.quality === 'ao'}
-                      onCheckedChange={(v) => handleToggleAudioOnly(e.username, !!v)}
+                      onCheckedChange={(v) => handleToggleAudioOnly(e, !!v)}
                       className="w-3.5 h-3.5"
                     />
                     {t('audioOnly')}
@@ -372,7 +413,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                     onConfirm={() => handleRemove(e.username)}
                     confirmLabel={t('confirm')}
                     cancelLabel={t('cancel')}
-                    title={t('btnCancel')}
+                    title={t('watchRemove')}
                     variant="ghost"
                     size="icon-xs"
                     className="text-muted-foreground hover:text-destructive"
@@ -382,7 +423,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                 </div>
                 {editingUser === e.username && (
                   <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-border/50 text-xs">
-                    <Select value={cfgPriority} onValueChange={(v) => v && setCfgPriority(v as 'high' | 'normal')}>
+                    <Select items={priorityItems} value={cfgPriority} onValueChange={(v) => v && setCfgPriority(v as 'high' | 'normal')}>
                       <SelectTrigger className="w-[125px] h-7 text-xs">
                         <SelectValue />
                       </SelectTrigger>
@@ -391,7 +432,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                         <SelectItem value="high">High Priority</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Select value={cfgAccountId} onValueChange={(v) => v && setCfgAccountId(v)}>
+                    <Select items={accountItems} value={cfgAccountId} onValueChange={(v) => v && setCfgAccountId(v)}>
                       <SelectTrigger className="w-[140px] h-7 text-xs">
                         <SelectValue />
                       </SelectTrigger>

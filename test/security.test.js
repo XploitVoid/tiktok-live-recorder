@@ -145,7 +145,7 @@ test('resolveInsideDir prevents path traversal and dotfile access', () => {
   }
 });
 
-test('safeError redacts filesystem paths and sensitive query/cookie params', () => {
+test('safeError redacts filesystem paths and sensitive query/cookie/proxy/webhook params', () => {
   const err = new Error('ENOENT at C:\\Users\\Alice\\secret\\file.txt with sessionid=abc123&signApiKey=xyz999');
   const safe = utils.safeError(err);
   assert.equal(safe.includes('Alice'), false);
@@ -154,6 +154,37 @@ test('safeError redacts filesystem paths and sensitive query/cookie params', () 
   assert.match(safe, /\[path\]/);
   assert.match(safe, /sessionid=\[redacted\]/);
   assert.match(safe, /\[redacted\]/);
+
+  const proxyErr = new Error('connect failed via socks5://myuser:s3cr3tp4ss@1.2.3.4:1080/test');
+  const safeProxy = utils.safeError(proxyErr);
+  assert.equal(safeProxy.includes('myuser'), false);
+  assert.equal(safeProxy.includes('s3cr3tp4ss'), false);
+  assert.match(safeProxy, /socks5:\/\/\*\*\*@1\.2\.3\.4:1080/);
+
+  const hookErr = new Error('POST https://discord.com/api/webhooks/123456/secret_hook_token failed');
+  assert.equal(utils.safeError(hookErr).includes('secret_hook_token'), false);
+  assert.match(utils.safeError(hookErr), /\/webhooks\/123456\/\[redacted\]/);
+
+  const tgErr = new Error('GET https://api.telegram.org/bot998877:AAHsecretBotToken/sendMessage failed');
+  assert.equal(utils.safeError(tgErr).includes('AAHsecretBotToken'), false);
+  assert.match(utils.safeError(tgErr), /\/bot\[redacted\]/);
+});
+
+test('parseTrustProxy and buildAllowedHosts handle numeric, boolean, uppercase, IPv6, and ports 80/443', () => {
+  assert.equal(security.parseTrustProxy(''), false);
+  assert.equal(security.parseTrustProxy('0'), false);
+  assert.equal(security.parseTrustProxy('false'), false);
+  assert.equal(security.parseTrustProxy('true'), true);
+  assert.equal(security.parseTrustProxy('1'), 1);
+  assert.equal(security.parseTrustProxy('2'), 2);
+  assert.equal(security.parseTrustProxy('loopback'), 'loopback');
+
+  const h80 = security.buildAllowedHosts(80, 'MYHOST.LOCAL');
+  assert.equal(security.hostAllowed('myhost.local', { port: 80, host: 'MYHOST.LOCAL', allowedHosts: h80 }), true);
+  assert.equal(security.hostAllowed('localhost', { port: 80, host: 'MYHOST.LOCAL', allowedHosts: h80 }), true);
+
+  const hV6 = security.buildAllowedHosts(3000, 'fd00::1');
+  assert.equal(security.hostAllowed('[fd00::1]:3000', { port: 3000, host: 'fd00::1', allowedHosts: hV6 }), true);
 });
 
 test('accounts module encrypts credentials at rest', () => {
@@ -239,9 +270,13 @@ test('server HTTP integration: auth cookie, DNS rebinding, CSRF, traversal, and 
     });
     assert.equal(badHostStatus, 421);
 
-    // 3. Protected endpoint requires auth
+    // 3. Protected endpoint requires auth (including case-insensitive Express path variants)
     const unauth = await fetch(`${baseUrl}/api/recordings`);
     assert.equal(unauth.status, 401);
+    const unauthUpperApi = await fetch(`${baseUrl}/API/accounts`);
+    assert.equal(unauthUpperApi.status, 401);
+    const unauthUpperFiles = await fetch(`${baseUrl}/FILES/secret.mp4`);
+    assert.equal(unauthUpperFiles.status, 401);
 
     // 4. Auth status & login sets HttpOnly SameSite=Strict cookie
     const statusBefore = await (await fetch(`${baseUrl}/api/auth/status`)).json();
@@ -272,7 +307,7 @@ test('server HTTP integration: auth cookie, DNS rebinding, CSRF, traversal, and 
     });
     assert.equal(authed.status, 200);
 
-    // 6. Cross-site mutation blocked even with valid cookie
+    // 6. Cross-site mutation & sensitive GET blocked (including trailing slash & uppercase) even with valid cookie
     const csrfBlocked = await fetch(`${baseUrl}/api/watch`, {
       method: 'POST',
       headers: {
@@ -283,6 +318,16 @@ test('server HTTP integration: auth cookie, DNS rebinding, CSRF, traversal, and 
       body: JSON.stringify({ username: 'testuser' }),
     });
     assert.equal(csrfBlocked.status, 403);
+
+    const csrfGetSlash = await fetch(`${baseUrl}/api/transcode/?url=https://pull.tiktokcdn.com/live.flv`, {
+      headers: { Cookie: cookieHeader, 'Sec-Fetch-Site': 'cross-site' },
+    });
+    assert.equal(csrfGetSlash.status, 403);
+
+    const csrfGetUpper = await fetch(`${baseUrl}/API/accounts`, {
+      headers: { Cookie: cookieHeader, 'Sec-Fetch-Site': 'cross-site' },
+    });
+    assert.equal(csrfGetUpper.status, 403);
 
     // 7. Path traversal & non-mp4 extension rejected
     const badName = await fetch(`${baseUrl}/api/recordings/..%2fpackage.json`, {

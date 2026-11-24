@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { getAuthStatus, UNAUTHORIZED_EVENT } from './api'
 
 type SseHandlers = Record<string, (data: unknown) => void>
 
@@ -17,6 +18,8 @@ let currentUrl: string | null = null
 let registeredEvents = new Set<string>()
 let syncTimer: ReturnType<typeof setTimeout> | null = null
 let visibilityBound = false
+let lastAuthCheckAt = 0
+let authCheckInFlight = false
 
 function buildCombinedQuery(): { url: string | null; keepAlive: boolean } {
   if (subscribers.size === 0) return { url: null, keepAlive: false }
@@ -83,11 +86,30 @@ function syncEventListeners() {
 
 function disconnectShared() {
   if (sharedEs) {
+    sharedEs.onerror = null
     sharedEs.close()
     sharedEs = null
   }
   currentUrl = null
   registeredEvents = new Set()
+}
+
+function handleEsError() {
+  const now = Date.now()
+  if (authCheckInFlight || now - lastAuthCheckAt < 5000) return
+  lastAuthCheckAt = now
+  authCheckInFlight = true
+  getAuthStatus()
+    .then((s) => {
+      if (s.authRequired && !s.authenticated) {
+        disconnectShared()
+        window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+      }
+    })
+    .catch(() => { /* ignore transient network errors */ })
+    .finally(() => {
+      authCheckInFlight = false
+    })
 }
 
 function applySharedConnection() {
@@ -103,6 +125,7 @@ function applySharedConnection() {
   disconnectShared()
   currentUrl = url
   sharedEs = new EventSource(url)
+  sharedEs.onerror = handleEsError
   syncEventListeners()
 }
 

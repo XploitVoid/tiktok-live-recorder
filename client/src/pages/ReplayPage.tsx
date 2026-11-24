@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { MessageSquare, Play, AlertTriangle, ArrowLeft, Headphones, Video, Loader2 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
@@ -27,6 +27,35 @@ export function ReplayPage() {
   const [searchParams] = useSearchParams()
   const file = searchParams.get('file')
 
+  if (!file) {
+    return (
+      <div className="max-w-6xl mx-auto p-4 md:p-6 space-y-4">
+        <Header />
+        <Card className="border-border/80">
+          <CardContent className="pt-6 pb-6 flex flex-col items-start gap-3">
+            <div className="flex items-center gap-2 text-destructive font-medium text-sm">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{t('replayNotFound')}</span>
+            </div>
+            <Link
+              to="/"
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-secondary hover:bg-muted border border-border transition-colors"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>{t('replayBackHome')}</span>
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  return <ReplayContent key={file} file={file} />
+}
+
+function ReplayContent({ file }: { file: string }) {
+  const { t } = useI18n()
+
   const [events, setEvents] = useState<ReplayEvent[]>([])
   const [shown, setShown] = useState<ReplayEvent[]>([])
   const [filter, setFilter] = useState('all')
@@ -53,6 +82,7 @@ export function ReplayPage() {
   const shownIdsRef = useRef(new Set<number>())
   const lastTimeRef = useRef(0)
   const filterRef = useRef(filter)
+  const pendingSeekRef = useRef<number | null>(null)
 
   useEffect(() => {
     filterRef.current = filter
@@ -92,10 +122,11 @@ export function ReplayPage() {
   }, [events, passesFilter])
 
   useEffect(() => {
-    if (!file) return
+    let active = true
     const load = async () => {
       try {
         const data = await getReplayData(file)
+        if (!active) return
         setLoadError(null)
         setCreatorUsername(data.username || null)
         setSpriteUrl(data.spriteUrl || null)
@@ -111,10 +142,12 @@ export function ReplayPage() {
           .sort((a, b) => (a.t ?? 0) - (b.t ?? 0))
         setEvents(sorted)
       } catch (e) {
+        if (!active) return
         setLoadError(e instanceof Error ? e.message : '__load_fail__')
       }
     }
     load()
+    return () => { active = false }
   }, [file])
 
   useEffect(() => {
@@ -127,6 +160,13 @@ export function ReplayPage() {
     const media = (audioMode ? audioRef.current : videoRef.current) as HTMLMediaElement | null
     if (!media) return
     let lastWholeSec = -1
+    const applyPendingSeek = () => {
+      const target = pendingSeekRef.current
+      if (target != null && media.readyState >= 1) {
+        pendingSeekRef.current = null
+        media.currentTime = target
+      }
+    }
     const handler = (ev: Event) => {
       syncToTime(media.currentTime)
       const whole = Math.floor(media.currentTime)
@@ -139,7 +179,9 @@ export function ReplayPage() {
       if (Number.isFinite(media.duration) && media.duration > 0) {
         setDurationSec(media.duration)
       }
+      applyPendingSeek()
     }
+    applyPendingSeek()
     media.addEventListener('timeupdate', handler)
     media.addEventListener('seeked', handler)
     media.addEventListener('seeking', handler)
@@ -158,6 +200,7 @@ export function ReplayPage() {
   useEffect(() => {
     if (!file || typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
     const activeMedia = () => (audioMode ? audioRef.current : videoRef.current) as HTMLMediaElement | null
+    const actions: MediaSessionAction[] = ['play', 'pause', 'seekbackward', 'seekforward', 'seekto']
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: file,
@@ -178,16 +221,22 @@ export function ReplayPage() {
         if (m && typeof d.seekTime === 'number') m.currentTime = Math.max(0, d.seekTime)
       })
     } catch { /* ignore unsupported MediaSession actions */ }
+    return () => {
+      try {
+        navigator.mediaSession.metadata = null
+        for (const a of actions) {
+          navigator.mediaSession.setActionHandler(a, null)
+        }
+      } catch { /* ignore */ }
+    }
   }, [file, creatorUsername, audioMode, audioUrl])
 
   const toggleAudioMode = async () => {
     if (audioMode) {
       const resumeAt = audioRef.current?.currentTime || 0
       audioRef.current?.pause()
+      pendingSeekRef.current = resumeAt > 0 ? resumeAt : null
       setAudioMode(false)
-      requestAnimationFrame(() => {
-        if (videoRef.current && resumeAt > 0) videoRef.current.currentTime = resumeAt
-      })
       return
     }
     if (!file) return
@@ -206,10 +255,8 @@ export function ReplayPage() {
         setLoadingAudio(false)
       }
     }
+    pendingSeekRef.current = resumeAt > 0 ? resumeAt : null
     setAudioMode(true)
-    requestAnimationFrame(() => {
-      if (audioRef.current && resumeAt > 0) audioRef.current.currentTime = resumeAt
-    })
   }
 
   const jumpTo = useCallback((sec: number) => {
@@ -242,7 +289,15 @@ export function ReplayPage() {
       v?.removeEventListener('loadedmetadata', update)
       window.removeEventListener('resize', update)
     }
-  }, [])
+  }, [file, loadError, audioMode])
+
+  const filterItems = useMemo(() => ({
+    all: t('fAll'),
+    chat: t('fChat'),
+    gift: t('fGift'),
+    like: t('fLike'),
+    member: t('fMember'),
+  }), [t])
 
   // Detect desktop breakpoint so we only constrain chat height when cards are
   // side-by-side. On mobile the cards stack and chat should use natural height.
@@ -270,7 +325,7 @@ export function ReplayPage() {
     }
   }
 
-  if (!file || loadError) {
+  if (loadError) {
     return (
       <div className="max-w-6xl mx-auto p-4 md:p-6 space-y-4">
         <Header />
@@ -278,7 +333,7 @@ export function ReplayPage() {
           <CardContent className="pt-6 pb-6 flex flex-col items-start gap-3">
             <div className="flex items-center gap-2 text-destructive font-medium text-sm">
               <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>{loadError === '__load_fail__' ? t('replayLoadFail') : (loadError || t('replayNotFound'))}</span>
+              <span>{loadError === '__load_fail__' ? t('replayLoadFail') : loadError}</span>
             </div>
             <Link
               to="/"
@@ -371,7 +426,7 @@ export function ReplayPage() {
                   <Checkbox checked={autoScroll} onCheckedChange={(v) => setAutoScroll(!!v)} className="w-3.5 h-3.5" />
                   <span className="text-muted-foreground">{t('autoScroll')}</span>
                 </label>
-                <Select value={filter} onValueChange={(v) => v && handleFilterChange(v)}>
+                <Select items={filterItems} value={filter} onValueChange={(v) => v && handleFilterChange(v)}>
                   <SelectTrigger className="w-[100px] h-6 text-xs">
                     <SelectValue />
                   </SelectTrigger>

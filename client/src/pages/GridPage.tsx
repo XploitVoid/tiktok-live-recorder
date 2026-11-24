@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { RefreshCw, Tv } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -42,17 +42,7 @@ const GRID_COLS: Record<number, string> = {
     }
   }, [])
 
-  useEffect(() => {
-    let active = true
-    getLiveStreams()
-      .then((list) => { if (active) setStreams(list) })
-      .catch((e) => console.error(e))
-      .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [])
-
-  // Auto-refresh every 60s, but pause when the grid tab is hidden so we
-  // don't keep fanning out TikTok lookups for nothing.
+  // Auto-refresh every 60s (and immediately on mount via usePoll), pausing when hidden.
   usePoll(refresh, 60000)
 
   return (
@@ -63,8 +53,8 @@ const GRID_COLS: Record<number, string> = {
       <div className="flex items-center gap-2 flex-wrap text-xs">
         <div className="flex h-6 items-center gap-1.5 bg-secondary rounded-[min(var(--radius-md),10px)] px-2 py-0 border border-border">
           <span className="text-muted-foreground uppercase tracking-wider font-medium">{t('qualityLabel')}</span>
-          <Select value={quality} onValueChange={(v) => v && setQuality(v)}>
-            <SelectTrigger size="sm" className="w-[56px] !h-5 text-xs border-0 bg-transparent hover:bg-background/50 rounded-md shadow-none px-1.5">
+          <Select items={{ ld: 'ld (360p)', hd: 'hd (720p)' }} value={quality} onValueChange={(v) => v && setQuality(v)}>
+            <SelectTrigger size="sm" className="w-auto min-w-[78px] !h-5 text-xs border-0 bg-transparent hover:bg-background/50 rounded-md shadow-none px-1.5">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -76,7 +66,7 @@ const GRID_COLS: Record<number, string> = {
 
         <div className="flex h-6 items-center gap-1.5 bg-secondary rounded-[min(var(--radius-md),10px)] px-2 py-0 border border-border">
           <span className="text-muted-foreground uppercase tracking-wider font-medium">{t('colsLabel')}</span>
-          <Select value={String(cols)} onValueChange={(v) => setCols(Number(v))}>
+          <Select items={{ '1': '1', '2': '2', '3': '3', '4': '4', '5': '5' }} value={String(cols)} onValueChange={(v) => setCols(Number(v))}>
             <SelectTrigger size="sm" className="w-[42px] !h-5 text-xs border-0 bg-transparent hover:bg-background/50 rounded-md shadow-none px-1.5">
               <SelectValue />
             </SelectTrigger>

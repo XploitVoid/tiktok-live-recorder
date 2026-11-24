@@ -18,6 +18,7 @@ interface HlsInstance {
   attachMedia: (el: HTMLVideoElement) => void
   destroy: () => void
   on: (event: string, handler: (...args: unknown[]) => void) => void
+  startLoad: () => void
   recoverMediaError: () => void
 }
 
@@ -25,6 +26,7 @@ interface HlsConstructor {
   isSupported: () => boolean
   new(): HlsInstance
   Events: Record<string, string>
+  ErrorTypes: Record<string, string>
 }
 
 interface Window {

@@ -20,6 +20,7 @@ recordings/
 
 # ── Build output ──
 client/dist/
+release-dist/
 
 # ── Editor / IDE ──
 .vscode/

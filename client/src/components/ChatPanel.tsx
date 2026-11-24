@@ -39,6 +39,7 @@ export function ChatPanel({ username }: Props) {
   const [events, setEvents] = useState<ChatEvent[]>([])
   const [state, setState] = useState('')
   const [streaming, setStreaming] = useState(false)
+  const [connecting, setConnecting] = useState(false)
   const [autoScroll, setAutoScroll] = useState(true)
   const [eventCount, setEventCount] = useState(0)
   const [keywords, setKeywords] = useState<string[]>(getKeywords())
@@ -48,13 +49,31 @@ export function ChatPanel({ username }: Props) {
   const [connectSinceId, setConnectSinceId] = useState(0)
   const feedRef = useRef<HTMLDivElement>(null)
   const lastIdRef = useRef(0)
+  const streamingRef = useRef(false)
+  const activeUserRef = useRef<string | null>(username)
+
+  useEffect(() => {
+    streamingRef.current = streaming
+  }, [streaming])
+
+  useEffect(() => {
+    activeUserRef.current = username
+    return () => {
+      activeUserRef.current = null
+      if (streamingRef.current) {
+        void stopChat(username).catch(() => {})
+      }
+    }
+  }, [username])
 
   const refreshKeywords = useCallback(() => setKeywords(getKeywords()), [])
 
   const handleAddKeyword = () => {
-    const w = kwInput.trim()
-    if (!w) return
-    addKeyword(w)
+    const tokens = kwInput.split(',').map((s) => s.trim()).filter(Boolean)
+    if (!tokens.length) return
+    for (const token of tokens) {
+      addKeyword(token)
+    }
     setKwInput('')
     refreshKeywords()
   }
@@ -123,6 +142,9 @@ export function ChatPanel({ username }: Props) {
   }, [events, autoScroll])
 
   const handleStart = async () => {
+    if (streaming || connecting) return
+    const targetUser = username
+    setConnecting(true)
     lastIdRef.current = 0
     setConnectSinceId(0)
     setEventCount(0)
@@ -130,14 +152,26 @@ export function ChatPanel({ username }: Props) {
     setPinnedMessage(null)
     setState('connecting...')
     try {
-      await startChat(username)
+      await startChat(targetUser)
+      if (activeUserRef.current !== targetUser) {
+        void stopChat(targetUser).catch(() => {})
+        return
+      }
+      streamingRef.current = true
       setStreaming(true)
     } catch (e: unknown) {
-      setState('error: ' + (e instanceof Error ? e.message : String(e)))
+      if (activeUserRef.current === targetUser) {
+        setState('error: ' + (e instanceof Error ? e.message : String(e)))
+      }
+    } finally {
+      if (activeUserRef.current === targetUser) {
+        setConnecting(false)
+      }
     }
   }
 
   const handleStop = async () => {
+    streamingRef.current = false
     setStreaming(false)
     setState('stopping...')
     try { await stopChat(username) } catch { /* ignore */ }
@@ -153,10 +187,10 @@ export function ChatPanel({ username }: Props) {
           {state && <span className="text-xs text-muted-foreground font-normal font-mono tabular-nums">· {state}</span>}
         </h2>
         <div className="flex gap-1">
-          <Button size="xs" onClick={handleStart} className="cursor-pointer">
+          <Button size="xs" onClick={handleStart} disabled={streaming || connecting} className="cursor-pointer">
             {t('chatStart')}
           </Button>
-          <Button size="xs" variant="secondary" onClick={handleStop}>
+          <Button size="xs" variant="secondary" onClick={handleStop} disabled={!streaming} className="cursor-pointer">
             {t('chatStop')}
           </Button>
         </div>

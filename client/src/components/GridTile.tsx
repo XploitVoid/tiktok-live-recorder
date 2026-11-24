@@ -35,7 +35,7 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
   const { t } = useI18n()
   const videoRef = useRef<HTMLVideoElement>(null)
   const [mutedOverride, setMutedOverride] = useState<{ prop: boolean; val: boolean } | null>(null)
-  const [avatarFailed, setAvatarFailed] = useState(false)
+  const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null)
   const localMuted = mutedOverride && mutedOverride.prop === muted ? mutedOverride.val : muted
 
   useEffect(() => {
@@ -55,9 +55,14 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
     if (!video || !pickedUrl) return
 
     const players: { destroy: () => void }[] = []
+    const timers: ReturnType<typeof setTimeout>[] = []
     const MAX_RETRIES = 3
     let retries = 0
     let cancelled = false
+
+    const onNativeMeta = () => {
+      video.play().catch(() => {})
+    }
 
     // Load player libs lazily so the Grid page no longer pays the full
     // hls.js + flv.js download cost on initial render of the empty grid.
@@ -76,40 +81,57 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
         p.attachMediaElement(video); p.load(); p.play().catch(() => {})
         p.on(flvjs!.Events.ERROR, () => {
           if (cancelled || retries++ >= MAX_RETRIES) return
-          setTimeout(() => {
+          const id = setTimeout(() => {
             if (cancelled) return
             try { p.unload(); p.load(); p.play().catch(() => {}) } catch { /* give up */ }
           }, 3000)
+          timers.push(id)
         })
         players.push(p)
       } else if (typeof window.Hls !== 'undefined' && Hls!.isSupported() && pickedKind === 'hls') {
         const p = new Hls!()
         p.loadSource('/api/proxy?url=' + encodeURIComponent(pickedUrl))
         p.attachMedia(video)
+        p.on(Hls!.Events.MANIFEST_PARSED, () => {
+          if (!cancelled) video.play().catch(() => {})
+        })
         p.on(Hls!.Events.ERROR, (...args: unknown[]) => {
-          const data = args[1] as { fatal?: boolean } | undefined
+          const data = args[1] as { fatal?: boolean; type?: string } | undefined
           if (!data?.fatal) return
           if (cancelled || retries++ >= MAX_RETRIES) return
-          setTimeout(() => {
+          const id = setTimeout(() => {
             if (cancelled) return
-            try { p.recoverMediaError() } catch { /* give up */ }
+            try {
+              if (data.type === Hls!.ErrorTypes.NETWORK_ERROR) {
+                p.startLoad()
+              } else {
+                p.recoverMediaError()
+              }
+            } catch { /* give up */ }
           }, 3000)
+          timers.push(id)
         })
         players.push(p)
       } else {
         video.src = '/api/proxy?url=' + encodeURIComponent(pickedUrl)
+        video.addEventListener('loadedmetadata', onNativeMeta)
+        video.play().catch(() => {})
         video.onerror = () => {
           if (cancelled || retries++ >= MAX_RETRIES) return
-          setTimeout(() => {
+          const id = setTimeout(() => {
             if (cancelled) return
             try { video.load(); video.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
           }, 3000)
+          timers.push(id)
         }
       }
     }
 
     return () => {
       cancelled = true
+      for (const id of timers) clearTimeout(id)
+      video.onerror = null
+      video.removeEventListener('loadedmetadata', onNativeMeta)
       for (const p of players) { try { p.destroy() } catch { /* ignore */ } }
       try { video.removeAttribute('src'); video.load() } catch { /* ignore */ }
     }
@@ -123,7 +145,7 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
   if (!pick) return null
 
   const avatarUrl = safeImageUrl(entry.owner?.avatarThumb || entry.coverUrl) || ''
-  const showAvatar = avatarUrl && !avatarFailed
+  const showAvatar = !!avatarUrl && failedAvatarUrl !== avatarUrl
 
   return (
     <div className="bg-card rounded-xl overflow-hidden flex flex-col border border-border h-full">
@@ -131,6 +153,7 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
         <video
           ref={videoRef}
           className="absolute inset-0 w-full h-full object-cover"
+          autoPlay
           playsInline
           muted={localMuted}
         />
@@ -176,7 +199,7 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
             src={avatarUrl}
             alt={entry.username}
             referrerPolicy="no-referrer"
-            onError={() => setAvatarFailed(true)}
+            onError={() => setFailedAvatarUrl(avatarUrl)}
             className="w-6 h-6 rounded-full object-cover flex-shrink-0 ring-1 ring-pink-500/30"
           />
         ) : (

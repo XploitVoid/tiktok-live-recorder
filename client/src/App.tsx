@@ -36,7 +36,7 @@ function App() {
     <BrowserRouter>
       <I18nProvider>
         <TooltipProvider>
-          <div className="dark min-h-screen bg-background text-foreground">
+          <div className="min-h-screen bg-background text-foreground">
             <AuthGate>
               <Suspense fallback={<PageFallback />}>
                 <Routes>

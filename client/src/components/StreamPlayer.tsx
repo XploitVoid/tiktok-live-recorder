@@ -37,6 +37,17 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
   const [recordMsg, setRecordMsg] = useState('')
   const [showUrls, setShowUrls] = useState(false)
   const [chatHeight, setChatHeight] = useState<number | undefined>(undefined)
+  const [isDesktop, setIsDesktop] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches,
+  )
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mq = window.matchMedia('(min-width: 768px)')
+    const fn = (e: MediaQueryListEvent) => setIsDesktop(e.matches)
+    mq.addEventListener('change', fn)
+    return () => mq.removeEventListener('change', fn)
+  }, [])
 
   const s = data.streams!
 
@@ -85,20 +96,39 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
 
     const MAX_RETRIES = 3
     let retries = 0
+    let cancelled = false
+    const timers: ReturnType<typeof setTimeout>[] = []
+    let nativeMetaHandler: (() => void) | null = null
+
     const attachFlvErrorHandler = (p: FlvPlayer) => {
       p.on(flvjs!.Events.ERROR, () => {
-        if (retries++ >= MAX_RETRIES) { setPlayerInfo('Stream error (gave up after retries)'); return }
-        setTimeout(() => {
+        if (cancelled || retries++ >= MAX_RETRIES) {
+          if (!cancelled) setPlayerInfo('Stream error (gave up after retries)')
+          return
+        }
+        const id = setTimeout(() => {
+          if (cancelled) return
           try { p.unload(); p.load(); p.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
         }, 3000)
+        timers.push(id)
       })
     }
     const attachHlsErrorHandler = (h: HlsInstance) => {
       h.on(Hls!.Events.ERROR, (...args: unknown[]) => {
-        const data = args[1] as { fatal?: boolean } | undefined
-        if (!data?.fatal) return
+        const data = args[1] as { fatal?: boolean; type?: string } | undefined
+        if (!data?.fatal || cancelled) return
         if (retries++ >= MAX_RETRIES) { setPlayerInfo('Stream error (gave up after retries)'); return }
-        setTimeout(() => { try { h.recoverMediaError() } catch { /* ignore */ } }, 3000)
+        const id = setTimeout(() => {
+          if (cancelled) return
+          try {
+            if (data.type === Hls!.ErrorTypes.NETWORK_ERROR) {
+              h.startLoad()
+            } else {
+              h.recoverMediaError()
+            }
+          } catch { /* ignore */ }
+        }, 3000)
+        timers.push(id)
       })
     }
 
@@ -122,7 +152,6 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
       }
 
       let candidateIdx = 0
-      let cancelled = false
       const startHevc = (idx: number) => {
         if (cancelled) return
         const srcUrl = candidates[idx]
@@ -159,20 +188,18 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
             tearDown()
             return
           }
-          setTimeout(() => {
+          const id = setTimeout(() => {
             if (cancelled) return
             try { p.unload(); p.load(); p.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
           }, 3000)
+          timers.push(id)
         })
         playersRef.current.push(p)
       }
 
       startHevc(0)
       setPlayerInfo(`Transcode H.264 ← ${label} · ⚠ CPU intensive`)
-      return () => { cancelled = true }
-    }
-
-    if (flvUrl && flvjs && flvjs.isSupported()) {
+    } else if (flvUrl && flvjs && flvjs.isSupported()) {
       const proxied = '/api/proxy?url=' + encodeURIComponent(flvUrl)
       const p = flvjs.createPlayer({ type: 'flv', url: proxied, isLive: true, cors: true }, flvConfig)
       p.attachMediaElement(video); p.load(); p.play().catch(() => {})
@@ -183,34 +210,56 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
       const proxied = '/api/proxy?url=' + encodeURIComponent(hlsUrl)
       const h = new Hls()
       h.loadSource(proxied); h.attachMedia(video)
+      h.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (!cancelled) video.play().catch(() => {})
+      })
       attachHlsErrorHandler(h)
       playersRef.current.push(h)
       setPlayerInfo(`HLS (hls.js) · ${label} · via local proxy`)
     } else if (hlsUrl && video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = '/api/proxy?url=' + encodeURIComponent(hlsUrl)
+      nativeMetaHandler = () => {
+        if (!cancelled) video.play().catch(() => {})
+      }
+      video.addEventListener('loadedmetadata', nativeMetaHandler)
+      video.play().catch(() => {})
       video.onerror = () => {
-        if (retries++ >= MAX_RETRIES) { setPlayerInfo('Stream error (gave up after retries)'); return }
-        setTimeout(() => { try { video.load(); video.play().catch(() => { /* ignore */ }) } catch { /* ignore */ } }, 3000)
+        if (cancelled || retries++ >= MAX_RETRIES) {
+          if (!cancelled) setPlayerInfo('Stream error (gave up after retries)')
+          return
+        }
+        const id = setTimeout(() => {
+          if (cancelled) return
+          try { video.load(); video.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
+        }, 3000)
+        timers.push(id)
       }
       setPlayerInfo(`HLS (native) · ${label} · via local proxy`)
     } else {
       setPlayerInfo('No playable stream in this browser')
     }
+
+    return () => {
+      cancelled = true
+      for (const id of timers) clearTimeout(id)
+      if (nativeMetaHandler) {
+        video.removeEventListener('loadedmetadata', nativeMetaHandler)
+      }
+    }
   }, [tearDown])
 
   useEffect(() => {
     let cancelled = false
-    let cleanupHevc: (() => void) | undefined
+    let cleanupStream: (() => void) | undefined
     // Lazy-load hls.js and flv.js from CDN before constructing the player.
     loadPlayers().then(() => {
       if (cancelled) return
-      const res = playStream(s, playerQuality)
-      if (typeof res === 'function') cleanupHevc = res
+      cleanupStream = playStream(s, playerQuality)
     }).catch((e) => {
       console.error('player libs failed to load:', e)
       setPlayerInfo('Player library failed to load')
     })
-    return () => { cancelled = true; cleanupHevc?.(); tearDown() }
+    return () => { cancelled = true; cleanupStream?.(); tearDown() }
   }, [s, playerQuality, playStream, tearDown])
 
   // Sync chat panel height with video column
@@ -260,6 +309,30 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
     recordQualities.push({ value: 'ao', label: t('audioOnlyForce') })
   }
 
+  const playerQualityItems: Record<string, string> = {
+    auto: 'Auto (highest H.264)',
+  }
+  for (const q of h264Keys) {
+    const m = s.qualities?.find(x => x.sdkKey === q)
+    playerQualityItems[`h264:${q}`] = m?.name ? `${m.name} (${q})` : q
+  }
+  for (const q of hevcKeys) {
+    const m = s.hevcQualities?.find(x => x.sdkKey === q)
+    playerQualityItems[`hevc:${q}`] = m?.name ? `${m.name} (${q})` : q
+  }
+
+  const recordQualityItems: Record<string, string> = { auto: t('qAuto') }
+  for (const q of recordQualities) recordQualityItems[q.value] = q.label
+
+  const audioBitrateItems = {
+    default: `${t('audioBitrateLabel')}: Auto`,
+    copy: t('audioBitrateCopy'),
+    '64k': '64 kbps',
+    '96k': '96 kbps',
+    '128k': '128 kbps',
+    '192k': '192 kbps',
+  }
+
   const handleRecord = async () => {
     setRecording(true)
     setRecordMsg('')
@@ -299,7 +372,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
           <div ref={videoColRef} className="md:col-span-2 flex flex-col">
             <div className="flex items-center justify-between mb-2 gap-2 flex-wrap shrink-0">
               <h2 className="font-semibold text-foreground">{t('previewTitle')}</h2>
-              <Select value={playerQuality} onValueChange={(v) => v && setPlayerQuality(v)}>
+              <Select items={playerQualityItems} value={playerQuality} onValueChange={(v) => v && setPlayerQuality(v)}>
                 <SelectTrigger className="w-[200px] h-8 text-xs">
                   <SelectValue />
                 </SelectTrigger>
@@ -329,7 +402,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
             <VideoPlayerBox videoRef={videoRef} muted />
             <p className="text-xs text-muted-foreground mt-1">{playerInfo}</p>
           </div>
-          <div className="overflow-hidden" style={chatHeight ? { height: chatHeight } : undefined}>
+          <div className="overflow-hidden" style={isDesktop && chatHeight ? { height: chatHeight } : undefined}>
             <ChatPanel key={data.username} username={data.username} />
           </div>
         </div>
@@ -346,7 +419,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted-foreground">{t('recQualityLabel')}</span>
-            <Select value={recordQuality} onValueChange={(v) => v !== null && setRecordQuality(v)}>
+            <Select items={recordQualityItems} value={recordQuality} onValueChange={(v) => v !== null && setRecordQuality(v)}>
               <SelectTrigger className="w-[200px] h-8 text-xs">
                 <SelectValue placeholder={t('qAuto')} />
               </SelectTrigger>
@@ -357,7 +430,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={recordAudioBitrate} onValueChange={(v) => v !== null && setRecordAudioBitrate(v)}>
+            <Select items={audioBitrateItems} value={recordAudioBitrate} onValueChange={(v) => v !== null && setRecordAudioBitrate(v)}>
               <SelectTrigger className="w-[150px] h-8 text-xs">
                 <SelectValue placeholder={t('audioBitrateLabel')} />
               </SelectTrigger>

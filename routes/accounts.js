@@ -64,7 +64,7 @@ router.delete('/api/accounts/:id', (req, res) => {
 router.post('/api/accounts/switch', (req, res) => {
   try {
     const { id } = req.body || {};
-    if (id !== undefined && id !== null && (typeof id !== 'string' || !/^[A-Za-z0-9]+$/.test(id) || id.length > 32)) {
+    if (id !== undefined && id !== null && id !== '' && (typeof id !== 'string' || !/^[A-Za-z0-9]+$/.test(id) || id.length > 32)) {
       return res.status(400).json({ error: 'invalid id' });
     }
     const result = accounts.switchTo(id || null);

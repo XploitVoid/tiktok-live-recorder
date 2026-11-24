@@ -85,10 +85,12 @@ router.post('/api/watch/poll-now', async (_req, res) => {
 // Used by the grid view. Cached briefly in-memory so multiple grid clients
 // (or rapid refreshes) reuse one fan-out instead of stampeding TikTok.
 let liveStreamsCache = { ts: 0, data: null, inflight: null };
+let liveStreamsEpoch = 0;
 const LIVE_STREAMS_TTL_MS = 8000;
 const LIVE_STREAMS_CONCURRENCY = 4;
 
 function invalidateLiveStreamsCache() {
+  liveStreamsEpoch++;
   liveStreamsCache = { ts: 0, data: null, inflight: null };
 }
 watcher.watchEventsEmitter.on('list', invalidateLiveStreamsCache);
@@ -117,7 +119,8 @@ router.get('/api/watch/live-streams', async (_req, res) => {
     }
   }
 
-  liveStreamsCache.inflight = (async () => {
+  const epoch = liveStreamsEpoch;
+  const p = (async () => {
     const entries = watcher.getWatchlistRaw().map((e) => ({
       username: e.username,
       accountId: e.accountId || undefined,
@@ -161,13 +164,20 @@ router.get('/api/watch/live-streams', async (_req, res) => {
     out.sort((a, b) => (b.viewerCount || 0) - (a.viewerCount || 0));
     return out;
   })();
+  liveStreamsCache.inflight = p;
 
   try {
-    const data = await liveStreamsCache.inflight;
-    liveStreamsCache = { ts: Date.now(), data, inflight: null };
+    const data = await p;
+    if (epoch === liveStreamsEpoch) {
+      liveStreamsCache = { ts: Date.now(), data, inflight: null };
+    } else if (liveStreamsCache.inflight === p) {
+      liveStreamsCache.inflight = null;
+    }
     res.json(data);
   } catch (e) {
-    liveStreamsCache.inflight = null;
+    if (liveStreamsCache.inflight === p) {
+      liveStreamsCache.inflight = null;
+    }
     res.status(500).json({ error: safeError(e) });
   }
 });

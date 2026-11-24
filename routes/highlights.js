@@ -20,6 +20,7 @@ const {
 const { buildLeaderboard } = require('../lib/leaderboard');
 const { buildGiftEconomy, buildWordFrequency } = require('../lib/analytics');
 const { readBookmarks, addBookmark, removeBookmark, searchChat, autoTags } = require('../lib/bookmarks');
+const { invalidateRecordingsCache } = require('./record');
 
 const router = Router();
 const RECORDINGS_DIR = path.resolve(__dirname, '..', 'recordings');
@@ -55,6 +56,7 @@ router.post('/api/highlights/analyze', (req, res) => {
   try {
     const result = analyzeRecording(name);
     if (!result.ok) return res.status(400).json({ error: result.error });
+    invalidateRecordingsCache();
     res.json({ ok: true, candidates: result.candidates });
   } catch (e) {
     res.status(500).json({ error: safeError(e) });
@@ -66,13 +68,14 @@ router.post('/api/highlights/cut', async (req, res) => {
   if (!name) return res.status(404).json({ error: 'recording not found' });
   const startSec = Number(req.body?.startSec);
   const endSec = Number(req.body?.endSec);
-  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || startSec < 0 || endSec <= startSec) {
     return res.status(400).json({ error: 'invalid startSec/endSec' });
   }
   const vertical = ['crop', 'blur', 'pk-split'].includes(req.body?.vertical) ? req.body.vertical : 'none';
   const burnSubtitles = !!req.body?.burnSubtitles;
   try {
     const out = await cutClip(name, startSec, endSec, { vertical, burnSubtitles });
+    invalidateRecordingsCache();
     console.log(`[audit] highlight cut: ${name} [${startSec}-${endSec}s v=${vertical} sub=${burnSubtitles}] -> ${out.name}`);
     res.json({ ok: true, clip: out });
   } catch (e) {
@@ -88,6 +91,7 @@ router.delete('/api/highlights/clip/:name', (req, res) => {
       return res.status(404).json({ error: 'clip not found' });
     }
     deleteClip(resolved.name);
+    invalidateRecordingsCache();
     console.log(`[audit] highlight clip deleted: ${resolved.name}`);
     res.json({ ok: true });
   } catch (e) {

@@ -138,6 +138,14 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
     }
   }
 
+  const audioBitrateItems = {
+    copy: t('audioBitrateCopy'),
+    '64k': '64 kbps',
+    '96k': '96 kbps',
+    '128k': '128 kbps',
+    '192k': '192 kbps',
+  }
+
   return (
     <Card className="border-border/80">
       <CardContent className="pt-4 pb-4">
@@ -204,7 +212,7 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
               </div>
               <div>
                 <label className="text-muted-foreground block mb-1">{t('settingsDefaultAudioBitrate')}</label>
-                <Select value={defaultAudioBitrate} onValueChange={(v) => v && setDefaultAudioBitrate(v)}>
+                <Select items={audioBitrateItems} value={defaultAudioBitrate} onValueChange={(v) => v && setDefaultAudioBitrate(v)}>
                   <SelectTrigger className="h-8 text-xs">
                     <SelectValue />
                   </SelectTrigger>
@@ -246,7 +254,7 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
                   type="password"
                   value={telegramBotToken}
                   onChange={(e) => setTelegramBotToken(e.target.value)}
-                  placeholder={settings?.hasTelegram ? `Telegram: ${settings.telegramBotPreview}` : 'Telegram Bot Token'}
+                  placeholder={(settings?.hasTelegram || settings?.hasTelegramToken) ? `Telegram: ${settings.telegramBotPreview}` : 'Telegram Bot Token'}
                   autoComplete="off"
                   className="h-8 text-xs flex-1 font-mono"
                 />
@@ -257,7 +265,7 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
                   autoComplete="off"
                   className="h-8 text-xs w-28 font-mono"
                 />
-                {settings?.hasTelegram && (
+                {(settings?.hasTelegram || settings?.hasTelegramToken) && (
                   <Button size="xs" variant="outline" onClick={() => handleClearWebhook('telegram')} disabled={saving} className="h-8">
                     {t('btnCancel')}
                   </Button>

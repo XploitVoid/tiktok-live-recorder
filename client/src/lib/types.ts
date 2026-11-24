@@ -72,6 +72,7 @@ export interface RecordingFile {
   highlightCount?: number
   clipCount?: number
   durationSec?: number | null
+  vcodec?: string | null
   width?: number | null
   height?: number | null
   fps?: number | null
@@ -178,6 +179,7 @@ export interface AppSettings {
   hasDiscordWebhook: boolean
   discordWebhookPreview: string
   hasTelegram: boolean
+  hasTelegramToken?: boolean
   telegramBotPreview: string
   telegramChatId: string
 }

@@ -37,8 +37,12 @@ router.post('/api/settings', (req, res) => {
 router.post('/api/settings/test-webhook', async (_req, res) => {
   try {
     const results = await testNotifications();
-    const anyFail = Object.values(results).some((r) => !r.ok);
-    res.status(anyFail ? 502 : 200).json({ ok: !anyFail, results });
+    const failed = Object.entries(results).filter(([, r]) => !r.ok);
+    const anyFail = failed.length > 0;
+    const error = anyFail
+      ? failed.map(([k, r]) => `${k}: ${r.error || 'failed'}`).join('; ')
+      : undefined;
+    res.status(anyFail ? 502 : 200).json({ ok: !anyFail, ...(error ? { error } : {}), results });
   } catch (e) {
     const status = e.code === 'NOT_CONFIGURED' ? 400 : 500;
     res.status(status).json({ error: safeError(e) });

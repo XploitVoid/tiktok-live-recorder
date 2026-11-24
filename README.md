@@ -62,7 +62,14 @@ If you don't want to use the UI, you can just run the scripts directly:
 
 ### Setup
 
-**Option 1: Using Docker (Recommended)**
+**Option 1: Pre-built Releases (Recommended for Desktop — No Node.js or FFmpeg required)**
+Download the standalone package for your OS from the [GitHub Releases](https://github.com/XploitVoid/tiktok-live-recorder/releases) page:
+- **Windows Installer (`*-windows-x64-setup.exe`)** — Standard installer with Start Menu & optional Desktop shortcut (preserves `recordings/`, `.env`, accounts, and watchlist across upgrades).
+- **Windows Portable (`*-windows-x64-portable.zip`)** — Extract anywhere and double-click `TikTok LIVE Recorder.bat`.
+- **Linux / macOS (`*-linux-x64.tar.gz`, `*-macos-arm64.tar.gz`, `*-macos-x64.tar.gz`)** — Extract and run `./start.sh` (or double-click `Start TikTok LIVE Recorder.command` on macOS).
+- Every release ships with `SHA256SUMS.txt` and `SOURCE.txt` so you can verify file integrity before running.
+
+**Option 2: Using Docker**
 If you have Docker installed, you don't even need Node.js or ffmpeg on your host machine.
 
 ```bash
@@ -70,7 +77,7 @@ docker-compose up -d
 ```
 Then open **`http://localhost:3000`**. The videos will be saved in the `./recordings` folder.
 
-**Option 2: Running locally**
+**Option 3: Running from Source**
 Install the packages for both the backend and frontend. I made a shortcut script for it:
 
 ```bash

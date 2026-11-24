@@ -51,8 +51,25 @@ export const logoutAuth = () =>
   post<{ ok: boolean }>('/api/auth/logout')
 
 // ── Check / Stream ──
-export const checkStream = (username: string) =>
-  json<CheckResult>(`/api/stream?u=${encodeURIComponent(username)}`)
+export async function checkStream(username: string): Promise<CheckResult> {
+  const url = `/api/stream?u=${encodeURIComponent(username)}`
+  const r = await fetch(url)
+  if (r.status === 401) {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+  }
+  const text = await r.text()
+  let data: Record<string, unknown> = {}
+  if (text) {
+    try { data = JSON.parse(text) as Record<string, unknown> } catch { data = { error: text } }
+  }
+  if (r.status === 404 && data.live === false && typeof data.username === 'string') {
+    return data as unknown as CheckResult
+  }
+  if (!r.ok) {
+    throw new Error((typeof data.error === 'string' && data.error) || `HTTP ${r.status}`)
+  }
+  return data as unknown as CheckResult
+}
 
 // ── Record ──
 export const startRecord = (
@@ -224,6 +241,7 @@ export const removeWatch = (username: string) =>
 export const patchWatch = (
   username: string,
   patch: {
+    quality?: string | null
     autoRecord?: boolean
     audioOnly?: boolean
     audioBitrate?: string | null

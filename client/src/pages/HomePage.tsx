@@ -29,11 +29,14 @@ export function HomePage() {
     (data: CheckResult) => {
       setLoading(false)
       setResult(data)
-      if (data.username && searchParams.get('u') !== data.username) {
-        setSearchParams({ u: data.username }, { replace: true })
+      if (data.username) {
+        setSearchParams(
+          (prev) => (prev.get('u') === data.username ? prev : { u: data.username }),
+          { replace: true },
+        )
       }
     },
-    [searchParams, setSearchParams],
+    [setSearchParams],
   )
 
   const handleError = useCallback((msg: string) => {

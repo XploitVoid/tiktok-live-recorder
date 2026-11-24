@@ -26,7 +26,8 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
   const [checking, setChecking] = useState(false)
   const [history, setHistory] = useState(getHistory())
   const [favorites, setFavorites] = useState(getFavorites())
-  const autoCheckedRef = useRef<string | null>(null)
+  const lastInitialRef = useRef<string | null>(null)
+  const lastCheckedRef = useRef<string | null>(null)
   const reqIdRef = useRef(0)
 
   const refreshLists = useCallback(() => {
@@ -34,13 +35,13 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
     setFavorites(getFavorites())
   }, [])
 
-  const doCheck = useCallback(async (targetUser?: string) => {
-    const raw = (targetUser ?? username).trim()
+  const runCheck = useCallback(async (rawInput: string) => {
+    const raw = rawInput.trim()
     if (!raw) return
     const u = cleanUsernameInput(raw)
     if (!u) return
     const reqId = ++reqIdRef.current
-    autoCheckedRef.current = u
+    lastCheckedRef.current = u
     setUsername(u)
     setChecking(true)
     onLoading?.()
@@ -58,21 +59,38 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
         setChecking(false)
       }
     }
-  }, [username, onLoading, onResult, onError, refreshLists])
+  }, [onLoading, onResult, onError, refreshLists])
+
+  const handleCheck = useCallback(() => {
+    void runCheck(username)
+  }, [runCheck, username])
+
+  const runCheckRef = useRef(runCheck)
+  useEffect(() => {
+    runCheckRef.current = runCheck
+  }, [runCheck])
 
   useEffect(() => {
-    if (!initialUsername) return
-    const normalized = cleanUsernameInput(initialUsername)
-    if (!normalized || autoCheckedRef.current === normalized) return
-    autoCheckedRef.current = normalized
+    const normalized = initialUsername ? cleanUsernameInput(initialUsername) : null
+    if (!normalized) {
+      lastInitialRef.current = null
+      return
+    }
+    if (lastInitialRef.current === normalized) return
+    if (lastCheckedRef.current === normalized) {
+      lastInitialRef.current = normalized
+      return
+    }
     let cancelled = false
     Promise.resolve().then(() => {
-      if (!cancelled) void doCheck(normalized)
+      if (cancelled) return
+      lastInitialRef.current = normalized
+      void runCheckRef.current(normalized)
     })
     return () => {
       cancelled = true
     }
-  }, [initialUsername, doCheck])
+  }, [initialUsername])
 
   const handleToggleFav = useCallback((user: string) => {
     const u = cleanUsernameInput(user)
@@ -112,7 +130,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
               id="uInput"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && doCheck()}
+              onKeyDown={(e) => e.key === 'Enter' && handleCheck()}
               placeholder="username / tiktok.com/@user"
               autoComplete="off"
               className="pl-7 pr-9 h-10 bg-background/70 border-border focus-visible:border-primary/60 text-sm font-mono"
@@ -130,7 +148,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
             )}
           </div>
           <Button
-            onClick={() => doCheck()}
+            onClick={handleCheck}
             disabled={checking || !cleanedInput}
             className="h-10 px-5 font-medium shrink-0 cursor-pointer"
           >
@@ -152,10 +170,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
               >
                 <button
                   type="button"
-                  onClick={() => {
-                    setUsername(user)
-                    void doCheck(user)
-                  }}
+                  onClick={() => void runCheck(user)}
                   className="px-2 py-1 hover:bg-amber-500/15 transition-colors cursor-pointer font-mono"
                 >
                   @{user}
@@ -186,10 +201,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername }:
               >
                 <button
                   type="button"
-                  onClick={() => {
-                    setUsername(entry.username)
-                    void doCheck(entry.username)
-                  }}
+                  onClick={() => void runCheck(entry.username)}
                   className="px-2 py-1 hover:bg-secondary transition-colors cursor-pointer font-mono"
                 >
                   @{entry.username}

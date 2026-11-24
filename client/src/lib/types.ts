@@ -253,11 +253,15 @@ export interface HighlightCandidate {
   id: string
   startSec: number
   endSec: number
+  peakSec?: number
   score: number
   peakScore: number
   baseline: number
   ratio: number
-  reason: 'gift_spike' | 'chat_spike' | 'activity_spike' | 'pk_battle'
+  confidence?: number
+  reason: 'gift_spike' | 'chat_spike' | 'sub_spike' | 'audio_spike' | 'activity_spike' | 'pk_battle'
+  mood?: 'funny' | 'hype' | 'shock' | 'love' | 'gift' | 'sub' | 'pk' | 'audio' | 'activity'
+  hasAudioPeak?: boolean
   pk?: {
     battleId?: string | null
     opponents: string[]
@@ -271,8 +275,12 @@ export interface HighlightCandidate {
     diamonds: number
     follows: number
     shares: number
+    subscribes?: number
+    uniqueUsers?: number
     topGift?: { name: string; count: number } | null
     topUser?: { name: string; score: number; avatar?: string | null } | null
+    topKeywords?: string[]
+    sampleQuotes?: { user: string; text: string }[]
   }
 }
 
@@ -295,6 +303,9 @@ export interface HighlightsData {
     bucketCount?: number
     spikeBuckets?: number
     pkWindows?: number
+    audioPeaksCount?: number
+    audioAnalyzed?: boolean
+    sensitivity?: 'strict' | 'balanced' | 'sensitive'
     usedFallback?: boolean
   } | null
   usedFallback?: boolean

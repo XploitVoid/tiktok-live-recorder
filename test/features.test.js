@@ -1935,3 +1935,152 @@ test('Kick and YouTube Live regression fixes (offline yt-dlp skip, proxy header 
   assert.equal(staleChat.state, 'reconnecting');
   staleChat.disconnect();
 });
+
+test('Auto Highlights v2: MAD Z-score, Thai/EN hype & anti-spam, audio peak fusion, and RealtimeHighlightDetector v2', async () => {
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+  const {
+    analyzeRecording,
+    analyzeRecordingAsync,
+    analyzeAudioPeaks,
+    classifyChatReaction,
+    isBotOrCommand,
+  } = require('../lib/highlights');
+  const { RealtimeHighlightDetector } = require('../lib/realtime-highlights');
+
+  // 1. Reaction classifier & bot filter
+  const rFunny = classifyChatReaction('555555 KEKW ลั่นมาก');
+  assert.equal(rFunny.mood, 'funny');
+  assert.ok(rFunny.tokens.includes('555'));
+  assert.ok(rFunny.tokens.includes('kekw'));
+
+  const rCallout = classifyChatReaction('clip it! ตัดคลิปด่วน OMG!!');
+  assert.equal(rCallout.clipCallout, true);
+  assert.equal(rCallout.emphasis, true);
+
+  assert.equal(isBotOrCommand({ type: 'chat', comment: '!socials', user: { uniqueId: 'u1' } }), true);
+  assert.equal(isBotOrCommand({ type: 'chat', comment: 'hello!', user: { uniqueId: 'Nightbot' } }), true);
+  assert.equal(isBotOrCommand({ type: 'chat', comment: '55555', user: { uniqueId: 'viewer1' } }), false);
+
+  // 2. Smart analyzer: single spammer dampened below diverse crowd, sensitivity presets, sub_spike, quotes/keywords
+  const stamp = `hlv2_${Date.now()}_20261124_120000`;
+  const mp4Path = path.join(storage.RECORDINGS_DIR, `${stamp}.mp4`);
+  const evPath = path.join(storage.RECORDINGS_DIR, `${stamp}.events.jsonl`);
+  const hlPath = path.join(storage.RECORDINGS_DIR, `${stamp}.highlights.json`);
+  const metaPath = path.join(storage.RECORDINGS_DIR, `${stamp}.meta.json`);
+  const startMs = require('../lib/utils').parseStartTimeFromName(`${stamp}.mp4`);
+
+  try {
+    fs.writeFileSync(mp4Path, 'mp4');
+    fs.writeFileSync(metaPath, JSON.stringify({ durationSec: 240, startedAt: startMs }));
+
+    const evs = [];
+    let eid = 1;
+    // Steady quiet baseline across 240s (~1 chat every 15s)
+    for (let s = 5; s < 240; s += 15) {
+      evs.push({ id: eid++, ts: startMs + s * 1000, type: 'chat', user: { uniqueId: `base_${s}` }, comment: 'hi' });
+    }
+    // Single-user spam at 45s (10 identical repeats from 1 user + bot command — should score much lower)
+    for (let k = 0; k < 10; k++) {
+      evs.push({ id: eid++, ts: startMs + (45 + k * 0.2) * 1000, type: 'chat', user: { uniqueId: 'spammer' }, comment: 'spam spam' });
+    }
+    evs.push({ id: eid++, ts: startMs + 46_000, type: 'chat', user: { uniqueId: 'Nightbot' }, comment: 'Follow the channel!' });
+    // Real diverse funny/hype crowd spike at 120s (8 unique users + clip callout)
+    const crowdComments = ['55555 ลั่นมาก', 'KEKW ตัดคลิปด่วน!', 'OMG insane!!', '5555', 'POG clip it!', 'ฮ่าๆๆ โหดมาก', 'LMAO 💀', '555+ ตึงจัด'];
+    for (let k = 0; k < crowdComments.length; k++) {
+      evs.push({
+        id: eid++,
+        ts: startMs + (120 + k * 0.4) * 1000,
+        type: 'chat',
+        user: { uniqueId: `crowd_${k}`, nickname: `Crowd${k}` },
+        comment: crowdComments[k],
+      });
+    }
+    // Sub surge at 195s (3 subscribes)
+    for (let k = 0; k < 3; k++) {
+      evs.push({ id: eid++, ts: startMs + (195 + k) * 1000, type: 'subscribe', user: { uniqueId: `sub_${k}` }, label: 'Subbed' });
+    }
+    fs.writeFileSync(evPath, evs.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const balanced = analyzeRecording(`${stamp}.mp4`, { sensitivity: 'balanced' });
+    assert.equal(balanced.ok, true);
+    assert.equal(balanced.usedFallback, false);
+
+    const crowdCand = balanced.candidates.find((c) => c.peakSec >= 115 && c.peakSec <= 130);
+    assert.ok(crowdCand, 'crowd funny spike at ~120s must be detected');
+    assert.equal(crowdCand.reason, 'chat_spike');
+    assert.equal(crowdCand.mood, 'funny');
+    assert.ok(crowdCand.confidence >= 60);
+    assert.ok(crowdCand.summary.uniqueUsers >= 8);
+    assert.ok(crowdCand.summary.topKeywords.length >= 1);
+    assert.ok(crowdCand.summary.sampleQuotes.length >= 1);
+
+    const spamCand = balanced.candidates.find((c) => c.peakSec >= 40 && c.peakSec <= 52);
+    if (spamCand) {
+      assert.ok(crowdCand.score > spamCand.score * 1.5, 'diverse crowd reaction must outscore 1-person spam');
+    }
+
+    const subCand = balanced.candidates.find((c) => c.reason === 'sub_spike');
+    assert.ok(subCand, '3 subscribes should emit sub_spike');
+    assert.equal(subCand.summary.subscribes, 3);
+
+    const strict = analyzeRecording(`${stamp}.mp4`, { sensitivity: 'strict' });
+    const sensitive = analyzeRecording(`${stamp}.mp4`, { sensitivity: 'sensitive' });
+    assert.ok(sensitive.candidates.length >= strict.candidates.length);
+  } finally {
+    fs.rmSync(mp4Path, { force: true });
+    fs.rmSync(evPath, { force: true });
+    fs.rmSync(hlPath, { force: true });
+    fs.rmSync(metaPath, { force: true });
+  }
+
+  // 3. Real FFmpeg analyzeAudioPeaks + audio-only fallback when NO .events.jsonl exists
+  const aStamp = `hlaudio_${Date.now()}_20261124_120000`;
+  const aMp4 = path.join(storage.RECORDINGS_DIR, `${aStamp}.mp4`);
+  const aHl = path.join(storage.RECORDINGS_DIR, `${aStamp}.highlights.json`);
+  try {
+    // 25s synthetic clip: quiet (-40dB / volume 0.01) except loud burst (volume 0.9) at 14s..17s
+    const gen = spawnSync(ffmpeg.resolveFfmpeg(), [
+      '-y',
+      '-f', 'lavfi', '-i', 'testsrc=size=128x128:rate=5:duration=25',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=16000:duration=25',
+      '-af', "volume='if(between(t,14,17),0.9,0.01)':eval=frame",
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '48k',
+      aMp4,
+    ], { encoding: 'utf8' });
+    assert.equal(gen.status, 0);
+
+    const rms = await analyzeAudioPeaks(aMp4);
+    assert.ok(Array.isArray(rms) && rms.length >= 20);
+    assert.ok(rms[15] > rms[5] + 15, `expected loud burst at 15s (${rms[15]}dB) >> baseline (${rms[5]}dB)`);
+
+    const audioRes = await analyzeRecordingAsync(`${aStamp}.mp4`, { includeAudio: true });
+    assert.equal(audioRes.ok, true);
+    assert.equal(audioRes.audioOnly, true);
+    assert.ok(audioRes.candidates.length >= 1);
+    assert.equal(audioRes.candidates[0].reason, 'audio_spike');
+    assert.equal(audioRes.candidates[0].hasAudioPeak, true);
+    assert.ok(audioRes.candidates[0].peakSec >= 13 && audioRes.candidates[0].peakSec <= 18);
+  } finally {
+    fs.rmSync(aMp4, { force: true });
+    fs.rmSync(aHl, { force: true });
+  }
+
+  // 4. RealtimeHighlightDetector v2: sub_bomb, clip_callout, and overlapping window merge
+  const det = new RealtimeHighlightDetector('rt_v2');
+  const t0 = Date.now();
+  for (let i = 0; i < 3; i++) {
+    det.onEvent({ id: i + 1, ts: t0 + i * 500, type: 'subscribe', user: { uniqueId: `s${i}` } });
+  }
+  assert.equal(det.marks[0].reason, 'sub_bomb');
+
+  for (let i = 0; i < 3; i++) {
+    det.onEvent({ id: 10 + i, ts: t0 + 35_000 + i * 500, type: 'chat', user: { uniqueId: `u${i}` }, comment: 'ตัดคลิป!' });
+  }
+  assert.equal(det.marks[1].reason, 'clip_callout');
+
+  const wins = det.getClipWindows(t0 - 10_000);
+  assert.equal(wins.length, 2);
+  assert.ok(wins[0].startSec >= 0);
+});

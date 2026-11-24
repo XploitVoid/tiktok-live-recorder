@@ -1,5 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Sparkles, Scissors, RefreshCw, Trash2, Download, Play, MessageSquare, Gift, Gem, Heart, UserPlus, Star } from 'lucide-react'
+import {
+  Sparkles, Scissors, RefreshCw, Trash2, Download, Play,
+  MessageSquare, Gift, Gem, Heart, UserPlus, Star, Volume2, Users,
+  SlidersHorizontal, ArrowUpDown, Clock,
+} from 'lucide-react'
 import { ConfirmButton } from '@/components/ConfirmButton'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -40,6 +44,10 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
   const [cuttingId, setCuttingId] = useState<string | null>(null)
   const [cutPercent, setCutPercent] = useState<number | null>(null)
   const [usedFallback, setUsedFallback] = useState(false)
+  const [sensitivity, setSensitivity] = useState<'strict' | 'balanced' | 'sensitive'>('balanced')
+  const [includeAudio, setIncludeAudio] = useState(true)
+  const [reasonFilter, setReasonFilter] = useState<'all' | HighlightCandidate['reason']>('all')
+  const [sortBy, setSortBy] = useState<'time' | 'score'>('time')
   const [verticalMode, setVerticalMode] = useState<'none' | 'blur' | 'crop' | 'pk-split'>('none')
   const [burnSubtitles, setBurnSubtitles] = useState(false)
   const [trimIn, setTrimIn] = useState(0)
@@ -61,6 +69,25 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
     'pk-split': '9:16 PK Split (Top/Bot)',
   }
 
+  const sensitivityItems = {
+    strict: t('hlSensitivityStrict'),
+    balanced: t('hlSensitivityBalanced'),
+    sensitive: t('hlSensitivitySensitive'),
+  }
+
+  const visibleCandidates = useMemo(() => {
+    const filtered = reasonFilter === 'all'
+      ? candidates
+      : candidates.filter((c) => c.reason === reasonFilter)
+    return [...filtered].sort((a, b) =>
+      sortBy === 'score'
+        ? b.score - a.score || (b.confidence ?? 0) - (a.confidence ?? 0)
+        : a.startSec - b.startSec,
+    )
+  }, [candidates, reasonFilter, sortBy])
+
+  const presentReasons = useMemo(() => new Set(candidates.map((c) => c.reason)), [candidates])
+
   const sseHandlers = useMemo(() => ({
     cut_progress: (raw: unknown) => {
       const ev = raw as { recording?: string; percent?: number; done?: boolean }
@@ -78,6 +105,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
       setCandidates(data.candidates || [])
       setClips(data.clips || [])
       setUsedFallback(!!data.usedFallback)
+      if (data.stats?.sensitivity) setSensitivity(data.stats.sensitivity)
     } catch (e) {
       console.error('getHighlights:', e)
     } finally {
@@ -93,16 +121,17 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
         setCandidates(data.candidates || [])
         setClips(data.clips || [])
         setUsedFallback(!!data.usedFallback)
+        if (data.stats?.sensitivity) setSensitivity(data.stats.sensitivity)
       })
       .catch((e) => console.error('getHighlights:', e))
     return () => { active = false }
   }, [recording])
 
   const handleAnalyze = async () => {
-    if (!hasEvents) return
+    if (!hasEvents && !includeAudio) return
     setAnalyzing(true)
     try {
-      await analyzeHighlights(recording)
+      await analyzeHighlights(recording, { sensitivity, includeAudio })
       const data = await getHighlights(recording)
       setCandidates(data.candidates || [])
       setClips(data.clips || [])
@@ -113,6 +142,15 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
     } finally {
       setAnalyzing(false)
     }
+  }
+
+  const handleLoadToTrimmer = (c: HighlightCandidate) => {
+    const start = Math.max(0, Math.floor(c.startSec))
+    const rawEnd = Math.ceil(c.endSec)
+    const maxAllowed = durationSec && durationSec > 0 ? Math.min(Math.floor(durationSec), start + MAX_CLIP_SEC) : start + MAX_CLIP_SEC
+    setTrimIn(start)
+    setTrimOutRaw(Math.min(maxAllowed, Math.max(start + 1, rawEnd)))
+    onJump(c.startSec)
   }
 
   const handleCut = async (c: HighlightCandidate) => {
@@ -178,7 +216,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Select items={verticalItems} value={verticalMode} onValueChange={(v) => v && setVerticalMode(v as typeof verticalMode)}>
-              <SelectTrigger className="w-[170px] h-7 text-xs">
+              <SelectTrigger className="w-[155px] h-7 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -188,20 +226,74 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                 <SelectItem value="pk-split">9:16 PK Split (Top/Bot)</SelectItem>
               </SelectContent>
             </Select>
+            <Select items={sensitivityItems} value={sensitivity} onValueChange={(v) => v && setSensitivity(v as typeof sensitivity)}>
+              <SelectTrigger className="w-[140px] h-7 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="strict">{t('hlSensitivityStrict')}</SelectItem>
+                <SelectItem value="balanced">{t('hlSensitivityBalanced')}</SelectItem>
+                <SelectItem value="sensitive">{t('hlSensitivitySensitive')}</SelectItem>
+              </SelectContent>
+            </Select>
+            <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+              <Checkbox checked={includeAudio} onCheckedChange={(v) => setIncludeAudio(!!v)} className="w-3.5 h-3.5" />
+              <span>{t('hlIncludeAudio')}</span>
+            </label>
             {hasEvents && (
-              <>
-                <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-                  <Checkbox checked={burnSubtitles} onCheckedChange={(v) => setBurnSubtitles(!!v)} className="w-3.5 h-3.5" />
-                  <span>{t('hlBurnSubs')}</span>
-                </label>
-                <Button variant="ghost" size="xs" onClick={handleAnalyze} disabled={analyzing}>
-                  <RefreshCw className={`w-3 h-3 mr-1 ${analyzing ? 'animate-spin' : ''}`} />
-                  {analyzing ? t('hlAnalyzing') : t('hlReanalyze')}
-                </Button>
-              </>
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                <Checkbox checked={burnSubtitles} onCheckedChange={(v) => setBurnSubtitles(!!v)} className="w-3.5 h-3.5" />
+                <span>{t('hlBurnSubs')}</span>
+              </label>
             )}
+            <Button variant="ghost" size="xs" onClick={handleAnalyze} disabled={analyzing || (!hasEvents && !includeAudio)}>
+              <RefreshCw className={`w-3 h-3 mr-1 ${analyzing ? 'animate-spin' : ''}`} />
+              {analyzing ? t('hlAnalyzing') : t('hlReanalyze')}
+            </Button>
           </div>
         </div>
+
+        {/* Reason filter pills & sort toggle */}
+        {candidates.length > 0 && (
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-1 flex-wrap">
+              {(
+                [
+                  { id: 'all', label: t('hlFilterAll'), show: true },
+                  { id: 'pk_battle', label: t('hlFilterPK'), show: presentReasons.has('pk_battle') },
+                  { id: 'gift_spike', label: t('hlFilterGift'), show: presentReasons.has('gift_spike') },
+                  { id: 'sub_spike', label: t('hlFilterSub'), show: presentReasons.has('sub_spike') },
+                  { id: 'chat_spike', label: t('hlFilterChat'), show: presentReasons.has('chat_spike') },
+                  { id: 'audio_spike', label: t('hlFilterAudio'), show: presentReasons.has('audio_spike') },
+                ] as const
+              )
+                .filter((f) => f.show)
+                .map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setReasonFilter(f.id)}
+                    className={`px-2 py-0.5 rounded-md text-[11px] border transition-colors cursor-pointer ${
+                      reasonFilter === f.id
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'bg-secondary/60 text-muted-foreground border-border hover:text-foreground'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+            </div>
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => setSortBy((prev) => (prev === 'time' ? 'score' : 'time'))}
+              className="text-[11px] h-6 gap-1 cursor-pointer"
+            >
+              {sortBy === 'score' ? <ArrowUpDown className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+              <span>{sortBy === 'score' ? t('hlSortScore') : t('hlSortTime')}</span>
+            </Button>
+          </div>
+        )}
 
         {/* Timeline strip with markers + hover sprite preview */}
         {durationSec && durationSec > 0 && (
@@ -226,6 +318,8 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                 const color =
                   c.reason === 'pk_battle' ? 'bg-fuchsia-500' :
                   c.reason === 'gift_spike' ? 'bg-amber-400' :
+                  c.reason === 'sub_spike' ? 'bg-emerald-400' :
+                  c.reason === 'audio_spike' ? 'bg-cyan-400' :
                   c.reason === 'chat_spike' ? 'bg-pink-400' : 'bg-indigo-400'
                 return (
                   <button
@@ -349,20 +443,21 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
         )}
 
         {/* Candidates list */}
-        <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
-          {!hasEvents ? (
+        <div className="space-y-1.5 max-h-[340px] overflow-y-auto">
+          {!hasEvents && candidates.length === 0 && !includeAudio ? (
             <p className="text-xs text-muted-foreground">{t('hlNoEvents')}</p>
           ) : loading && candidates.length === 0 ? (
             <p className="text-xs text-muted-foreground">{t('loading')}</p>
-          ) : candidates.length === 0 ? (
-            <p className="text-xs text-muted-foreground">{t('hlNone')}</p>
+          ) : visibleCandidates.length === 0 ? (
+            <p className="text-xs text-muted-foreground">{!hasEvents ? t('hlNoEvents') : t('hlNone')}</p>
           ) : (
-            candidates.map((c) => (
+            visibleCandidates.map((c) => (
               <CandidateRow
                 key={c.id}
                 c={c}
                 onJump={onJump}
                 onCut={handleCut}
+                onLoadToTrimmer={handleLoadToTrimmer}
                 cutting={cuttingId === c.id}
                 disabled={cuttingId !== null}
               />
@@ -423,12 +518,14 @@ function CandidateRow({
   c,
   onJump,
   onCut,
+  onLoadToTrimmer,
   cutting,
   disabled,
 }: {
   c: HighlightCandidate
   onJump: (sec: number) => void
   onCut: (c: HighlightCandidate) => void
+  onLoadToTrimmer: (c: HighlightCandidate) => void
   cutting: boolean
   disabled: boolean
 }) {
@@ -436,23 +533,53 @@ function CandidateRow({
   const reasonLabel =
     c.reason === 'pk_battle' ? t('hlReasonPK') :
     c.reason === 'gift_spike' ? t('hlReasonGift') :
+    c.reason === 'sub_spike' ? t('hlReasonSub') :
+    c.reason === 'audio_spike' ? t('hlReasonAudio') :
     c.reason === 'chat_spike' ? t('hlReasonChat') : t('hlReasonActivity')
   const reasonColor =
     c.reason === 'pk_battle' ? 'bg-fuchsia-700/30 text-fuchsia-200 border-fuchsia-700/40' :
     c.reason === 'gift_spike' ? 'bg-amber-700/30 text-amber-200 border-amber-700/40' :
+    c.reason === 'sub_spike' ? 'bg-emerald-700/30 text-emerald-200 border-emerald-700/40' :
+    c.reason === 'audio_spike' ? 'bg-cyan-700/30 text-cyan-200 border-cyan-700/40' :
     c.reason === 'chat_spike' ? 'bg-pink-700/30 text-pink-200 border-pink-700/40' :
     'bg-indigo-700/30 text-indigo-200 border-indigo-700/40'
+  const moodLabel =
+    c.mood === 'funny' ? t('hlMoodFunny') :
+    c.mood === 'hype' ? t('hlMoodHype') :
+    c.mood === 'shock' ? t('hlMoodShock') :
+    c.mood === 'love' ? t('hlMoodLove') : null
   const dur = Math.round(c.endSec - c.startSec)
   const isPK = c.reason === 'pk_battle'
+  const conf = c.confidence ?? null
+  const confStyle =
+    conf == null ? '' :
+    conf >= 80 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' :
+    conf >= 60 ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' :
+    'bg-slate-600/30 text-slate-300 border-slate-600/40'
 
   return (
     <div className="bg-secondary/60 border border-border rounded-lg px-2 py-1.5 text-xs">
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex items-center gap-1.5 flex-wrap">
         <Badge variant="secondary" className={`text-[10px] ${reasonColor}`}>{reasonLabel}</Badge>
+        {moodLabel && (
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-foreground/80">
+            {moodLabel}
+          </Badge>
+        )}
+        {conf !== null && (
+          <Badge variant="outline" className={`text-[10px] px-1.5 py-0 tabular-nums ${confStyle}`}>
+            {conf}%
+          </Badge>
+        )}
+        {c.hasAudioPeak && c.reason !== 'audio_spike' && (
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-cyan-300 border-cyan-500/40 bg-cyan-500/10 gap-0.5" title={t('hlAudioBoostBadge')}>
+            <Volume2 className="w-2.5 h-2.5" />
+          </Badge>
+        )}
         <span className="font-mono text-foreground/90">{fmtTimeSec(c.startSec)}</span>
         <span className="text-muted-foreground">·</span>
         <span className="text-muted-foreground">{dur}s</span>
-        {!isPK && (
+        {!isPK && c.ratio > 0 && (
           <>
             <span className="text-muted-foreground">·</span>
             <span className="text-amber-300/90">×{c.ratio.toFixed(1)}</span>
@@ -467,6 +594,9 @@ function CandidateRow({
           </>
         )}
         <div className="flex-1" />
+        <Button variant="ghost" size="xs" onClick={() => onLoadToTrimmer(c)} title={t('hlLoadTrimmer')}>
+          <SlidersHorizontal className="w-3 h-3 mr-1" />{t('hlLoadTrimmer')}
+        </Button>
         <Button variant="ghost" size="xs" onClick={() => onJump(c.startSec)}>
           <Play className="w-3 h-3 mr-1" />{t('hlJump')}
         </Button>
@@ -476,8 +606,14 @@ function CandidateRow({
         </Button>
       </div>
       <div className="mt-1 text-[11px] text-muted-foreground flex flex-wrap gap-x-3 gap-y-0.5 items-center tabular-nums">
+        {(c.summary.uniqueUsers ?? 0) > 0 && (
+          <span className="inline-flex items-center gap-1"><Users className="w-3 h-3 text-violet-400" /> {c.summary.uniqueUsers} {t('hlUniqueUsers')}</span>
+        )}
         {c.summary.chats > 0 && (
           <span className="inline-flex items-center gap-1"><MessageSquare className="w-3 h-3 text-sky-400" /> {c.summary.chats}</span>
+        )}
+        {(c.summary.subscribes ?? 0) > 0 && (
+          <span className="inline-flex items-center gap-1 text-emerald-300"><Star className="w-3 h-3" /> {c.summary.subscribes} {t('hlSubs')}</span>
         )}
         {c.summary.gifts > 0 && (
           <span className="inline-flex items-center gap-1"><Gift className="w-3 h-3 text-amber-400" /> {c.summary.gifts}</span>
@@ -500,7 +636,25 @@ function CandidateRow({
             @{c.summary.topUser.name}
           </span>
         )}
+        {c.summary.topKeywords && c.summary.topKeywords.length > 0 && (
+          <span className="inline-flex items-center gap-1 font-mono text-[10px]">
+            {c.summary.topKeywords.map((kw) => (
+              <span key={kw} className="px-1.5 py-0.2 rounded bg-background/60 border border-border/70 text-foreground/80">
+                #{kw}
+              </span>
+            ))}
+          </span>
+        )}
       </div>
+      {c.summary.sampleQuotes && c.summary.sampleQuotes.length > 0 && (
+        <div className="mt-1 space-y-0.5 text-[11px] text-foreground/75 border-l-2 border-primary/40 pl-2">
+          {c.summary.sampleQuotes.map((q, i) => (
+            <div key={i} className="truncate">
+              <span className="font-medium text-sky-300/90">{q.user}:</span> {q.text}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

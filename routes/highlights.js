@@ -12,7 +12,7 @@ const { resolveInsideDir, resolveRecordingPath, safeError } = require('../lib/ut
 const db = require('../lib/db');
 const {
   CLIPS_DIR,
-  analyzeRecording,
+  analyzeRecordingAsync,
   readHighlights,
   cutClip,
   listClipsFor,
@@ -51,14 +51,23 @@ router.get('/api/highlights/:recording', (req, res) => {
   });
 });
 
-router.post('/api/highlights/analyze', (req, res) => {
+router.post('/api/highlights/analyze', async (req, res) => {
   const name = resolveRecording(req.body?.recording);
   if (!name) return res.status(404).json({ error: 'recording not found' });
+  const sensitivity = ['strict', 'balanced', 'sensitive'].includes(req.body?.sensitivity)
+    ? req.body.sensitivity
+    : 'balanced';
+  const includeAudio = req.body?.includeAudio !== false;
   try {
-    const result = analyzeRecording(name);
+    const result = await analyzeRecordingAsync(name, { sensitivity, includeAudio });
     if (!result.ok) return res.status(400).json({ error: result.error });
     invalidateRecordingsCache();
-    res.json({ ok: true, candidates: result.candidates });
+    res.json({
+      ok: true,
+      candidates: result.candidates,
+      stats: result.stats || null,
+      usedFallback: !!result.usedFallback,
+    });
   } catch (e) {
     res.status(500).json({ error: safeError(e) });
   }

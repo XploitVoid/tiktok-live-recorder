@@ -137,8 +137,15 @@ export const updateRecordingMeta = (
 export const getHighlights = (recording: string) =>
   json<HighlightsData>(`/api/highlights/${encodeURIComponent(recording)}`)
 
-export const analyzeHighlights = (recording: string) =>
-  post<{ ok: boolean }>('/api/highlights/analyze', { recording })
+export const analyzeHighlights = (
+  recording: string,
+  opts?: { sensitivity?: 'strict' | 'balanced' | 'sensitive'; includeAudio?: boolean },
+) =>
+  post<{ ok: boolean }>('/api/highlights/analyze', {
+    recording,
+    sensitivity: opts?.sensitivity,
+    includeAudio: opts?.includeAudio,
+  })
 
 export const cutHighlightClip = (
   recording: string,

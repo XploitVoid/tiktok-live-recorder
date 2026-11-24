@@ -32,6 +32,7 @@ export interface CheckResult {
   viewerCount?: number
   startedAtUnix?: number
   liveRoomMode?: string
+  streamsBlockedReason?: string
   owner?: Owner
   streams?: StreamData
 }

@@ -1249,7 +1249,13 @@ test('Multi-platform Provider Registry and Twitch HLS/IRC/GQL adapter work clean
   assert.equal(utils.renderRecordingFilename('{username}_{date}_{time}', { platform: 'tiktok', username: 'shroud', dateObj: dt }), 'shroud_20261124_153045');
   const hlsRecArgs = ffmpeg.buildRecordArgs({ url: 'https://video-weaver.sjc05.hls.ttvnw.net/a.m3u8', kind: 'hls', quality: 'origin', referer: 'https://www.twitch.tv/' }, 'out.mp4');
   assert.equal(hlsRecArgs.includes('h264_mp4toannexb'), false);
+  assert.ok(hlsRecArgs.includes('aac_adtstoasc'));
   assert.ok(hlsRecArgs.includes('Referer: https://www.twitch.tv/\r\n'));
+  const hlsTsArgs = ffmpeg.buildRecordArgs({ url: 'https://video-weaver.sjc05.hls.ttvnw.net/a.m3u8', kind: 'hls', quality: 'origin', format: 'ts', referer: 'https://www.twitch.tv/' }, 'out.ts');
+  assert.equal(hlsTsArgs.includes('aac_adtstoasc'), false);
+  const hlsAoMp4Args = ffmpeg.buildRecordArgs({ url: 'https://video-weaver.sjc05.hls.ttvnw.net/ao.m3u8', kind: 'hls', quality: 'ao', audioOnly: true, format: 'mp4' }, 'out.mp4');
+  assert.ok(hlsAoMp4Args.includes('aac_adtstoasc'));
+  assert.equal(twitch.parseTwitchIrcLine(':tmi.twitch.tv RECONNECT').command, 'RECONNECT');
 
   // 6. Multi-platform Watchlist isolation
   const sharedName = `multi_${Date.now()}`;
@@ -1277,6 +1283,22 @@ test('Multi-platform Provider Registry and Twitch HLS/IRC/GQL adapter work clean
   await assert.rejects(() => connectP, /connection closed/);
   assert.equal(ts.state, 'closed');
   assert.equal(ts._connectTimer, null);
+  assert.equal(ts._pingTimer, null);
+
+  // Open WS creates _pingTimer and clears it cleanly on disconnect
+  const openWs = new EventEmitter();
+  openWs.readyState = 1;
+  openWs.close = () => { openWs.readyState = 3; };
+  openWs.terminate = () => { openWs.readyState = 3; };
+  openWs.send = () => {};
+  const tsOpen = new twitch.TwitchChatSession('shroud', { wsFactory: () => openWs });
+  tsOpen.uiActive = true;
+  const openP = tsOpen.connect();
+  openWs.emit('open');
+  await openP;
+  assert.ok(tsOpen._pingTimer);
+  tsOpen.disconnect();
+  assert.equal(tsOpen._pingTimer, null);
 
   // 8. Negative SSRF checks on Twitch domains & Referer header-injection stripping
   assert.equal(utils.isAllowedCdnUrl('http://usher.ttvnw.net/a.m3u8'), false);

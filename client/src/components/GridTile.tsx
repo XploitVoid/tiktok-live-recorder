@@ -22,12 +22,18 @@ interface PickedStream {
 }
 
 function pickStream(entry: CheckResult, qPref: string, preferHls = false): PickedStream | null {
-  if (preferHls && entry.streams?.hls) {
-    return { url: entry.streams.hls, kind: 'hls', quality: 'auto' }
+  const hlsMap = entry.streams?.hlsByQuality || {}
+  const hlsOrder = qPref === 'hd'
+    ? ['hd_60', 'hd', 'sd', 'ld', 'origin', 'uhd_60', 'uhd']
+    : ['ld', 'sd', 'hd', 'hd_60', 'origin', 'uhd']
+  if (preferHls) {
+    for (const q of hlsOrder) if (hlsMap[q]) return { url: hlsMap[q], kind: 'hls', quality: q }
+    if (entry.streams?.hls) return { url: entry.streams.hls, kind: 'hls', quality: 'auto' }
   }
   const f = entry.streams?.flv || {}
   const order = qPref === 'hd' ? ['hd', 'ld', 'origin', 'uhd', 'sd'] : ['ld', 'sd', 'hd', 'origin', 'uhd']
   for (const q of order) if (f[q]) return { url: f[q], kind: 'flv', quality: q }
+  for (const q of hlsOrder) if (hlsMap[q]) return { url: hlsMap[q], kind: 'hls', quality: q }
   if (entry.streams?.hls) return { url: entry.streams.hls, kind: 'hls', quality: 'auto' }
   return null
 }

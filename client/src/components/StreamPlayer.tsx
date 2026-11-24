@@ -115,13 +115,16 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
     }
     const attachHlsErrorHandler = (h: HlsInstance) => {
       h.on(Hls!.Events.ERROR, (...args: unknown[]) => {
-        const data = args[1] as { fatal?: boolean; type?: string } | undefined
-        if (!data?.fatal || cancelled) return
-        if (retries++ >= MAX_RETRIES) { setPlayerInfo('Stream error (gave up after retries)'); return }
+        const errData = args[1] as { fatal?: boolean; type?: string; details?: string } | undefined
+        if (!errData?.fatal || cancelled) return
+        if (retries++ >= MAX_RETRIES) {
+          setPlayerInfo(`Stream error (${errData.details || errData.type || 'gave up after retries'})`)
+          return
+        }
         const id = setTimeout(() => {
           if (cancelled) return
           try {
-            if (data.type === Hls!.ErrorTypes.NETWORK_ERROR) {
+            if (errData.type === Hls!.ErrorTypes.NETWORK_ERROR) {
               h.startLoad()
             } else {
               h.recoverMediaError()
@@ -493,6 +496,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
 
 export function BlockedStreams({ data }: { data: CheckResult }) {
   const { t } = useI18n()
+  const isTikTok = (data.platform || 'tiktok') === 'tiktok'
   return (
     <Card className="border-amber-700/50">
       <CardContent className="pt-5">
@@ -504,7 +508,9 @@ export function BlockedStreams({ data }: { data: CheckResult }) {
             {t('noStreamsDesc')} <code className="bg-secondary px-1.5 rounded text-xs">@{data.username}</code>
             {data.liveRoomMode && <> (mode: <code className="bg-secondary px-1.5 rounded text-xs">{data.liveRoomMode}</code>)</>}
           </p>
-          <p className="text-xs text-muted-foreground mt-2">{t('noStreamsFix')}</p>
+          <p className="text-xs text-muted-foreground mt-2">
+            {isTikTok ? t('noStreamsFix') : (data.streamsBlockedReason || '')}
+          </p>
         </div>
       </CardContent>
     </Card>

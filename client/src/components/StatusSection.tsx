@@ -51,6 +51,12 @@ export function StatusSection({ data }: Props) {
 
               <PlatformBadge platform={data.platform || 'tiktok'} />
 
+              {data.live && data.liveRoomMode && !/^\d+$/.test(data.liveRoomMode) && (
+                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground">
+                  {data.liveRoomMode}
+                </Badge>
+              )}
+
               <span className="font-semibold text-base truncate">
                 {owner.nickname || data.username}
               </span>

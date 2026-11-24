@@ -156,7 +156,7 @@ router.get('/api/watch/live-streams', async (_req, res) => {
               uniqueId: summary.owner.uniqueId || undefined,
               avatarThumb: summary.owner.avatarThumb || extractAvatarThumb(apiData?.user),
             } : undefined,
-            streams: { hls: streams.hls, flv: streams.flv },
+            streams: { hls: streams.hls, hlsByQuality: streams.hlsByQuality, flv: streams.flv },
           });
         } catch {
           // ignore individual failures so one bad user doesn't kill the response

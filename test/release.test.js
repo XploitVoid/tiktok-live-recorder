@@ -171,13 +171,12 @@ test('extract-release-notes parses exact version, falls back to Unreleased, and 
     ],
   });
 
-  assert.match(notes, /# TikTok LIVE Recorder v1\.5\.0/);
-  assert.match(notes, /## Downloads/);
-  assert.match(notes, /`tiktok-live-recorder-v1\.5\.0-windows-x64-setup\.exe`/);
-  assert.match(notes, /`tiktok-live-recorder-v1\.5\.0-linux-x64\.tar\.gz`/);
-  assert.doesNotMatch(notes, /\| `SHA256SUMS\.txt`/);
-  assert.match(notes, /## Quick Start/);
-  assert.match(notes, /## Verify Checksums/);
+  assert.match(notes, /### Added/);
+  assert.match(notes, /New release pipeline/);
+  assert.doesNotMatch(notes, /# TikTok LIVE Recorder/);
+  assert.doesNotMatch(notes, /## Downloads/);
+  assert.doesNotMatch(notes, /## Quick Start/);
+  assert.doesNotMatch(notes, /## Verify Checksums/);
 });
 
 test('package-release.createUnixTarGz preserves 0755 executable bits and writes PAX headers for long paths', async () => {

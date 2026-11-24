@@ -53,61 +53,9 @@ function classifyAsset(filename) {
   return { platform: 'Cross-Platform', format: path.extname(name) || 'File' };
 }
 
-function formatSizeMb(bytes) {
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function buildReleaseNotes({ version, changelogBody, assets = [], repo = DEFAULT_REPO }) {
-  const cleanVersion = String(version || '').trim().replace(/^v/i, '') || '0.0.0';
+function buildReleaseNotes({ changelogBody }) {
   const bodyText = String(changelogBody || '').trim() || 'See the commit log for changes included in this release.';
-  const sections = [
-    `# TikTok LIVE Recorder v${cleanVersion}`,
-    '',
-    bodyText,
-  ];
-
-  const downloadable = (assets || []).filter((a) => !/^(SHA256SUMS\.txt|SOURCE\.txt)$/i.test(a.name));
-  if (downloadable.length > 0) {
-    sections.push(
-      '',
-      '## Downloads',
-      '',
-      '| Platform | Package | File | Size |',
-      '|---|---|---|---|',
-      ...downloadable.map((a) => {
-        const meta = classifyAsset(a.name);
-        const size = typeof a.size === 'number' ? formatSizeMb(a.size) : '-';
-        return `| ${meta.platform} | ${meta.format} | \`${a.name}\` | ${size} |`;
-      })
-    );
-  }
-
-  sections.push(
-    '',
-    '## Quick Start',
-    '',
-    `- **Windows Installer**: Download \`*-windows-x64-setup.exe\` and run it (no Node.js or FFmpeg needed).`,
-    `- **Windows Portable**: Extract \`*-windows-x64-portable.zip\` and double-click \`TikTok LIVE Recorder.bat\`.`,
-    `- **Linux / macOS**: Extract the \`.tar.gz\` archive and run \`./start.sh\` (macOS users can also double-click \`Start TikTok LIVE Recorder.command\`).`,
-    `- **Docker**: Clone or download source and run \`docker-compose up -d\`.`,
-    '',
-    '## Verify Checksums',
-    '',
-    'All binaries include SHA-256 checksums in `SHA256SUMS.txt`:',
-    '',
-    '```powershell',
-    '# Windows (PowerShell)',
-    'Get-FileHash .\\tiktok-live-recorder-v' + cleanVersion + '-windows-x64-setup.exe -Algorithm SHA256',
-    '```',
-    '',
-    '```bash',
-    '# Linux / macOS',
-    'sha256sum -c SHA256SUMS.txt --ignore-missing',
-    '```',
-    ''
-  );
-
-  return sections.join('\n');
+  return `${bodyText}\n`;
 }
 
 function collectAssets(assetsDir) {

@@ -6,6 +6,7 @@ import { useI18n } from '@/lib/i18n'
 import { startChat, stopChat } from '@/lib/api'
 import { useEventStream } from '@/lib/useEventStream'
 import { fmtTime } from '@/lib/format'
+import { normalizePlatform } from '@/lib/utils'
 import { getKeywords, addKeyword, removeKeyword } from '@/lib/chatHighlight'
 import { ChatEventRow } from '@/components/ChatEventRow'
 import type { ChatEvent, ChatPollResult, Platform } from '@/lib/types'
@@ -37,7 +38,7 @@ interface Props {
 
 export function ChatPanel({ username, platform }: Props) {
   const { t } = useI18n()
-  const resolvedPlatform: Platform = platform === 'twitch' ? 'twitch' : 'tiktok'
+  const resolvedPlatform = normalizePlatform(platform)
   const [events, setEvents] = useState<ChatEvent[]>([])
   const [state, setState] = useState('')
   const [streaming, setStreaming] = useState(false)

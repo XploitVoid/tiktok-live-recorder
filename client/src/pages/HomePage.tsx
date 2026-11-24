@@ -8,6 +8,7 @@ import { ActiveJobs } from '@/components/ActiveJobs'
 import { SavedRecordings } from '@/components/SavedRecordings'
 import { SettingsPanel } from '@/components/SettingsPanel'
 import { useI18n } from '@/lib/i18n'
+import { normalizePlatform } from '@/lib/utils'
 import type { CheckResult, Platform } from '@/lib/types'
 import { toast } from 'sonner'
 
@@ -16,7 +17,7 @@ export function HomePage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const initialUsername = searchParams.get('u') || undefined
   const rawPlatform = searchParams.get('platform')
-  const initialPlatform: Platform = rawPlatform === 'twitch' ? 'twitch' : 'tiktok'
+  const initialPlatform = normalizePlatform(rawPlatform)
 
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<CheckResult | null>(null)

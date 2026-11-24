@@ -3,7 +3,7 @@
 const { Router } = require('express');
 const fs = require('fs');
 const path = require('path');
-const { parseChannelInput } = require('../lib/providers');
+const { parseChannelInput, derivePlatformFromFilename, stripPlatformPrefix } = require('../lib/providers');
 const { safeError, sanitizeQuality, sanitizeAudioBitrate, resolveRecordingPath, readEvents, parseStartTimeFromName } = require('../lib/utils');
 const db = require('../lib/db');
 const {
@@ -152,7 +152,7 @@ router.get('/api/recordings', (_req, res) => {
         }
         return {
           name: f, sizeBytes: st.size, mtime: st.mtimeMs,
-          platform: meta?.platform || ((resolved.folder && /^twitch_/i.test(resolved.folder)) || /^twitch_/i.test(resolved.fileName) ? 'twitch' : 'tiktok'),
+          platform: derivePlatformFromFilename(f, meta, resolved.folder),
           hasEvents: fs.existsSync(sidecar),
           highlightCount,
           clipCount,
@@ -204,9 +204,9 @@ router.get('/api/recordings/:name', (req, res) => {
   }
 
   // Derive username & platform from metadata, creator subfolder, or filename
-  const userMatch = fileName.match(/^(?:twitch_)?(.+?)_\d{4}(?:-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}|\d{4}_\d{6})/);
-  const platform = meta?.platform || ((folder && /^twitch_/i.test(folder)) || /^twitch_/i.test(fileName) ? 'twitch' : 'tiktok');
-  const username = meta?.username || (folder ? folder.replace(/^twitch_/i, '') : null) || (userMatch ? userMatch[1] : null);
+  const userMatch = fileName.match(/^(?:(?:twitch|youtube|kick)_)?(.+?)_\d{4}(?:-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}|\d{4}_\d{6})/);
+  const platform = derivePlatformFromFilename(name, meta, folder);
+  const username = meta?.username || (folder ? stripPlatformPrefix(folder) : null) || (userMatch ? userMatch[1] : null);
 
   res.json({
     name, platform, username, sizeBytes: st.size, startMs, mtimeMs: st.mtimeMs,

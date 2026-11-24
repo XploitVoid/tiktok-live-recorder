@@ -1290,3 +1290,206 @@ test('Multi-platform Provider Registry and Twitch HLS/IRC/GQL adapter work clean
   }, 'out.mp4');
   assert.ok(safeArgs.includes('Referer: https://www.twitch.tv/X-Injected: 1\r\n'));
 });
+
+test('YouTube Live provider (URL parser, InnerTube/HTML HLS, Live Chat/Super Chat, yt-dlp fallback)', async () => {
+  const providers = require('../lib/providers');
+  const youtube = require('../lib/providers/youtube');
+  const utils = require('../lib/utils');
+  const ffmpeg = require('../lib/ffmpeg');
+  const chat = require('../lib/chat');
+
+  // 1. URL & handle normalization + parseChannelInput
+  assert.deepEqual(providers.parseChannelInput('https://www.youtube.com/@Hololive/live'), { platform: 'youtube', username: 'hololive' });
+  assert.deepEqual(providers.parseChannelInput('https://youtube.com/watch?v=dQw4w9WgXcQ'), { platform: 'youtube', username: 'v_dQw4w9WgXcQ' });
+  assert.deepEqual(providers.parseChannelInput('https://youtu.be/dQw4w9WgXcQ'), { platform: 'youtube', username: 'v_dQw4w9WgXcQ' });
+  assert.deepEqual(providers.parseChannelInput('https://www.youtube.com/live/AbCdEf12345'), { platform: 'youtube', username: 'v_AbCdEf12345' });
+  assert.deepEqual(providers.parseChannelInput('https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx/live'), {
+    platform: 'youtube',
+    username: 'UCxxxxxxxxxxxxxxxxxxxxxx',
+  });
+  assert.deepEqual(providers.parseChannelInput('yt:@NewsTH'), { platform: 'youtube', username: 'newsth' });
+  assert.equal(youtube.normalizeUsername('watch'), '');
+  assert.equal(providers.sessionKey('youtube', 'hololive'), 'youtube:hololive');
+  assert.equal(youtube.buildChannelUrl('v_dQw4w9WgXcQ'), 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  assert.equal(youtube.buildChannelUrl('hololive'), 'https://www.youtube.com/@hololive/live');
+
+  // 2. Balanced JSON object extraction & HLS master playlist parsing
+  const sampleHtml = [
+    '<script>',
+    'var ytInitialPlayerResponse = {"videoDetails":{"videoId":"LiveVid1234","title":"Chilled {Beats}","channelId":"UC1234567890123456789012","author":"Lofi Girl","isLive":true,"thumbnail":{"thumbnails":[{"url":"https://i.ytimg.com/vi/LiveVid1234/maxresdefault.jpg"}]}},"playabilityStatus":{"status":"OK"},"streamingData":{"hlsManifestUrl":"https://manifest.googlevideo.com/api/manifest/hls_variant/id/LiveVid1234/master.m3u8"}};',
+    'var ytInitialData = {"contents":{"twoColumnWatchNextResults":{"results":{"results":{"contents":[{"videoPrimaryInfoRenderer":{"viewCount":{"videoViewCountRenderer":{"originalViewCount":"24,500"}}}}]}},"conversationBar":{"liveChatRenderer":{"continuations":[{"reloadContinuationData":{"continuation":"CONT_INIT_1"}}]}}}},"metadata":{"channelMetadataRenderer":{"avatar":{"thumbnails":[{"url":"https://yt3.ggpht.com/avatar.jpg"}]}}}};</script>',
+    '<script>ytcfg.set({"INNERTUBE_API_KEY":"TEST_YT_KEY","INNERTUBE_CLIENT_VERSION":"2.20260101.00.00"});</script>',
+  ].join('\n');
+
+  const ytM3u8 = [
+    '#EXTM3U',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="audio",URI="https://rr1---sn.googlevideo.com/audio.m3u8"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,FRAME-RATE=60',
+    'https://rr1---sn.googlevideo.com/1080p60.m3u8',
+    '#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,FRAME-RATE=30',
+    'https://rr1---sn.googlevideo.com/720p.m3u8',
+    '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,FRAME-RATE=30',
+    'https://rr1---sn.googlevideo.com/360p.m3u8',
+  ].join('\n');
+
+  const parsedM3u8 = youtube.parseYouTubeMasterM3u8(ytM3u8);
+  assert.equal(parsedM3u8.hlsByQuality.uhd_60, 'https://rr1---sn.googlevideo.com/1080p60.m3u8');
+  assert.equal(parsedM3u8.hlsByQuality.hd, 'https://rr1---sn.googlevideo.com/720p.m3u8');
+  assert.equal(parsedM3u8.hlsByQuality.ld, 'https://rr1---sn.googlevideo.com/360p.m3u8');
+  assert.equal(parsedM3u8.hlsByQuality.ao, 'https://rr1---sn.googlevideo.com/audio.m3u8');
+  assert.equal(youtube.pickPreferredStream(parsedM3u8).quality, 'uhd_60');
+
+  // 3. fetchLiveStatus via HTML/InnerTube + summary + InnerTube player fallback + yt-dlp fallback
+  const statusFromHtml = await youtube.fetchLiveStatus('LofiGirl', {
+    fetchImpl: async (url) => {
+      if (url.includes('youtube.com/@lofigirl/live')) return { ok: true, status: 200, text: sampleHtml };
+      if (url.includes('manifest.googlevideo.com')) return { ok: true, status: 200, text: ytM3u8 };
+      return { ok: false, status: 404, text: '' };
+    },
+  });
+  assert.equal(youtube.isLive(statusFromHtml), true);
+  assert.equal(statusFromHtml.liveChatContinuation, 'CONT_INIT_1');
+  const ytSummary = youtube.buildSummary('lofigirl', statusFromHtml, youtube.extractStreamUrls(statusFromHtml));
+  assert.equal(ytSummary.platform, 'youtube');
+  assert.equal(ytSummary.viewerCount, 24500);
+  assert.equal(ytSummary.owner.nickname, 'Lofi Girl');
+  assert.equal(ytSummary.streams.hlsByQuality.uhd_60, 'https://rr1---sn.googlevideo.com/1080p60.m3u8');
+
+  // yt-dlp fallback when web page yields no manifest
+  const statusFromYtDlp = await youtube.fetchLiveStatus('fallbackchan', {
+    fetchImpl: async () => ({ ok: true, status: 200, text: '<html>offline placeholder</html>' }),
+    ytDlpExec: async (_bin, args) => {
+      assert.ok(args.includes('https://www.youtube.com/@fallbackchan/live'));
+      return JSON.stringify({
+        id: 'YtDlp123456',
+        is_live: true,
+        title: 'Fallback Live',
+        uploader: 'Fallback Creator',
+        concurrent_view_count: 777,
+        manifest_url: 'https://manifest.googlevideo.com/ytdlp/master.m3u8',
+      });
+    },
+  });
+  assert.equal(youtube.isLive(statusFromYtDlp), true);
+  assert.equal(statusFromYtDlp.videoId, 'YtDlp123456');
+  assert.equal(statusFromYtDlp.viewerCount, 777);
+
+  // 4. parseYouTubeChatAction (chat, Super Chat, Super Sticker, Membership) + YouTubeChatSession polling
+  const actions = [
+    {
+      addChatItemAction: {
+        item: {
+          liveChatTextMessageRenderer: {
+            id: 'msg-1',
+            timestampUsec: '1700000000000000',
+            authorName: { simpleText: 'ViewerA' },
+            authorExternalChannelId: 'UCviewerA',
+            message: { runs: [{ text: 'Hello ' }, { emoji: { shortcuts: [':wave:'] } }] },
+          },
+        },
+      },
+    },
+    {
+      addChatItemAction: {
+        item: {
+          liveChatPaidMessageRenderer: {
+            id: 'sc-1',
+            timestampUsec: '1700000001000000',
+            authorName: { simpleText: 'DonorB' },
+            purchaseAmountText: { simpleText: '$5.00' },
+            message: { runs: [{ text: 'Keep going!' }] },
+          },
+        },
+      },
+    },
+    {
+      addChatItemAction: {
+        item: {
+          liveChatPaidStickerRenderer: {
+            id: 'st-1',
+            timestampUsec: '1700000002000000',
+            authorName: { simpleText: 'StickerC' },
+            purchaseAmountText: { simpleText: '฿100.00' },
+            sticker: { accessibility: { accessibilityData: { label: 'GG sticker' } } },
+          },
+        },
+      },
+    },
+    {
+      addChatItemAction: {
+        item: {
+          liveChatMembershipItemRenderer: {
+            id: 'mem-1',
+            timestampUsec: '1700000003000000',
+            authorName: { simpleText: 'MemberD' },
+            headerSubtext: { runs: [{ text: 'Welcome to Membership!' }] },
+          },
+        },
+      },
+    },
+  ];
+  const parsedActions = actions.map((a) => youtube.parseYouTubeChatAction(a));
+  assert.equal(parsedActions[0].event.type, 'chat');
+  assert.equal(parsedActions[0].event.comment, 'Hello :wave:');
+  assert.equal(parsedActions[1].event.type, 'gift');
+  assert.equal(parsedActions[1].event.giftName, 'Super Chat ($5.00)');
+  assert.equal(parsedActions[1].event.diamondCount, 500);
+  assert.equal(parsedActions[2].event.type, 'gift');
+  assert.equal(parsedActions[2].event.diamondCount, 300);
+  assert.equal(parsedActions[3].event.type, 'subscribe');
+  assert.equal(parsedActions[3].event.label, 'Welcome to Membership!');
+
+  const emitted = [];
+  const chatBus = new EventEmitter();
+  chatBus.on('event', (ev) => emitted.push(ev));
+  let pollCalls = 0;
+  const ytChat = new youtube.YouTubeChatSession('lofigirl', {
+    chatEvents: chatBus,
+    fetchImpl: async (url) => {
+      if (url.includes('@lofigirl/live')) return { ok: true, status: 200, text: sampleHtml };
+      if (url.includes('get_live_chat')) {
+        pollCalls++;
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            continuationContents: {
+              liveChatContinuation: {
+                actions: pollCalls === 1 ? actions : [],
+                continuations: [{ timedContinuationData: { continuation: 'CONT_NEXT', timeoutMs: 3000 } }],
+              },
+            },
+          }),
+        };
+      }
+      return { ok: false, status: 404, text: '' };
+    },
+  });
+  ytChat.uiActive = true;
+  await ytChat.connect();
+  assert.equal(ytChat.state, 'connected');
+  // Poll loop is scheduled asynchronously at +50ms; trigger deterministically and wait for delivery
+  await ytChat._pollOnce();
+  // Deduplicate exact same action batch
+  await ytChat._pollOnce();
+  assert.equal(ytChat.events.length, 4);
+  assert.equal(emitted.length, 4);
+  assert.equal(emitted[0].platform, 'youtube');
+  ytChat.disconnect();
+  assert.equal(ytChat.state, 'closed');
+  assert.equal(ytChat._pollTimer, null);
+
+  // 5. CDN SSRF checks, filename prefix, and derivePlatformFromFilename
+  assert.equal(utils.isAllowedCdnUrl('https://manifest.googlevideo.com/api/manifest/hls_variant/a.m3u8'), true);
+  assert.equal(utils.isAllowedCdnUrl('https://i.ytimg.com/vi/abc/maxresdefault.jpg'), true);
+  assert.equal(utils.isAllowedCdnUrl('https://evilgooglevideo.com/a.m3u8'), false);
+  assert.equal(utils.isAllowedCdnUrl('http://manifest.googlevideo.com/a.m3u8'), false);
+  const dt = new Date(2026, 10, 24, 15, 30, 45);
+  assert.equal(utils.renderRecordingFilename('{username}_{date}_{time}', { platform: 'youtube', username: 'lofigirl', dateObj: dt }), 'youtube_lofigirl_20261124_153045');
+  assert.equal(providers.derivePlatformFromFilename('youtube_lofigirl_20261124_153045.mp4'), 'youtube');
+  assert.equal(providers.stripPlatformPrefix('youtube_lofigirl'), 'lofigirl');
+  const ytArgs = ffmpeg.buildRecordArgs({ url: 'https://manifest.googlevideo.com/a.m3u8', kind: 'hls', quality: 'uhd_60', referer: 'https://www.youtube.com/' }, 'out.mp4');
+  assert.equal(ytArgs.includes('h264_mp4toannexb'), false);
+  assert.ok(ytArgs.includes('Referer: https://www.youtube.com/\r\n'));
+  assert.ok(chat.chatEvents);
+});

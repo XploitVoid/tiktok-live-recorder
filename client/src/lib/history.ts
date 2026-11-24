@@ -1,4 +1,5 @@
 // lib/history.ts — Search history & favorites stored in localStorage.
+import { normalizePlatform } from './utils'
 import type { Platform } from './types'
 
 const HISTORY_KEY = 'tiktok_search_history'
@@ -21,12 +22,17 @@ export interface FavoriteEntry {
 export type FavoriteItem = FavoriteEntry
 
 function normPlatform(p?: unknown): Platform {
-  return p === 'twitch' ? 'twitch' : 'tiktok'
+  return normalizePlatform(p)
 }
 
 function normUsername(username: string, platform: Platform): string {
   const s = username.trim()
-  return platform === 'twitch' ? s.toLowerCase() : s
+  if (platform === 'twitch') return s.toLowerCase()
+  if (platform === 'youtube') {
+    if (/^v_[A-Za-z0-9_-]{11}$/.test(s) || /^UC[A-Za-z0-9_-]{22}$/.test(s)) return s
+    return s.toLowerCase()
+  }
+  return s
 }
 
 function sameEntry(a: { username: string; platform?: Platform }, username: string, platform: Platform): boolean {

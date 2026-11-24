@@ -69,13 +69,13 @@
 ## 🗓️ 4. ลำดับขั้นตอนการพัฒนา (Implementation Roadmap)
 
 ### 🟢 เฟสที่ 1: Provider Architecture + Twitch (`v2.0.0-alpha`)
-- [ ] ออกแบบและสร้าง `lib/providers/index.js` และย้าย TikTok เข้า `lib/providers/tiktok.js` โดยไม่กระทบฟีเจอร์ `v1.6.0`
-- [ ] พัฒนา `lib/providers/twitch.js` (HLS stream + IRC WebSocket chat)
-- [ ] เพิ่ม `platform` ใน `watcher.js`, `recorder.js`, `db.js`, API routes และ UI
+- [x] ออกแบบและสร้าง `lib/providers/index.js` และย้าย TikTok เข้า `lib/providers/tiktok.js` โดยไม่กระทบฟีเจอร์ `v1.6.0`
+- [x] พัฒนา `lib/providers/twitch.js` (HLS stream + IRC WebSocket chat)
+- [x] เพิ่ม `platform` ใน `watcher.js`, `recorder.js`, `db.js`, API routes และ UI
 
 ### 🟡 เฟสที่ 2: YouTube Live (`v2.0.0-beta.1`)
-- [ ] พัฒนา `lib/providers/youtube.js` (`/@handle/live` + `youtubei` HLS & Live Chat/Super Chat)
-- [ ] เพิ่ม optional `yt-dlp` fallback และรองรับใน `Dockerfile`
+- [x] พัฒนา `lib/providers/youtube.js` (`/@handle/live` + `youtubei` HLS & Live Chat/Super Chat)
+- [x] เพิ่ม optional `yt-dlp` fallback และรองรับใน `Dockerfile`
 
 ### 🟠 เฟสที่ 3: Kick & Multi-Platform UI (`v2.0.0-beta.2`)
 - [ ] พัฒนา `lib/providers/kick.js` (HLS + Pusher WebSocket + Cloudflare/proxy fallback)

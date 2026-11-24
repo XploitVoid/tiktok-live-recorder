@@ -11,8 +11,8 @@ RUN npm run build --prefix client
 # Stage 2: Production environment
 FROM node:22-alpine
 
-# Install ffmpeg for recording/transcoding
-RUN apk add --no-cache ffmpeg
+# Install ffmpeg and optional yt-dlp fallback for YouTube/Kick stream extraction
+RUN apk add --no-cache ffmpeg yt-dlp
 
 WORKDIR /app
 

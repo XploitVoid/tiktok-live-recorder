@@ -8,6 +8,7 @@ import { PlatformBadge } from '@/components/PlatformBadge'
 import { useI18n } from '@/lib/i18n'
 import { useEventStream } from '@/lib/useEventStream'
 import { fmtTime } from '@/lib/format'
+import { formatChannelUrl, normalizePlatform } from '@/lib/utils'
 import type { ChatEvent, Platform } from '@/lib/types'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -69,7 +70,7 @@ const STREAM_COLORS: StreamColor[] = [
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
 function streamKey(platform: Platform | undefined, username: string): string {
-  return `${platform === 'twitch' ? 'twitch' : 'tiktok'}:${username}`
+  return `${normalizePlatform(platform)}:${username}`
 }
 
 function getStreamColor(key: string, allKeys: string[]): StreamColor {
@@ -115,7 +116,7 @@ function StatCard({ icon, value, label }: { icon: React.ReactNode; value: number
 
 function StreamCard({ stream, allKeys, now }: { stream: DashboardStream; allKeys: string[]; now: number }) {
   const { t } = useI18n()
-  const plat: Platform = stream.platform === 'twitch' ? 'twitch' : 'tiktok'
+  const plat = normalizePlatform(stream.platform)
   const key = streamKey(plat, stream.username)
   const color = getStreamColor(key, allKeys)
   const { health } = stream
@@ -125,9 +126,7 @@ function StreamCard({ stream, allKeys, now }: { stream: DashboardStream; allKeys
   const statusColor = stale ? 'bg-red-500' : hasIssues ? 'bg-amber-500' : 'bg-emerald-500'
   const statusTitle = stale ? t('dashStale') : hasIssues ? t('dashUnstable') : t('dashHealthy')
   const uptimeStr = formatUptime(health?.lastConnectedAt ?? null, now)
-  const liveUrl = plat === 'twitch'
-    ? `https://www.twitch.tv/${encodeURIComponent(stream.username)}`
-    : `https://www.tiktok.com/@${encodeURIComponent(stream.username)}/live`
+  const liveUrl = formatChannelUrl(plat, stream.username)
 
   return (
     <Card className="border-border/50">
@@ -233,7 +232,9 @@ function FilterChips({
             }`}
           >
             <span className={`w-2 h-2 rounded-full ${color.bg}`} />
-            {stream.platform === 'twitch' && <PlatformBadge platform="twitch" className="text-[9px] px-1 py-0" />}
+            {stream.platform && stream.platform !== 'tiktok' && (
+              <PlatformBadge platform={stream.platform} className="text-[9px] px-1 py-0" />
+            )}
             @{stream.username}
           </button>
         )
@@ -246,10 +247,11 @@ function UnifiedChatLine({ event, color }: { event: UnifiedChatEvent; color: Str
   if (event.type === 'roomUser' || event.type === 'connected' || event.type === 'pkUpdate') {
     return null
   }
+  const evPlat = normalizePlatform(event._platform)
   const streamBadge = event._username ? (
     <span className={`inline-flex items-center gap-0.5 px-1.5 py-0 rounded text-[9px] font-mono font-semibold ${color.badge} border`}>
       <span className={`w-1.5 h-1.5 rounded-full ${color.bg}`} />
-      {event._platform === 'twitch' ? 'twitch:' : ''}{event._username}
+      {evPlat !== 'tiktok' ? `${evPlat}:` : ''}{event._username}
     </span>
   ) : null
 

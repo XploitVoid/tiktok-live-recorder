@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { useI18n } from '@/lib/i18n'
 import { checkStream } from '@/lib/api'
-import { parseChannelInput } from '@/lib/utils'
+import { parseChannelInput, normalizePlatform } from '@/lib/utils'
 import { PlatformBadge, PlatformSwitch } from '@/components/PlatformBadge'
 import {
   getHistory, addHistory, removeHistory, clearHistory,
@@ -75,7 +75,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
   }, [runCheck])
 
   useEffect(() => {
-    const targetPlat: Platform = initialPlatform === 'twitch' ? 'twitch' : 'tiktok'
+    const targetPlat = normalizePlatform(initialPlatform)
     const parsed = initialUsername ? parseChannelInput(initialUsername, targetPlat) : null
     const normalized = parsed?.username || null
     const initialKey = normalized ? `${parsed!.platform}:${normalized}` : null
@@ -123,16 +123,17 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
   const parsedInput = parseChannelInput(username, platform)
   const cleanedInput = parsedInput.username
   const inputIsFav = !!cleanedInput && isFavorite(cleanedInput, parsedInput.platform)
-  const favKeys = new Set(
-    favorites.map((f) => `${f.platform}:${f.platform === 'twitch' ? f.username.toLowerCase() : f.username}`),
-  )
-  const filteredHistory = history.filter(
-    (e) => !favKeys.has(`${e.platform}:${e.platform === 'twitch' ? e.username.toLowerCase() : e.username}`),
-  )
+  const normEntryKey = (p: Platform, u: string) => {
+    if (p === 'twitch') return `twitch:${u.toLowerCase()}`
+    if (p === 'youtube') return `youtube:${/^v_|^UC/.test(u) ? u : u.toLowerCase()}`
+    return `tiktok:${u}`
+  }
+  const favKeys = new Set(favorites.map((f) => normEntryKey(f.platform, f.username)))
+  const filteredHistory = history.filter((e) => !favKeys.has(normEntryKey(e.platform, e.username)))
 
   const handleInputChange = (val: string) => {
     setUsername(val)
-    if (/^(?:twitch|tiktok):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com)\//i.test(val)) {
+    if (/^(?:twitch|tiktok|youtube|yt):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be)\//i.test(val)) {
       const detected = parseChannelInput(val, platform)
       if (detected.platform !== platform) setPlatform(detected.platform)
     }
@@ -145,7 +146,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
           htmlFor="uInput"
           className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground block"
         >
-          {platform === 'twitch' ? t('usernameLabelMulti') : t('usernameLabel')}
+          {platform !== 'tiktok' ? t('usernameLabelMulti') : t('usernameLabel')}
         </Label>
 
         <div className="flex flex-col sm:flex-row gap-2">
@@ -199,7 +200,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
                   onClick={() => void runCheck(fav.username, fav.platform)}
                   className="inline-flex items-center gap-1 px-2 py-1 hover:bg-amber-500/15 transition-colors cursor-pointer font-mono"
                 >
-                  {fav.platform === 'twitch' && <PlatformBadge platform="twitch" className="text-[9px] px-1 py-0" />}
+                  {fav.platform !== 'tiktok' && <PlatformBadge platform={fav.platform} className="text-[9px] px-1 py-0" />}
                   <span>@{fav.username}</span>
                 </button>
                 <button
@@ -231,7 +232,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
                   onClick={() => void runCheck(entry.username, entry.platform)}
                   className="inline-flex items-center gap-1 px-2 py-1 hover:bg-secondary transition-colors cursor-pointer font-mono"
                 >
-                  {entry.platform === 'twitch' && <PlatformBadge platform="twitch" className="text-[9px] px-1 py-0" />}
+                  {entry.platform !== 'tiktok' && <PlatformBadge platform={entry.platform} className="text-[9px] px-1 py-0" />}
                   <span>@{entry.username}</span>
                 </button>
                 <button

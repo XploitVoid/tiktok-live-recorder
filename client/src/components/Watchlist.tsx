@@ -320,7 +320,7 @@ export function Watchlist({ onJobsChanged }: Props) {
               onChange={(e) => {
                 const val = e.target.value
                 setAddUsername(val)
-                if (/^(?:twitch|tiktok):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com)\//i.test(val)) {
+                if (/^(?:twitch|tiktok|youtube|yt):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be)\//i.test(val)) {
                   const detected = parseChannelInput(val, addPlatform)
                   if (detected.platform !== addPlatform) setAddPlatform(detected.platform)
                 }
@@ -382,7 +382,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                       <span>...</span>
                     )}
                   </Badge>
-                  {e.platform === 'twitch' && <PlatformBadge platform="twitch" />}
+                  {e.platform && e.platform !== 'tiktok' && <PlatformBadge platform={e.platform} />}
                   <span className="text-sm font-medium font-mono">@{e.username}</span>
                   {e.priority === 'high' && (
                     <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-amber-600/30 text-amber-200 border-amber-600/40" title="High priority polling">
@@ -538,7 +538,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                   <div key={e.id} className={`flex items-center gap-1.5 py-0.5 ${color}`}>
                     <span className="text-muted-foreground font-mono tabular-nums shrink-0">{fmtTime(e.ts)}</span>
                     <EventIcon className="w-3 h-3 shrink-0" />
-                    {e.platform === 'twitch' && <PlatformBadge platform="twitch" />}
+                    {e.platform && e.platform !== 'tiktok' && <PlatformBadge platform={e.platform} />}
                     <strong className="font-mono">@{e.username}</strong>
                     <span className="opacity-80">{e.type}</span>
                     {detail && <span className="truncate text-muted-foreground">{detail}</span>}

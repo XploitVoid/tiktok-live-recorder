@@ -184,9 +184,16 @@ router.get('/api/proxy', async (req, res) => {
 
   try {
     const targetHost = new URL(target).hostname.toLowerCase();
-    const referer = (targetHost.endsWith('.ttvnw.net') || targetHost === 'ttvnw.net' || targetHost.endsWith('.jtvnw.net') || targetHost === 'jtvnw.net')
-      ? 'https://www.twitch.tv/'
-      : 'https://www.tiktok.com/';
+    let referer = 'https://www.tiktok.com/';
+    if (targetHost.endsWith('.ttvnw.net') || targetHost === 'ttvnw.net' || targetHost.endsWith('.jtvnw.net') || targetHost === 'jtvnw.net') {
+      referer = 'https://www.twitch.tv/';
+    } else if (
+      targetHost.endsWith('.googlevideo.com') || targetHost === 'googlevideo.com' ||
+      targetHost.endsWith('.ytimg.com') || targetHost === 'ytimg.com' ||
+      targetHost.endsWith('.ggpht.com') || targetHost === 'ggpht.com'
+    ) {
+      referer = 'https://www.youtube.com/';
+    }
     const upstream = await safeFetch(target, {
       headers: {
         // Some CDNs check referer/UA

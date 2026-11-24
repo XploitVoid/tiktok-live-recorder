@@ -4,7 +4,7 @@ import { Users, VolumeX, Volume2, ArrowUpRight } from 'lucide-react'
 import { fmtViewers } from '@/lib/format'
 import { useI18n } from '@/lib/i18n'
 import { loadPlayers } from '@/lib/players'
-import { safeImageUrl } from '@/lib/utils'
+import { normalizePlatform, safeImageUrl } from '@/lib/utils'
 import { PlatformBadge } from '@/components/PlatformBadge'
 import type { CheckResult } from '@/lib/types'
 
@@ -185,7 +185,7 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
             </button>
             <div className="flex-1" />
             <Link
-              to={`/?u=${encodeURIComponent(entry.username)}${entry.platform === 'twitch' ? '&platform=twitch' : ''}`}
+              to={`/?u=${encodeURIComponent(entry.username)}${normalizePlatform(entry.platform) !== 'tiktok' ? `&platform=${normalizePlatform(entry.platform)}` : ''}`}
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary hover:bg-primary/90 text-[11px] font-medium transition-colors text-primary-foreground"
             >
               <span>{t('dashLink')}</span>
@@ -211,7 +211,9 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 min-w-0">
             <span className="font-semibold text-sm text-foreground truncate">@{entry.username}</span>
-            {entry.platform === 'twitch' && <PlatformBadge platform="twitch" />}
+            {normalizePlatform(entry.platform) !== 'tiktok' && (
+              <PlatformBadge platform={normalizePlatform(entry.platform)} />
+            )}
           </div>
           <div className="text-[11px] text-muted-foreground truncate">{entry.title || t('noTitle')}</div>
         </div>

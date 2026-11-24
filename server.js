@@ -51,7 +51,7 @@ app.use(compression({
   threshold: 1024,
   filter: (req, res) => {
     const p = req.path.toLowerCase();
-    if (p.startsWith('/files/') || p.startsWith('/api/transcode') || p.replace(/\/+$/, '') === '/api/events/stream') return false;
+    if (p.startsWith('/files/') || p.startsWith('/api/transcode') || p.startsWith('/api/proxy') || p.replace(/\/+$/, '') === '/api/events/stream') return false;
     const ct = res.getHeader('Content-Type') || '';
     if (typeof ct === 'string' && /^(video|audio|image|text\/event-stream)\b/i.test(ct)) return false;
     return compression.filter(req, res);
@@ -86,6 +86,7 @@ app.use((_req, res, next) => {
     "font-src 'self' https://fonts.gstatic.com data:; " +
     "img-src 'self' https: data:; " +
     "media-src 'self' blob:; " +
+    "worker-src 'self' blob:; " +
     "connect-src 'self'; " +
     "object-src 'none'; " +
     "base-uri 'self'; " +

@@ -90,7 +90,7 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
         })
         players.push(p)
       } else if (typeof window.Hls !== 'undefined' && Hls!.isSupported() && pickedKind === 'hls') {
-        const p = new Hls!()
+        const p = new Hls!({ enableWorker: true, lowLatencyMode: false, backBufferLength: 30 })
         p.loadSource('/api/proxy?url=' + encodeURIComponent(pickedUrl))
         p.attachMedia(video)
         p.on(Hls!.Events.MANIFEST_PARSED, () => {

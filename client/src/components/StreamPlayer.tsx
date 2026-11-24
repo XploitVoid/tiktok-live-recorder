@@ -208,7 +208,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
       setPlayerInfo(`FLV (flv.js) · ${label} · via local proxy`)
     } else if (hlsUrl && Hls && Hls.isSupported()) {
       const proxied = '/api/proxy?url=' + encodeURIComponent(hlsUrl)
-      const h = new Hls()
+      const h = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 30 })
       h.loadSource(proxied); h.attachMedia(video)
       h.on(Hls.Events.MANIFEST_PARSED, () => {
         if (!cancelled) video.play().catch(() => {})

@@ -24,7 +24,7 @@ interface HlsInstance {
 
 interface HlsConstructor {
   isSupported: () => boolean
-  new(): HlsInstance
+  new(config?: Record<string, unknown>): HlsInstance
   Events: Record<string, string>
   ErrorTypes: Record<string, string>
 }

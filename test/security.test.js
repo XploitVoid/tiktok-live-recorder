@@ -254,6 +254,7 @@ test('server HTTP integration: auth cookie, DNS rebinding, CSRF, traversal, and 
     assert.equal(healthRes.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(healthRes.headers.get('x-frame-options'), 'SAMEORIGIN');
     assert.ok(healthRes.headers.get('content-security-policy'));
+    assert.match(healthRes.headers.get('content-security-policy'), /worker-src 'self' blob:/);
     assert.ok(healthRes.headers.get('permissions-policy'));
 
     // 2. DNS rebinding Host header rejected with 421 (test using raw http.request since fetch forbids Host override)

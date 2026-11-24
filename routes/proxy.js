@@ -258,6 +258,7 @@ router.get('/api/proxy', async (req, res) => {
         })
         .join('\n');
       res.setHeader('content-type', 'application/vnd.apple.mpegurl');
+      res.setHeader('cache-control', 'no-store');
       return res.send(rewritten);
     }
 

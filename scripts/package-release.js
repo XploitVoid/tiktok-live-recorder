@@ -15,7 +15,7 @@ const zlib = require('zlib');
 const { extractChangelogSection, buildReleaseNotes } = require('./extract-release-notes');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
-const DEFAULT_REPO = 'XploitVoid/tiktok-live-recorder';
+const DEFAULT_REPO = 'XploitVoid/live-stream-recorder';
 const DEFAULT_REPO_URL = `https://github.com/${DEFAULT_REPO}`;
 const DEFAULT_NODE_VERSION = 'v22.23.5';
 

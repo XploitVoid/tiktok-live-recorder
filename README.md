@@ -1,7 +1,7 @@
 # Live Stream Recorder
 
-[![Release](https://img.shields.io/github/v/release/XploitVoid/tiktok-live-recorder?label=Release)](https://github.com/XploitVoid/tiktok-live-recorder/releases/latest)
-![License](https://img.shields.io/github/license/XploitVoid/tiktok-live-recorder)
+[![Release](https://img.shields.io/github/v/release/XploitVoid/live-stream-recorder?label=Release)](https://github.com/XploitVoid/live-stream-recorder/releases/latest)
+![License](https://img.shields.io/github/license/XploitVoid/live-stream-recorder)
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green)
 ![Docker](https://img.shields.io/badge/Docker-Supported-blue)
 
@@ -65,7 +65,7 @@ If you don't want to use the UI, you can run the scripts directly (passing a use
 ### Setup
 
 **Option 1: Pre-built Releases (Recommended for Desktop — No Node.js or FFmpeg required)**
-Download the standalone package for your OS from the [GitHub Releases](https://github.com/XploitVoid/tiktok-live-recorder/releases) page:
+Download the standalone package for your OS from the [GitHub Releases](https://github.com/XploitVoid/live-stream-recorder/releases) page:
 - **Windows Installer (`*-windows-x64-setup.exe`)** — Standard installer with Start Menu & optional Desktop shortcut (preserves `recordings/`, `.env`, accounts, and watchlist across upgrades).
 - **Windows Portable (`*-windows-x64-portable.zip`)** — Extract anywhere and double-click `TikTok LIVE Recorder.bat`.
 - **Linux / macOS (`*-linux-x64.tar.gz`, `*-macos-arm64.tar.gz`, `*-macos-x64.tar.gz`)** — Extract and run `./start.sh` (or double-click `Start TikTok LIVE Recorder.command` on macOS).

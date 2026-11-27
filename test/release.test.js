@@ -131,7 +131,7 @@ test('package-release.generateChecksumsAndSource writes sorted SHA256SUMS.txt an
     assert.equal(sums[1], `${hashB}  b-app.zip`);
 
     const sourceText = fs.readFileSync(res.sourcePath, 'utf8');
-    assert.match(sourceText, /^Repository: https:\/\/github\.com\/XploitVoid\/tiktok-live-recorder$/m);
+    assert.match(sourceText, /^Repository: https:\/\/github\.com\/XploitVoid\/live-stream-recorder$/m);
     assert.match(sourceText, /^Version: v1\.5\.0$/m);
     assert.match(sourceText, /^Commit: abc1234$/m);
     assert.match(sourceText, /^Built-At: \d{4}-\d{2}-\d{2}T/m);

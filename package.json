@@ -18,13 +18,13 @@
     "ffmpeg",
     "hls"
   ],
-  "homepage": "https://github.com/XploitVoid/tiktok-live-recorder",
+  "homepage": "https://github.com/XploitVoid/live-stream-recorder",
   "repository": {
     "type": "git",
-    "url": "https://github.com/XploitVoid/tiktok-live-recorder.git"
+    "url": "https://github.com/XploitVoid/live-stream-recorder.git"
   },
   "bugs": {
-    "url": "https://github.com/XploitVoid/tiktok-live-recorder/issues"
+    "url": "https://github.com/XploitVoid/live-stream-recorder/issues"
   },
   "scripts": {
     "check": "node check.js",

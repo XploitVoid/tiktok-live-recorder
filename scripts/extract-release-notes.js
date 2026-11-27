@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_REPO = 'XploitVoid/tiktok-live-recorder';
+const DEFAULT_REPO = 'XploitVoid/live-stream-recorder';
 
 function escapeRegExp(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

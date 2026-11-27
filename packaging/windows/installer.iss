@@ -3,7 +3,7 @@
 ;   ISCC.exe /DMyAppVersion=1.4.2 /DSourceDir=... /DOutputDir=... packaging\windows\installer.iss
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.6.0"
+  #define MyAppVersion "2.0.0"
 #endif
 
 #ifndef SourceDir

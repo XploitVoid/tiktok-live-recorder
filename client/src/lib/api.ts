@@ -4,6 +4,7 @@ import type {
   RecordJob,
   RecordingFile,
   WatchData,
+  WatchEntry,
   WatchEvent,
   ChatPollResult,
   ReplayData,
@@ -21,6 +22,18 @@ import type {
 
 export const UNAUTHORIZED_EVENT = 'tlr:unauthorized'
 
+export class ApiError extends Error {
+  status: number
+  code?: string
+
+  constructor(message: string, status: number, code?: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+  }
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, init)
   if (r.status === 401 && !url.startsWith('/api/auth/')) {
@@ -31,7 +44,11 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   if (text) {
     try { data = JSON.parse(text) as Record<string, unknown> } catch { data = { error: text } }
   }
-  if (!r.ok) throw new Error((typeof data.error === 'string' && data.error) || `HTTP ${r.status}`)
+  if (!r.ok) {
+    const code = typeof data.code === 'string' ? data.code : undefined
+    const msg = (typeof data.error === 'string' && data.error) || code || `HTTP ${r.status}`
+    throw new ApiError(msg, r.status, code)
+  }
   return data as T
 }
 
@@ -54,11 +71,11 @@ export const logoutAuth = () =>
   post<{ ok: boolean }>('/api/auth/logout')
 
 // ── Check / Stream ──
-export async function checkStream(username: string, platform?: Platform): Promise<CheckResult> {
+export async function checkStream(username: string, platform?: Platform, signal?: AbortSignal): Promise<CheckResult> {
   const params = new URLSearchParams({ u: username })
   if (platform) params.set('platform', platform)
   const url = `/api/stream?${params.toString()}`
-  const r = await fetch(url)
+  const r = await fetch(url, { signal })
   if (r.status === 401) {
     window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
   }
@@ -123,11 +140,21 @@ export const deleteRecording = (name: string) =>
 export const getReplayData = (name: string) =>
   json<ReplayData>(`/api/recordings/${encodeURIComponent(name)}`)
 
+export interface RecordingMeta {
+  protected?: boolean
+  displayTitle?: string | null
+  notes?: string
+  startedAt?: number
+  username?: string
+  platform?: Platform
+  [key: string]: unknown
+}
+
 export const updateRecordingMeta = (
   name: string,
   patch: { protected?: boolean; displayTitle?: string | null; notes?: string },
 ) =>
-  json<{ ok: boolean; meta: RecordingFile }>(`/api/recordings/${encodeURIComponent(name)}`, {
+  json<{ ok: boolean; meta: RecordingMeta | null }>(`/api/recordings/${encodeURIComponent(name)}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(patch),
@@ -264,7 +291,7 @@ export const addWatch = (
     scheduleEnd?: string | null
   },
 ) =>
-  post<WatchData>('/api/watch', {
+  post<{ ok: boolean; entry: WatchEntry }>('/api/watch', {
     username,
     quality,
     autoRecord,
@@ -309,7 +336,7 @@ export const patchWatch = (
 }
 
 export const savePollSeconds = (seconds: number) =>
-  post<void>('/api/watch/poll-seconds', { seconds })
+  post<{ ok: boolean; pollSeconds: number }>('/api/watch/poll-seconds', { seconds })
 
 export const pollNow = () => post<void>('/api/watch/poll-now', undefined)
 
@@ -352,8 +379,18 @@ export interface AccountsResponse {
     sessionPreview: string
     hasSession: boolean
     byPlatform?: Record<Platform, string | null>
+    hasSessionByPlatform?: Record<Platform, boolean>
   }
   stealth: boolean
+  stealthPlatforms?: Record<Platform, boolean>
+  effectiveAnonByPlatform?: Record<Platform, boolean>
+}
+
+export interface StealthResponse {
+  ok: boolean
+  stealth: boolean
+  stealthPlatforms?: Record<Platform, boolean>
+  effectiveAnonByPlatform?: Record<Platform, boolean>
 }
 
 export const getAccounts = () => json<AccountsResponse>('/api/accounts')
@@ -367,8 +404,17 @@ export const deleteAccount = (id: string) =>
 export const switchAccount = (id?: string, platform?: Platform) =>
   post<{ ok: boolean; hasSession: boolean; platform?: Platform }>('/api/accounts/switch', { id, platform })
 
-export const toggleStealth = (enabled: boolean) =>
-  post<{ ok: boolean; stealth: boolean }>('/api/accounts/stealth', { enabled })
+export const toggleStealth = (
+  enabled: boolean,
+  platform?: Platform,
+  stealthPlatforms?: Partial<Record<Platform, boolean>>,
+) =>
+  post<StealthResponse>(
+    '/api/accounts/stealth',
+    stealthPlatforms
+      ? { enabled, stealthPlatforms }
+      : { enabled, ...(platform ? { platform } : {}) },
+  )
 
 export const checkAccountHealth = (id: string) =>
   post<{ ok: boolean; id: string; health: AccountHealth }>(`/api/accounts/${encodeURIComponent(id)}/check`)

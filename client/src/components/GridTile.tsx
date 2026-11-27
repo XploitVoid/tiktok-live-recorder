@@ -17,7 +17,7 @@ interface GridTileProps {
 
 interface PickedStream {
   url: string
-  kind: 'flv' | 'hls'
+  kind: 'flv' | 'hls' | 'dash'
   quality: string
 }
 
@@ -31,11 +31,31 @@ function pickStream(entry: CheckResult, qPref: string, preferHls = false): Picke
     if (entry.streams?.hls) return { url: entry.streams.hls, kind: 'hls', quality: 'auto' }
   }
   const f = entry.streams?.flv || {}
-  const order = qPref === 'hd' ? ['hd', 'ld', 'origin', 'uhd', 'sd'] : ['ld', 'sd', 'hd', 'origin', 'uhd']
+  const order = qPref === 'hd' ? ['hd', 'origin', 'uhd', 'sd', 'ld'] : ['ld', 'sd', 'hd', 'origin', 'uhd']
   for (const q of order) if (f[q]) return { url: f[q], kind: 'flv', quality: q }
   for (const q of hlsOrder) if (hlsMap[q]) return { url: hlsMap[q], kind: 'hls', quality: q }
   if (entry.streams?.hls) return { url: entry.streams.hls, kind: 'hls', quality: 'auto' }
+  const cmaf = entry.streams?.cmaf || {}
+  for (const q of order) if (cmaf[q]) return { url: cmaf[q], kind: 'dash', quality: q }
+  const firstCmaf = Object.entries(cmaf).find(([, u]) => !!u)
+  if (firstCmaf) return { url: firstCmaf[1], kind: 'dash', quality: firstCmaf[0] }
   return null
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function hasPlayableGridStream(entry: CheckResult, quality: string, preferHls = false): boolean {
+  return pickStream(entry, quality, preferHls) !== null
+}
+
+const GRID_FLV_CONFIG = {
+  enableWorker: false,
+  enableStashBuffer: true,
+  stashInitialSize: 128,
+  lazyLoad: false,
+  autoCleanupSourceBuffer: true,
+  autoCleanupMaxBackwardDuration: 20,
+  autoCleanupMinBackwardDuration: 10,
+  fixAudioTimestampGap: true,
 }
 
 export function GridTile({ entry, quality, muted, preferHls = false }: GridTileProps) {
@@ -49,26 +69,62 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
     if (videoRef.current) videoRef.current.muted = localMuted
   }, [localMuted])
 
-  // Compute the picked stream once and use its URL as the effect dependency,
-  // so we only recreate the player when the URL or quality actually changes
-  // (not on every refresh that creates a new streams object reference).
   const pick = pickStream(entry, quality, preferHls)
   const pickedUrl = pick?.url ?? ''
   const pickedKind = pick?.kind ?? ''
   const pickedQ = pick?.quality ?? ''
+  const platform = normalizePlatform(entry.platform)
+  // Keep latest entry/url in refs so Twitch rotating Usher session tokens on
+  // 60s refreshes don't tear down and re-buffer an actively playing tile.
+  const latestUrlRef = useRef(pickedUrl)
+  const latestEntryRef = useRef(entry)
+  useEffect(() => {
+    latestUrlRef.current = pickedUrl
+    latestEntryRef.current = entry
+  }, [pickedUrl, entry])
+
+  const streamKey = pick
+    ? `${platform}:${entry.username}:${pickedKind}:${pickedQ}:${platform === 'twitch' ? 'live' : pickedUrl}`
+    : ''
 
   useEffect(() => {
     const video = videoRef.current
-    if (!video || !pickedUrl) return
+    if (!video || !streamKey) return
 
     const players: { destroy: () => void }[] = []
-    const timers: ReturnType<typeof setTimeout>[] = []
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
     const MAX_RETRIES = 3
     let retries = 0
     let cancelled = false
 
+    const onPlaying = () => {
+      retries = 0
+    }
+    video.addEventListener('playing', onPlaying)
+
     const onNativeMeta = () => {
-      video.play().catch(() => {})
+      if (!cancelled) video.play().catch(() => {})
+    }
+
+    const clearNativeVideo = () => {
+      video.onerror = null
+      video.removeEventListener('loadedmetadata', onNativeMeta)
+      try { video.pause() } catch { /* ignore */ }
+      try { video.removeAttribute('src'); video.load() } catch { /* ignore */ }
+    }
+
+    const scheduleRetry = (fn: () => void, onGiveUp?: () => void) => {
+      if (cancelled || retryTimer !== null) return
+      if (retries >= MAX_RETRIES) {
+        onGiveUp?.()
+        return
+      }
+      retries++
+      const delay = Math.min(10_000, 1500 * Math.pow(2, retries - 1))
+      retryTimer = setTimeout(() => {
+        retryTimer = null
+        if (!cancelled) fn()
+      }, delay)
     }
 
     // Load player libs lazily so the Grid page no longer pays the full
@@ -82,67 +138,127 @@ export function GridTile({ entry, quality, muted, preferHls = false }: GridTileP
 
     function attachPlayer() {
       if (!video) return
-      if (typeof window.flvjs !== 'undefined' && flvjs!.isSupported() && pickedKind === 'flv') {
-        const proxied = '/api/proxy?url=' + encodeURIComponent(pickedUrl)
-        const p = flvjs!.createPlayer({ type: 'flv', url: proxied, isLive: true, cors: true })
+      const flvLib = window.flvjs
+      const hlsLib = window.Hls
+      let activeUrl = latestUrlRef.current
+      let activeKind = pickedKind
+
+      // If FLV was chosen but flv.js CDN failed to load, try HLS fallback
+      if (activeKind === 'flv' && (!flvLib || !flvLib.isSupported())) {
+        const hlsFallback = pickStream(latestEntryRef.current, quality, true)
+        if (hlsFallback?.kind === 'hls') {
+          activeUrl = hlsFallback.url
+          activeKind = 'hls'
+        }
+      }
+      if (!activeUrl) return
+
+      const getFreshUrl = (kind: string) => {
+        if (kind === 'hls' && pickedKind !== 'hls') {
+          return pickStream(latestEntryRef.current, quality, true)?.url || activeUrl
+        }
+        return latestUrlRef.current || activeUrl
+      }
+
+      if (flvLib && flvLib.isSupported() && (activeKind === 'flv' || activeKind === 'dash')) {
+        const mediaSource = activeKind === 'dash'
+          ? {
+              type: 'flv',
+              url: '/api/transcode?url=' + encodeURIComponent(activeUrl),
+              isLive: true,
+              cors: true,
+              hasAudio: true,
+              hasVideo: true,
+            }
+          : {
+              type: 'flv',
+              url: '/api/proxy?url=' + encodeURIComponent(activeUrl),
+              isLive: true,
+              cors: true,
+            }
+        const p = flvLib.createPlayer(mediaSource, GRID_FLV_CONFIG)
         p.attachMediaElement(video); p.load(); p.play().catch(() => {})
-        p.on(flvjs!.Events.ERROR, () => {
-          if (cancelled || retries++ >= MAX_RETRIES) return
-          const id = setTimeout(() => {
-            if (cancelled) return
-            try { p.unload(); p.load(); p.play().catch(() => {}) } catch { /* give up */ }
-          }, 3000)
-          timers.push(id)
+        p.on(flvLib.Events.ERROR, () => {
+          scheduleRetry(
+            () => {
+              try { p.unload(); p.load(); p.play().catch(() => {}) } catch { /* give up */ }
+            },
+            () => {
+              try { p.destroy() } catch { /* ignore */ }
+              const idx = players.indexOf(p)
+              if (idx !== -1) players.splice(idx, 1)
+            },
+          )
         })
         players.push(p)
-      } else if (typeof window.Hls !== 'undefined' && Hls!.isSupported() && pickedKind === 'hls') {
-        const p = new Hls!({ enableWorker: true, lowLatencyMode: false, backBufferLength: 30 })
-        p.loadSource('/api/proxy?url=' + encodeURIComponent(pickedUrl))
+      } else if (hlsLib && hlsLib.isSupported() && activeKind === 'hls') {
+        const p = new hlsLib({ enableWorker: true, lowLatencyMode: false, backBufferLength: 30 })
+        p.loadSource('/api/proxy?url=' + encodeURIComponent(activeUrl))
         p.attachMedia(video)
-        p.on(Hls!.Events.MANIFEST_PARSED, () => {
+        p.on(hlsLib.Events.MANIFEST_PARSED, () => {
           if (!cancelled) video.play().catch(() => {})
         })
-        p.on(Hls!.Events.ERROR, (...args: unknown[]) => {
+        p.on(hlsLib.Events.ERROR, (...args: unknown[]) => {
           const data = args[1] as { fatal?: boolean; type?: string } | undefined
           if (!data?.fatal) return
-          if (cancelled || retries++ >= MAX_RETRIES) return
-          const id = setTimeout(() => {
-            if (cancelled) return
-            try {
-              if (data.type === Hls!.ErrorTypes.NETWORK_ERROR) {
-                p.startLoad()
-              } else {
-                p.recoverMediaError()
-              }
-            } catch { /* give up */ }
-          }, 3000)
-          timers.push(id)
+          scheduleRetry(
+            () => {
+              try {
+                if (data.type === hlsLib.ErrorTypes.NETWORK_ERROR) {
+                  const freshUrl = getFreshUrl('hls')
+                  if (freshUrl) {
+                    p.loadSource('/api/proxy?url=' + encodeURIComponent(freshUrl))
+                  } else {
+                    p.startLoad()
+                  }
+                } else {
+                  p.recoverMediaError()
+                }
+              } catch { /* give up */ }
+            },
+            () => {
+              try { p.destroy() } catch { /* ignore */ }
+              const idx = players.indexOf(p)
+              if (idx !== -1) players.splice(idx, 1)
+            },
+          )
         })
         players.push(p)
-      } else {
-        video.src = '/api/proxy?url=' + encodeURIComponent(pickedUrl)
+      } else if (activeKind === 'hls' && Boolean(video.canPlayType('application/vnd.apple.mpegurl'))) {
+        video.src = '/api/proxy?url=' + encodeURIComponent(activeUrl)
         video.addEventListener('loadedmetadata', onNativeMeta)
         video.play().catch(() => {})
         video.onerror = () => {
-          if (cancelled || retries++ >= MAX_RETRIES) return
-          const id = setTimeout(() => {
-            if (cancelled) return
-            try { video.load(); video.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
-          }, 3000)
-          timers.push(id)
+          scheduleRetry(
+            () => {
+              try {
+                const freshUrl = getFreshUrl('hls')
+                if (freshUrl) {
+                  video.src = '/api/proxy?url=' + encodeURIComponent(freshUrl)
+                }
+                video.load()
+                video.play().catch(() => { /* ignore */ })
+              } catch { /* ignore */ }
+            },
+            clearNativeVideo,
+          )
         }
       }
     }
 
     return () => {
       cancelled = true
-      for (const id of timers) clearTimeout(id)
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer)
+        retryTimer = null
+      }
       video.onerror = null
+      video.removeEventListener('playing', onPlaying)
       video.removeEventListener('loadedmetadata', onNativeMeta)
       for (const p of players) { try { p.destroy() } catch { /* ignore */ } }
       try { video.removeAttribute('src'); video.load() } catch { /* ignore */ }
     }
-  }, [pickedUrl, pickedKind, pickedQ])
+  }, [streamKey, pickedKind, quality])
 
   const toggleMute = () => {
     setMutedOverride({ prop: muted, val: !localMuted })

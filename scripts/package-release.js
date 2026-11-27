@@ -73,6 +73,16 @@ function normalizeVersion(raw) {
   return cleaned;
 }
 
+function normalizeNodeVersion(raw) {
+  const cleaned = String(raw || '').trim();
+  if (cleaned === 'local') return 'local';
+  const match = /^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(cleaned);
+  if (!match) {
+    throw new Error(`Invalid --node-version: "${raw}" (expected "local" or semver like "v22.23.5")`);
+  }
+  return `v${match[1]}`;
+}
+
 function getTargetName(platform = process.platform, arch = process.arch) {
   const map = {
     win32: 'windows',
@@ -107,8 +117,13 @@ function assertNoSecretsInDir(rootDir) {
       }
       const lower = entry.name.toLowerCase();
       const isForbiddenEnv = lower.startsWith('.env.') && lower !== '.env.example';
-      const isKeyFile = lower.endsWith('.key');
-      if (FORBIDDEN_RELEASE_FILES.has(lower) || isForbiddenEnv || isKeyFile) {
+      const isSecretExt =
+        lower.endsWith('.key') ||
+        lower.endsWith('.pem') ||
+        lower.endsWith('.p12') ||
+        lower.endsWith('.pfx') ||
+        lower.endsWith('.tmp');
+      if (FORBIDDEN_RELEASE_FILES.has(lower) || isForbiddenEnv || isSecretExt) {
         throw new Error(`Forbidden secret/user-data file detected in release staging: ${fullPath}`);
       }
     }
@@ -239,16 +254,38 @@ function writeTextFile(filePath, content, { crlf = false, mode } = {}) {
   }
 }
 
+async function fetchExpectedNodeSha256(ver, archiveName) {
+  const sumsUrl = `https://nodejs.org/dist/${ver}/SHASUMS256.txt`;
+  const res = await fetch(sumsUrl);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} downloading ${sumsUrl}`);
+  }
+  const text = await res.text();
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const m = /^([0-9a-f]{64})\s+\*?(.+)$/i.exec(trimmed);
+    if (m && m[2].trim() === archiveName) {
+      return m[1].toLowerCase();
+    }
+  }
+  throw new Error(`Checksum for ${archiveName} not found in ${sumsUrl}`);
+}
+
 async function ensureNodeBinary(targetSpec, nodeVersion) {
-  if (nodeVersion === 'local') {
+  const normalized = normalizeNodeVersion(nodeVersion);
+  if (normalized === 'local') {
     if (targetSpec.platform !== process.platform || targetSpec.arch !== process.arch) {
       throw new Error(`--node-version local only supports host target (${getTargetName()}), got ${targetSpec.name}`);
     }
     return process.execPath;
   }
 
-  const ver = nodeVersion.startsWith('v') ? nodeVersion : `v${nodeVersion}`;
-  const cacheDir = path.join(os.tmpdir(), 'tlr-node-cache', ver, targetSpec.nodeArch);
+  const ver = normalized;
+  const cacheRoot = process.env.TLR_NODE_CACHE_DIR
+    ? path.resolve(process.env.TLR_NODE_CACHE_DIR)
+    : path.join(ROOT_DIR, '.cache', 'node');
+  const cacheDir = path.join(cacheRoot, ver, targetSpec.nodeArch);
   const binName = targetSpec.isWindows ? 'node.exe' : 'node';
   const cachedBin = path.join(cacheDir, binName);
   const minBytes = 10 * 1024 * 1024;
@@ -260,10 +297,11 @@ async function ensureNodeBinary(targetSpec, nodeVersion) {
   fs.mkdirSync(cacheDir, { recursive: true });
   const archiveName = `node-${ver}-${targetSpec.nodeArch}.${targetSpec.nodeExt}`;
   const url = `https://nodejs.org/dist/${ver}/${archiveName}`;
-  const tmpArchive = path.join(cacheDir, archiveName);
+  const tmpArchive = path.join(cacheDir, `${archiveName}.tmp-${process.pid}`);
 
   console.log(`[package] Downloading portable Node.js ${ver} (${targetSpec.nodeArch})...`);
   try {
+    const expectedSha = await fetchExpectedNodeSha256(ver, archiveName);
     const res = await fetch(url);
     if (!res.ok || !res.body) {
       throw new Error(`HTTP ${res.status} downloading ${url}`);
@@ -271,11 +309,21 @@ async function ensureNodeBinary(targetSpec, nodeVersion) {
     const out = fs.createWriteStream(tmpArchive);
     await finished(Readable.fromWeb(res.body).pipe(out));
 
-    const tarCmd = process.platform === 'win32' ? 'tar.exe' : 'tar';
-    const extractArgs = targetSpec.isWindows
-      ? ['-xf', tmpArchive, '-C', cacheDir, '--strip-components=1', `node-${ver}-${targetSpec.nodeArch}/node.exe`]
-      : ['-xzf', tmpArchive, '-C', cacheDir, '--strip-components=2', `node-${ver}-${targetSpec.nodeArch}/bin/node`];
-    const ex = spawnSync(tarCmd, extractArgs, { stdio: 'inherit' });
+    const actualSha = sha256File(tmpArchive);
+    if (actualSha !== expectedSha) {
+      throw new Error(`SHA-256 mismatch for ${archiveName}: expected ${expectedSha}, got ${actualSha}`);
+    }
+
+    let ex;
+    if (targetSpec.isWindows && process.platform !== 'win32') {
+      ex = spawnSync('unzip', ['-o', '-j', tmpArchive, `node-${ver}-${targetSpec.nodeArch}/node.exe`, '-d', cacheDir], { stdio: 'inherit' });
+    } else {
+      const tarCmd = process.platform === 'win32' ? 'tar.exe' : 'tar';
+      const extractArgs = targetSpec.isWindows
+        ? ['-xf', tmpArchive, '-C', cacheDir, '--strip-components=1', `node-${ver}-${targetSpec.nodeArch}/node.exe`]
+        : ['-xzf', tmpArchive, '-C', cacheDir, '--strip-components=2', `node-${ver}-${targetSpec.nodeArch}/bin/node`];
+      ex = spawnSync(tarCmd, extractArgs, { stdio: 'inherit' });
+    }
     if (ex.status !== 0) {
       throw new Error(`Failed extracting ${binName} from ${archiveName} (exit ${ex.status})`);
     }
@@ -357,7 +405,7 @@ function buildPaxRecord(key, value) {
   }
 }
 
-function encodeTarHeader({ name, mode, size, mtimeSec, typeflag }) {
+function encodeTarHeader({ name, mode, size, mtimeSec, typeflag, linkname = '' }) {
   const hdr = Buffer.alloc(512, 0);
   const nameBuf = Buffer.from(name, 'utf8');
   nameBuf.copy(hdr, 0, 0, Math.min(nameBuf.length, 100));
@@ -369,6 +417,10 @@ function encodeTarHeader({ name, mode, size, mtimeSec, typeflag }) {
   hdr.write(`${mtimeSec.toString(8).padStart(11, '0')}\0`, 136, 12, 'ascii');
   hdr.fill(0x20, 148, 156); // spaces for checksum calculation
   hdr.write(typeflag, 156, 1, 'ascii');
+  if (linkname) {
+    const linkBuf = Buffer.from(linkname, 'utf8');
+    linkBuf.copy(hdr, 157, 0, Math.min(linkBuf.length, 100));
+  }
   hdr.write('ustar\0', 257, 6, 'ascii');
   hdr.write('00', 263, 2, 'ascii');
   hdr.write('0000000\0', 329, 8, 'ascii');
@@ -412,7 +464,28 @@ async function createUnixTarGz(stagingParent, bundleDirName, outTarGz, isExecuta
     for (const child of children) {
       const childAbs = path.join(absDir, child.name);
       const childRelSub = relSubPath ? `${relSubPath}/${child.name}` : child.name;
-      if (child.isDirectory()) {
+      if (child.isSymbolicLink()) {
+        const rawTarget = fs.readlinkSync(childAbs);
+        if (path.isAbsolute(rawTarget)) {
+          throw new Error(`Refusing absolute symlink in release staging: ${childAbs} -> ${rawTarget}`);
+        }
+        const resolvedTarget = path.resolve(absDir, rawTarget);
+        const relToRoot = path.relative(rootPath, resolvedTarget);
+        if (relToRoot.startsWith('..') || path.isAbsolute(relToRoot)) {
+          throw new Error(`Refusing escaping symlink in release staging: ${childAbs} -> ${rawTarget}`);
+        }
+        const st = fs.lstatSync(childAbs);
+        entries.push({
+          tarName: `${bundleDirName}/${childRelSub}`,
+          absPath: childAbs,
+          isDir: false,
+          isSymlink: true,
+          linkname: rawTarget.replace(/\\/g, '/'),
+          mode: 0o777,
+          size: 0,
+          mtimeSec: Math.floor(st.mtimeMs / 1000),
+        });
+      } else if (child.isDirectory()) {
         walk(childAbs, childRelSub);
       } else if (child.isFile()) {
         const st = fs.statSync(childAbs);
@@ -420,6 +493,8 @@ async function createUnixTarGz(stagingParent, bundleDirName, outTarGz, isExecuta
           tarName: `${bundleDirName}/${childRelSub}`,
           absPath: childAbs,
           isDir: false,
+          isSymlink: false,
+          linkname: '',
           mode: isExecutableRelPath(childRelSub) ? 0o755 : 0o644,
           size: st.size,
           mtimeSec: Math.floor(st.mtimeMs / 1000),
@@ -435,17 +510,25 @@ async function createUnixTarGz(stagingParent, bundleDirName, outTarGz, isExecuta
 
   const gzip = zlib.createGzip({ level: 6 });
   const out = fs.createWriteStream(outTarGz);
-  const donePromise = finished(out);
+  const donePromise = Promise.all([finished(gzip), finished(out)]);
+  donePromise.catch(() => {});
+  gzip.on('error', () => {});
+  out.on('error', () => {});
   gzip.pipe(out);
 
   try {
     const readBuf = Buffer.allocUnsafe(64 * 1024);
     for (const entry of entries) {
-      const nameByteLen = Buffer.byteLength(entry.tarName, 'utf8');
-      const needsPax = nameByteLen > 100 || /[^\x20-\x7e]/.test(entry.tarName);
+      const nameNeedsPax = Buffer.byteLength(entry.tarName, 'utf8') > 100 || /[^\x20-\x7e]/.test(entry.tarName);
+      const linkNeedsPax = Boolean(
+        entry.isSymlink && (Buffer.byteLength(entry.linkname, 'utf8') > 100 || /[^\x20-\x7e]/.test(entry.linkname))
+      );
 
-      if (needsPax) {
-        const paxData = buildPaxRecord('path', entry.tarName);
+      if (nameNeedsPax || linkNeedsPax) {
+        const paxChunks = [];
+        if (nameNeedsPax) paxChunks.push(buildPaxRecord('path', entry.tarName));
+        if (linkNeedsPax) paxChunks.push(buildPaxRecord('linkpath', entry.linkname));
+        const paxData = Buffer.concat(paxChunks);
         const paxHdrName = toSafeAsciiFallback(`PaxHeaders/${path.posix.basename(entry.tarName.replace(/\/$/, '')) || 'entry'}`, 99);
         const paxHdr = encodeTarHeader({
           name: paxHdrName,
@@ -460,17 +543,21 @@ async function createUnixTarGz(stagingParent, bundleDirName, outTarGz, isExecuta
         if (paxPad > 0) await writeChunk(gzip, Buffer.alloc(paxPad, 0));
       }
 
-      const headerName = needsPax ? toSafeAsciiFallback(entry.tarName, 99) : entry.tarName;
+      const headerName = nameNeedsPax ? toSafeAsciiFallback(entry.tarName, 99) : entry.tarName;
+      const headerLink = entry.isSymlink
+        ? (linkNeedsPax ? toSafeAsciiFallback(entry.linkname, 99) : entry.linkname)
+        : '';
       const hdr = encodeTarHeader({
         name: headerName,
         mode: entry.mode,
-        size: entry.isDir ? 0 : entry.size,
+        size: entry.isDir || entry.isSymlink ? 0 : entry.size,
         mtimeSec: entry.mtimeSec,
-        typeflag: entry.isDir ? '5' : '0',
+        typeflag: entry.isDir ? '5' : entry.isSymlink ? '2' : '0',
+        linkname: headerLink,
       });
       await writeChunk(gzip, hdr);
 
-      if (!entry.isDir && entry.size > 0) {
+      if (!entry.isDir && !entry.isSymlink && entry.size > 0) {
         const fd = fs.openSync(entry.absPath, 'r');
         try {
           let bytesRead = 0;
@@ -513,9 +600,10 @@ async function createArchive({ stagingParent, bundleDirName, outDir, version, ta
       });
       if (tarRes.status !== 0 || !fs.existsSync(outZip)) {
         console.log('[package] tar.exe archive failed or unavailable, falling back to Compress-Archive...');
-        const psScript = `Compress-Archive -Path '${stagingRoot.replace(/'/g, "''")}\\*' -DestinationPath '${outZip.replace(/'/g, "''")}' -Force`;
+        const psScript = 'Get-ChildItem -LiteralPath $env:TLR_ZIP_SRC -Force | Compress-Archive -DestinationPath $env:TLR_ZIP_DST -Force';
         const psRes = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psScript], {
           stdio: 'inherit',
+          env: { ...process.env, TLR_ZIP_SRC: stagingRoot, TLR_ZIP_DST: outZip },
         });
         if (psRes.status !== 0 || !fs.existsSync(outZip)) {
           throw new Error('Failed to create portable zip archive via tar.exe and Compress-Archive');
@@ -584,6 +672,14 @@ function buildWindowsInstaller({ stagingRoot, artifactsDir, version }) {
   return expectedExe;
 }
 
+function requireArgValue(argv, index, flag) {
+  const val = argv[index];
+  if (val === undefined || val === '') {
+    throw new Error(`Missing value for ${flag}`);
+  }
+  return val;
+}
+
 function parseArgs(argv) {
   const opts = {
     generateChecksumsDir: '',
@@ -601,17 +697,17 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--generate-checksums') {
-      opts.generateChecksumsDir = path.resolve(ROOT_DIR, argv[++i] || '');
+      opts.generateChecksumsDir = path.resolve(ROOT_DIR, requireArgValue(argv, ++i, arg));
     } else if (arg === '--version') {
-      opts.version = argv[++i] || '';
+      opts.version = requireArgValue(argv, ++i, arg);
     } else if (arg === '--commit') {
-      opts.commit = argv[++i] || '';
+      opts.commit = requireArgValue(argv, ++i, arg);
     } else if (arg === '--target') {
-      opts.target = argv[++i] || '';
+      opts.target = requireArgValue(argv, ++i, arg);
     } else if (arg === '--node-version') {
-      opts.nodeVersion = argv[++i] || DEFAULT_NODE_VERSION;
+      opts.nodeVersion = normalizeNodeVersion(requireArgValue(argv, ++i, arg));
     } else if (arg === '--out-dir') {
-      opts.outDir = path.resolve(ROOT_DIR, argv[++i] || 'release-dist');
+      opts.outDir = path.resolve(ROOT_DIR, requireArgValue(argv, ++i, arg));
     } else if (arg === '--skip-build') {
       opts.skipBuild = true;
     } else if (arg === '--reuse-node-modules') {
@@ -803,10 +899,11 @@ async function stageAndPackageTarget(opts, targetSpec, version) {
 async function runPackaging(opts) {
   const version = resolveVersionOption(opts.version);
   const clientIndex = path.join(ROOT_DIR, 'client', 'dist', 'index.html');
-  if (!fs.existsSync(clientIndex)) {
-    if (opts.skipBuild) {
+  if (opts.skipBuild) {
+    if (!fs.existsSync(clientIndex)) {
       throw new Error(`client/dist/index.html missing and --skip-build specified: ${clientIndex}`);
     }
+  } else {
     console.log('[package] Building frontend client...');
     runNpm(['run', 'build'], ROOT_DIR);
     if (!fs.existsSync(clientIndex)) {
@@ -878,6 +975,8 @@ module.exports = {
   TARGETS,
   FORBIDDEN_RELEASE_FILES,
   normalizeVersion,
+  normalizeNodeVersion,
+  parseArgs,
   getTargetName,
   isUnixExecutablePath,
   assertNoSecretsInDir,

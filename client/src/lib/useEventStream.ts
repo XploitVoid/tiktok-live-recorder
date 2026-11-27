@@ -17,6 +17,10 @@ let sharedEs: EventSource | null = null
 let currentUrl: string | null = null
 let registeredEvents = new Set<string>()
 let syncTimer: ReturnType<typeof setTimeout> | null = null
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let reconnectAttempt = 0
+const RECONNECT_BASE_MS = 1000
+const RECONNECT_MAX_MS = 30_000
 let visibilityBound = false
 let lastAuthCheckAt = 0
 let authCheckInFlight = false
@@ -87,29 +91,66 @@ function syncEventListeners() {
   }
 }
 
-function disconnectShared() {
+function clearReconnectTimer() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+}
+
+function disconnectShared(resetBackoff = true) {
   if (sharedEs) {
+    sharedEs.onopen = null
     sharedEs.onerror = null
     sharedEs.close()
     sharedEs = null
   }
   currentUrl = null
   registeredEvents = new Set()
+  if (resetBackoff) {
+    clearReconnectTimer()
+    reconnectAttempt = 0
+  }
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return
+  const { url, keepAlive } = buildCombinedQuery()
+  if (!url || (typeof document !== 'undefined' && document.hidden && !keepAlive)) {
+    return
+  }
+  const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, reconnectAttempt))
+  reconnectAttempt = Math.min(reconnectAttempt + 1, 6)
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    applySharedConnection()
+  }, delay)
 }
 
 function handleEsError() {
+  const isClosed = !sharedEs || sharedEs.readyState === EventSource.CLOSED
+  if (isClosed) {
+    disconnectShared(false)
+  }
   const now = Date.now()
-  if (authCheckInFlight || now - lastAuthCheckAt < 5000) return
+  if (authCheckInFlight || now - lastAuthCheckAt < 5000) {
+    if (isClosed) scheduleReconnect()
+    return
+  }
   lastAuthCheckAt = now
   authCheckInFlight = true
   getAuthStatus()
     .then((s) => {
       if (s.authRequired && !s.authenticated) {
-        disconnectShared()
+        disconnectShared(true)
         window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+      } else if (isClosed) {
+        scheduleReconnect()
       }
     })
-    .catch(() => { /* ignore transient network errors */ })
+    .catch(() => {
+      if (isClosed) scheduleReconnect()
+    })
     .finally(() => {
       authCheckInFlight = false
     })
@@ -118,16 +159,20 @@ function handleEsError() {
 function applySharedConnection() {
   const { url, keepAlive } = buildCombinedQuery()
   if (!url || (typeof document !== 'undefined' && document.hidden && !keepAlive)) {
-    disconnectShared()
+    disconnectShared(true)
     return
   }
-  if (sharedEs && currentUrl === url) {
+  if (sharedEs && sharedEs.readyState !== EventSource.CLOSED && currentUrl === url) {
     syncEventListeners()
     return
   }
-  disconnectShared()
+  disconnectShared(false)
+  clearReconnectTimer()
   currentUrl = url
   sharedEs = new EventSource(url)
+  sharedEs.onopen = () => {
+    reconnectAttempt = 0
+  }
   sharedEs.onerror = handleEsError
   syncEventListeners()
 }
@@ -142,6 +187,10 @@ function scheduleSync() {
 }
 
 function onVisibilityChange() {
+  if (typeof document !== 'undefined' && !document.hidden) {
+    reconnectAttempt = 0
+    clearReconnectTimer()
+  }
   scheduleSync()
 }
 

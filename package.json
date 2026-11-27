@@ -3,7 +3,29 @@
   "version": "1.6.0",
   "private": true,
   "type": "commonjs",
-  "description": "Check TikTok live status, fetch stream URLs, and record live streams.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "description": "Multi-platform local live stream recorder, chat archiver, and highlight studio for TikTok LIVE, Twitch, YouTube Live, Kick, and SOOP.",
+  "license": "MIT",
+  "keywords": [
+    "live-stream-recorder",
+    "tiktok-live",
+    "twitch",
+    "youtube-live",
+    "kick",
+    "soop",
+    "ffmpeg",
+    "hls"
+  ],
+  "homepage": "https://github.com/XploitVoid/tiktok-live-recorder",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/XploitVoid/tiktok-live-recorder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/XploitVoid/tiktok-live-recorder/issues"
+  },
   "scripts": {
     "check": "node check.js",
     "stream": "node get-stream.js",
@@ -28,6 +50,7 @@
     "ffprobe-static": "^3.1.0",
     "https-proxy-agent": "^5.0.1",
     "socks-proxy-agent": "^10.1.0",
-    "tiktok-live-connector": "^2.5.0"
+    "tiktok-live-connector": "^2.5.0",
+    "ws": "^8.18.2"
   }
 }

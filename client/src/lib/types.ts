@@ -1,4 +1,4 @@
-export type Platform = 'tiktok' | 'twitch' | 'youtube' | 'kick'
+export type Platform = 'tiktok' | 'twitch' | 'youtube' | 'kick' | 'soop'
 
 export interface Owner {
   nickname?: string
@@ -27,6 +27,8 @@ export interface CheckResult {
   username: string
   live: boolean
   streamsAvailable?: boolean
+  authenticated?: boolean
+  stealth?: boolean
   title?: string
   coverUrl?: string
   viewerCount?: number
@@ -106,6 +108,7 @@ export interface WatchEntry {
   scheduleStart?: string | null
   scheduleEnd?: string | null
   lastStatus?: string
+  lastError?: string | null
   lastChangedAt?: number
   lastViewerCount?: number
   lastTitle?: string
@@ -230,6 +233,7 @@ export interface SettingsResponse {
 export interface ChatPollResult {
   platform?: Platform
   state: string
+  error?: string | null
   viewerCount?: number
   events?: ChatEvent[]
 }

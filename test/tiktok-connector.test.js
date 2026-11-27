@@ -42,10 +42,15 @@ test('TikTokLiveConnection constructs cleanly with anonymous and cookie session 
 test('room.fetchApiLive uses RouteConfig.fetchRoomInfoFromApiLive and falls back to anonymous on auth failure', async () => {
   const origRoute = RouteConfig.fetchRoomInfoFromApiLive;
   const accounts = require('../lib/accounts');
+  const stealth = require('../lib/stealth');
   const origGetActive = accounts.getActiveCredentials;
+  const prevStealthMode = stealth.getStealthMode();
+  const prevStealthPlatforms = stealth.getStealthPlatforms();
 
   let calls = 0;
   try {
+    stealth.setStealthMode(false, { persist: false });
+    stealth.setPlatformStealth('tiktok', false, { persist: false });
     accounts.getActiveCredentials = () => ({ sessionId: 'bad_cookie_1234567890', ttTargetIdc: 'useast5' });
     RouteConfig.fetchRoomInfoFromApiLive = async ({ uniqueId, webClient }) => {
       calls++;
@@ -71,6 +76,8 @@ test('room.fetchApiLive uses RouteConfig.fetchRoomInfoFromApiLive and falls back
     assert.equal(room.isLiveFromApi(data), true);
     assert.equal(data.liveRoom.title, 'Live Test');
   } finally {
+    stealth.setStealthMode(prevStealthMode, { persist: false });
+    stealth.setStealthPlatforms(prevStealthPlatforms, { persist: false });
     RouteConfig.fetchRoomInfoFromApiLive = origRoute;
     accounts.getActiveCredentials = origGetActive;
   }
@@ -202,10 +209,15 @@ test('transcode args and 60fps quality validation', () => {
 test('ChatSession passes roomId to connect() and falls back to anonymous + fresh presets + proxy failover on DEVICE_BLOCKED / auth errors', async () => {
   const accounts = require('../lib/accounts');
   const settings = require('../lib/settings');
+  const stealth = require('../lib/stealth');
   const origGetActive = accounts.getActiveCredentials;
   const origSettings = settings.getSettings();
+  const prevStealthMode = stealth.getStealthMode();
+  const prevStealthPlatforms = stealth.getStealthPlatforms();
 
   try {
+    stealth.setStealthMode(false, { persist: false });
+    stealth.setPlatformStealth('tiktok', false, { persist: false });
     // 1. Authenticated WS fails with DEVICE_BLOCKED -> retries anonymous with clientPresets & passes roomId
     accounts.getActiveCredentials = () => ({ sessionId: 'bad_ws_session_123456', ttTargetIdc: 'useast5' });
     const s1 = new ChatSession('ws_fallback_user');
@@ -286,6 +298,8 @@ test('ChatSession passes roomId to connect() and falls back to anonymous + fresh
     assert.notEqual(proxyAfterRotate, firstProxy);
     s3.disconnect();
   } finally {
+    stealth.setStealthMode(prevStealthMode, { persist: false });
+    stealth.setStealthPlatforms(prevStealthPlatforms, { persist: false });
     accounts.getActiveCredentials = origGetActive;
     settings.updateSettings({ proxyUrl: origSettings.proxyUrl || '' });
   }

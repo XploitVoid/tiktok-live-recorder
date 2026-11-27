@@ -36,7 +36,7 @@ export function BookmarksPanel({ recording, currentTime, onJump }: Props) {
   }, [recording])
 
   const handleAdd = async () => {
-    if (currentTime < 0) return
+    if (loading || currentTime < 0) return
     setLoading(true)
     try {
       await addBookmark(recording, currentTime, note)
@@ -44,7 +44,7 @@ export function BookmarksPanel({ recording, currentTime, onJump }: Props) {
       toast.success(t('bmAdded'))
       await refresh()
     } catch (e: unknown) {
-      toast.error('Failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('actionFailed'), { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setLoading(false)
     }
@@ -54,7 +54,9 @@ export function BookmarksPanel({ recording, currentTime, onJump }: Props) {
     try {
       await deleteBookmark(recording, id)
       await refresh()
-    } catch { /* ignore */ }
+    } catch (e: unknown) {
+      toast.error(t('deleteFailed'), { description: e instanceof Error ? e.message : String(e) })
+    }
   }
 
   return (
@@ -74,7 +76,12 @@ export function BookmarksPanel({ recording, currentTime, onJump }: Props) {
           <Input
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !loading) {
+                e.preventDefault()
+                void handleAdd()
+              }
+            }}
             placeholder={t('bmNotePlaceholder')}
             className="h-7 text-xs flex-1"
           />

@@ -1,9 +1,25 @@
 import path from 'path'
-import { defineConfig } from 'vite'
+import { defineConfig, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
+const apiTarget = `http://127.0.0.1:${process.env.PORT || '3000'}`;
+const isLoopbackOrigin = (raw: string | undefined) =>
+  typeof raw === 'string' && /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(raw);
+const makeProxyConfig = (): ProxyOptions => ({
+  target: apiTarget,
+  changeOrigin: true,
+  configure: (proxy) => {
+    proxy.on('proxyReq', (proxyReq, req) => {
+      const origin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+      const referer = Array.isArray(req.headers.referer) ? req.headers.referer[0] : req.headers.referer;
+      if (isLoopbackOrigin(origin)) proxyReq.setHeader('origin', apiTarget);
+      if (isLoopbackOrigin(referer)) proxyReq.setHeader('referer', `${apiTarget}/`);
+    });
+  },
+});
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -13,8 +29,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:3000',
-      '/files': 'http://localhost:3000',
+      '/api': makeProxyConfig(),
+      '/files': makeProxyConfig(),
     },
   },
   build: {

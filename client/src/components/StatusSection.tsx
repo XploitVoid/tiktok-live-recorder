@@ -1,31 +1,43 @@
 import { useState } from 'react'
-import { Users, Radio, CircleOff, Tv } from 'lucide-react'
+import { Users, Radio, CircleOff, Tv, EyeOff, UserCheck, User } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { safeImageUrl } from '@/lib/utils'
 import { useI18n } from '@/lib/i18n'
 import { PlatformBadge } from '@/components/PlatformBadge'
-import type { CheckResult } from '@/lib/types'
+import type { CheckResult, Platform } from '@/lib/types'
 
 interface Props {
   data: CheckResult
+}
+
+function formatDisplayHandle(platform: Platform | undefined, username: string): string {
+  if (platform === 'youtube') {
+    if (/^v_[A-Za-z0-9_-]{11}$/.test(username)) return `watch?v=${username.slice(2)}`
+    if (/^UC[A-Za-z0-9_-]{22}$/.test(username)) return username
+  }
+  if (platform === 'soop' && username.startsWith('kr_')) {
+    return `KR · ${username.slice(3)}`
+  }
+  return `@${username}`
 }
 
 export function StatusSection({ data }: Props) {
   const { t } = useI18n()
   const owner = data.owner || {}
   const coverUrl = safeImageUrl(data.coverUrl)
-  const [imgError, setImgError] = useState(false)
+  const [failedCoverUrl, setFailedCoverUrl] = useState<string | null>(null)
+  const showCover = !!coverUrl && failedCoverUrl !== coverUrl
 
   return (
     <Card className="border-border/80">
       <CardContent className="pt-5">
         <div className="flex items-center gap-4 flex-wrap sm:flex-nowrap">
-          {coverUrl && !imgError ? (
+          {showCover ? (
             <img
               src={coverUrl}
               referrerPolicy="no-referrer"
-              onError={() => setImgError(true)}
+              onError={() => setFailedCoverUrl(coverUrl)}
               className="w-16 h-16 sm:w-20 sm:h-20 rounded-lg object-cover border border-border/70 shrink-0"
               alt=""
             />
@@ -51,6 +63,34 @@ export function StatusSection({ data }: Props) {
 
               <PlatformBadge platform={data.platform || 'tiktok'} />
 
+              {(data.stealth !== undefined || data.authenticated !== undefined) && (
+                data.stealth ? (
+                  <Badge
+                    variant="secondary"
+                    className="text-[10px] px-1.5 py-0 font-medium shrink-0 gap-1 bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30"
+                  >
+                    <EyeOff className="w-3 h-3" />
+                    <span>{t('statusStealthBadge')}</span>
+                  </Badge>
+                ) : data.authenticated ? (
+                  <Badge
+                    variant="secondary"
+                    className="text-[10px] px-1.5 py-0 font-medium shrink-0 gap-1 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
+                  >
+                    <UserCheck className="w-3 h-3" />
+                    <span>{t('statusAuthBadge')}</span>
+                  </Badge>
+                ) : (
+                  <Badge
+                    variant="secondary"
+                    className="text-[10px] px-1.5 py-0 font-medium shrink-0 gap-1 text-muted-foreground"
+                  >
+                    <User className="w-3 h-3" />
+                    <span>{t('statusAnonBadge')}</span>
+                  </Badge>
+                )
+              )}
+
               {data.live && data.liveRoomMode && !/^\d+$/.test(data.liveRoomMode) && (
                 <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground">
                   {data.liveRoomMode}
@@ -61,11 +101,7 @@ export function StatusSection({ data }: Props) {
                 {owner.nickname || data.username}
               </span>
               <span className="text-muted-foreground text-xs font-mono">
-                {data.platform === 'youtube' && /^v_[A-Za-z0-9_-]{11}$/.test(data.username)
-                  ? `watch?v=${data.username.slice(2)}`
-                  : data.platform === 'youtube' && /^UC[A-Za-z0-9_-]{22}$/.test(data.username)
-                    ? data.username
-                    : `@${data.username}`}
+                {formatDisplayHandle(data.platform, data.username)}
               </span>
             </div>
 

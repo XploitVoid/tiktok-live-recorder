@@ -14,7 +14,7 @@ import { BookmarksPanel } from '@/components/BookmarksPanel'
 import { ChatEventRow } from '@/components/ChatEventRow'
 import { VideoPlayerBox } from '@/components/VideoPlayerBox'
 import { useI18n } from '@/lib/i18n'
-import { getReplayData, extractRecordingAudio } from '@/lib/api'
+import { getReplayData, extractRecordingAudio, ApiError } from '@/lib/api'
 import { fmtTimeSec, recordingFileUrl } from '@/lib/format'
 import type { ChatEvent, SpriteMeta } from '@/lib/types'
 import { getKeywords } from '@/lib/chatHighlight'
@@ -26,8 +26,9 @@ export function ReplayPage() {
   const { t } = useI18n()
   const [searchParams] = useSearchParams()
   const file = searchParams.get('file')
+  const validUrl = file ? recordingFileUrl(file) : ''
 
-  if (!file) {
+  if (!file || !validUrl) {
     return (
       <div className="max-w-6xl mx-auto p-4 md:p-6 space-y-4">
         <Header />
@@ -50,17 +51,22 @@ export function ReplayPage() {
     )
   }
 
-  return <ReplayContent key={file} file={file} />
+  return <ReplayContent key={file} file={file} videoSrc={validUrl} />
 }
 
-function ReplayContent({ file }: { file: string }) {
+function ReplayContent({ file, videoSrc }: { file: string; videoSrc: string }) {
   const { t } = useI18n()
 
   const [events, setEvents] = useState<ReplayEvent[]>([])
   const [shown, setShown] = useState<ReplayEvent[]>([])
   const [filter, setFilter] = useState('all')
   const [autoScroll, setAutoScroll] = useState(true)
-  const [info, setInfo] = useState({ start: '', events: '', size: '' })
+  const [replayMeta, setReplayMeta] = useState<{
+    startMs?: number
+    eventCount?: number
+    eventsExists: boolean
+    sizeBytes?: number
+  } | null>(null)
   const [hasEvents, setHasEvents] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [durationSec, setDurationSec] = useState<number | null>(null)
@@ -83,6 +89,16 @@ function ReplayContent({ file }: { file: string }) {
   const lastTimeRef = useRef(0)
   const filterRef = useRef(filter)
   const pendingSeekRef = useRef<number | null>(null)
+  const pendingPlayRef = useRef(false)
+  const mountedRef = useRef(true)
+  const activeFileRef = useRef(file)
+  const audioReqSeqRef = useRef(0)
+
+  useEffect(() => {
+    mountedRef.current = true
+    activeFileRef.current = file
+    return () => { mountedRef.current = false }
+  }, [file])
 
   useEffect(() => {
     filterRef.current = filter
@@ -93,7 +109,7 @@ function ReplayContent({ file }: { file: string }) {
     if (activeFilter === 'chat') return ev.type === 'chat'
     if (activeFilter === 'gift') return ev.type === 'gift'
     if (activeFilter === 'like') return ev.type === 'like'
-    if (activeFilter === 'member') return ev.type === 'member' || ev.type === 'follow' || ev.type === 'social' || ev.type === 'subscribe'
+    if (activeFilter === 'member') return ev.type === 'member' || ev.type === 'follow' || ev.type === 'social' || ev.type === 'subscribe' || ev.type === 'superFan'
     // PK events always show in 'all', never in specific filters (they're system events)
     return false
   }, [])
@@ -131,10 +147,11 @@ function ReplayContent({ file }: { file: string }) {
         setCreatorUsername(data.username || null)
         setSpriteUrl(data.spriteUrl || null)
         setSpriteMeta(data.spriteMeta || null)
-        setInfo({
-          start: data.startMs ? new Date(data.startMs).toLocaleString() : '',
-          events: data.eventsExists ? `${data.eventCount} events` : 'No chat sidecar',
-          size: data.sizeBytes ? `${(data.sizeBytes / 1024 / 1024).toFixed(1)} MB` : '',
+        setReplayMeta({
+          startMs: data.startMs,
+          eventCount: data.eventCount,
+          eventsExists: !!data.eventsExists,
+          sizeBytes: data.sizeBytes,
         })
         setHasEvents(!!data.eventsExists)
         const sorted = (data.events || [])
@@ -156,6 +173,8 @@ function ReplayContent({ file }: { file: string }) {
     }
   }, [shown, autoScroll])
 
+  const hasReplayMeta = Boolean(replayMeta)
+
   useEffect(() => {
     const media = (audioMode ? audioRef.current : videoRef.current) as HTMLMediaElement | null
     if (!media) return
@@ -163,8 +182,13 @@ function ReplayContent({ file }: { file: string }) {
     const applyPendingSeek = () => {
       const target = pendingSeekRef.current
       if (target != null && media.readyState >= 1) {
+        const shouldPlay = pendingPlayRef.current
         pendingSeekRef.current = null
+        pendingPlayRef.current = false
         media.currentTime = target
+        setCurrentTime(target)
+        syncToTime(target)
+        if (shouldPlay) media.play().catch(() => {})
       }
     }
     const handler = (ev: Event) => {
@@ -194,7 +218,19 @@ function ReplayContent({ file }: { file: string }) {
       media.removeEventListener('loadedmetadata', meta)
       media.removeEventListener('durationchange', meta)
     }
-  }, [syncToTime, audioMode, audioUrl])
+  }, [syncToTime, audioMode, audioUrl, hasReplayMeta])
+
+  // Sync chat events whenever events finish loading even if media is currently paused at t >= 0.
+  useEffect(() => {
+    if (events.length === 0) return
+    let cancelled = false
+    const media = (audioMode ? audioRef.current : videoRef.current) as HTMLMediaElement | null
+    const tPos = media && Number.isFinite(media.currentTime) ? media.currentTime : 0
+    Promise.resolve().then(() => {
+      if (!cancelled) syncToTime(tPos)
+    })
+    return () => { cancelled = true }
+  }, [events, audioMode, syncToTime])
 
   // Register MediaSession metadata & lock-screen playback controls for background listening
   useEffect(() => {
@@ -204,7 +240,7 @@ function ReplayContent({ file }: { file: string }) {
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: file,
-        artist: creatorUsername ? `@${creatorUsername}` : 'TikTok LIVE Recorder',
+        artist: creatorUsername ? `@${creatorUsername}` : 'Live Stream Recorder',
       })
       navigator.mediaSession.setActionHandler('play', () => { activeMedia()?.play().catch(() => {}) })
       navigator.mediaSession.setActionHandler('pause', () => { activeMedia()?.pause() })
@@ -236,35 +272,62 @@ function ReplayContent({ file }: { file: string }) {
       const resumeAt = audioRef.current?.currentTime || 0
       audioRef.current?.pause()
       pendingSeekRef.current = resumeAt > 0 ? resumeAt : null
+      pendingPlayRef.current = false
       setAudioMode(false)
       return
     }
     if (!file) return
+    const targetFile = file
+    const reqSeq = ++audioReqSeqRef.current
     const resumeAt = videoRef.current?.currentTime || 0
     videoRef.current?.pause()
     if (!audioUrl) {
       setLoadingAudio(true)
       try {
-        const res = await extractRecordingAudio(file, 'm4a')
+        const res = await extractRecordingAudio(targetFile, 'm4a')
+        if (!mountedRef.current || activeFileRef.current !== targetFile || audioReqSeqRef.current !== reqSeq) {
+          return
+        }
         setAudioUrl(res.url)
       } catch (e: unknown) {
-        toast.error(t('savedExtractFailed'), { description: e instanceof Error ? e.message : String(e) })
-        setLoadingAudio(false)
+        if (!mountedRef.current || activeFileRef.current !== targetFile || audioReqSeqRef.current !== reqSeq) {
+          return
+        }
+        const desc =
+          e instanceof ApiError && (e.status === 429 || e.code === 'BUSY')
+            ? t('errServerBusy')
+            : e instanceof ApiError && (e.status === 507 || e.code === 'DISK_FULL')
+              ? t('errDiskFull')
+              : e instanceof Error ? e.message : String(e)
+        toast.error(t('savedExtractFailed'), { description: desc })
         return
       } finally {
-        setLoadingAudio(false)
+        if (mountedRef.current && activeFileRef.current === targetFile && audioReqSeqRef.current === reqSeq) {
+          setLoadingAudio(false)
+        }
       }
     }
+    if (!mountedRef.current || activeFileRef.current !== targetFile || audioReqSeqRef.current !== reqSeq) {
+      return
+    }
     pendingSeekRef.current = resumeAt > 0 ? resumeAt : null
+    pendingPlayRef.current = false
     setAudioMode(true)
   }
 
   const jumpTo = useCallback((sec: number) => {
+    const target = Math.max(0, sec)
     const media = (audioMode ? audioRef.current : videoRef.current) as HTMLMediaElement | null
-    if (!media) return
-    media.currentTime = Math.max(0, sec)
+    if (!media || media.readyState < 1) {
+      pendingSeekRef.current = target
+      pendingPlayRef.current = true
+      setCurrentTime(target)
+      syncToTime(target)
+      return
+    }
+    media.currentTime = target
     media.play().catch(() => {})
-  }, [audioMode])
+  }, [audioMode, syncToTime])
 
   // Track the video card's actual rendered height so the chat card can match
   // it on desktop (md and above). On mobile we let chat use its natural
@@ -289,7 +352,7 @@ function ReplayContent({ file }: { file: string }) {
       v?.removeEventListener('loadedmetadata', update)
       window.removeEventListener('resize', update)
     }
-  }, [file, loadError, audioMode])
+  }, [file, loadError, audioMode, hasReplayMeta])
 
   const filterItems = useMemo(() => ({
     all: t('fAll'),
@@ -384,10 +447,15 @@ function ReplayContent({ file }: { file: string }) {
                 <audio ref={audioRef} controls src={audioUrl} className="w-full" />
                 <p className="text-xs text-muted-foreground">{t('replayAudioHint')}</p>
               </div>
+            ) : !replayMeta ? (
+              <div className="w-full aspect-video bg-black/80 rounded-lg flex items-center justify-center text-xs text-muted-foreground">
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                <span>{t('loading')}</span>
+              </div>
             ) : (
               <VideoPlayerBox
                 videoRef={videoRef}
-                src={recordingFileUrl(file)}
+                src={videoSrc}
                 overlay={shown.length > 0 ? (
                   <>
                     {shown.slice(-6).map((ev) => (
@@ -403,17 +471,27 @@ function ReplayContent({ file }: { file: string }) {
               />
             )}
             <div className="text-xs text-muted-foreground mt-2 px-1 flex flex-wrap gap-x-4 gap-y-1">
-              <span>{info.start}</span>
-              <span>{info.events}</span>
-              <span>{info.size}</span>
+              <span>{replayMeta?.startMs ? new Date(replayMeta.startMs).toLocaleString() : ''}</span>
+              <span>
+                {replayMeta
+                  ? (replayMeta.eventsExists
+                    ? `${replayMeta.eventCount ?? 0} ${t('chatEventsCount')}`
+                    : t('replayNoChatSidecar'))
+                  : ''}
+              </span>
+              <span>{replayMeta?.sizeBytes ? `${(replayMeta.sizeBytes / 1024 / 1024).toFixed(1)} MB` : ''}</span>
             </div>
           </CardContent>
         </Card>
 
-        {/* Chat — matches video card height on md+ via ResizeObserver */}
+        {/* Chat — matches video card height on md+ via ResizeObserver (keep usable min height in Audio Mode) */}
         <Card
           className="relative flex flex-col overflow-hidden"
-          style={isDesktop && chatHeight ? { height: `${chatHeight}px` } : undefined}
+          style={
+            isDesktop && chatHeight
+              ? { height: `${audioMode ? Math.max(420, chatHeight) : chatHeight}px` }
+              : undefined
+          }
         >
           <CardContent className="pt-4 flex-1 min-h-0 flex flex-col">
             <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
@@ -444,7 +522,7 @@ function ReplayContent({ file }: { file: string }) {
             <div ref={feedRef} className="flex-1 min-h-0 bg-secondary/50 border border-border rounded-lg p-2 overflow-y-auto text-xs space-y-1">
               {shown.length === 0 ? (
                 <p className="text-muted-foreground inline-flex items-center gap-1.5">
-                  <Play className="w-3 h-3" /> Press play to sync chat
+                  <Play className="w-3 h-3" /> {t('replayPressPlaySync')}
                 </p>
               ) : (
                 shown.map((ev) => (

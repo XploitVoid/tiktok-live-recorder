@@ -2,9 +2,11 @@
 
 const { Router } = require('express');
 const { getPublicSettings, updateSettings } = require('../lib/settings');
+const stealth = require('../lib/stealth');
+const chat = require('../lib/chat');
 const { testNotifications } = require('../lib/notifications');
 const { getDiskStatus, enforceRetention } = require('../lib/storage');
-const { invalidateApiCache } = require('../lib/room');
+const { invalidateAllProviderCaches } = require('../lib/providers');
 const { activeFilePaths } = require('../lib/recorder');
 const { invalidateRecordingsCache } = require('./record');
 const { invalidateLiveStreamsCache } = require('./watch');
@@ -23,9 +25,14 @@ router.post('/api/settings', (req, res) => {
   try {
     const body = req.body || {};
     const prevHadProxy = getPublicSettings().hasProxy;
+    const stealthChanged = body.stealthMode !== undefined || body.stealthPlatforms !== undefined;
     const settings = updateSettings(body);
-    if (body.proxyUrl !== undefined || prevHadProxy !== settings.hasProxy) {
-      invalidateApiCache();
+    if (stealthChanged) {
+      stealth.syncFromSettings();
+      try { chat.enforceStealth(); } catch {}
+    }
+    if (stealthChanged || body.proxyUrl !== undefined || prevHadProxy !== settings.hasProxy) {
+      invalidateAllProviderCaches();
       invalidateLiveStreamsCache();
     }
     res.json({ ok: true, settings, disk: getDiskStatus() });

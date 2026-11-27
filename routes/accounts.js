@@ -1,10 +1,20 @@
 // routes/accounts.js — API routes for multi-account management.
 const { Router } = require('express');
 const accounts = require('../lib/accounts');
-const { getStealthMode, setStealthMode, invalidateApiCache } = require('../lib/room');
+const stealth = require('../lib/stealth');
+const chat = require('../lib/chat');
+const { invalidateAllProviderCaches } = require('../lib/providers');
 const { invalidateLiveStreamsCache } = require('./watch');
 const { safeError, stripControlChars } = require('../lib/utils');
 const router = Router();
+
+function buildEffectiveAnonByPlatform(hasSessionByPlatform = accounts.getHasSessionByPlatform()) {
+  const out = {};
+  for (const p of stealth.ALL_PLATFORMS) {
+    out[p] = stealth.isPlatformStealth(p) || !hasSessionByPlatform[p];
+  }
+  return out;
+}
 
 function maskSession(sessionId) {
   if (!sessionId) return '';
@@ -22,15 +32,21 @@ router.get('/api/accounts', (_req, res) => {
     health: accounts.getAccountHealth(a.id),
   }));
   const active = accounts.getActive();
+  const byPlatform = accounts.getActiveByPlatform();
+  const hasSessionByPlatform = accounts.getHasSessionByPlatform();
+  const hasAnySession = Object.values(hasSessionByPlatform).some(Boolean);
   res.json({
     accounts: list,
     active: {
       id: active.id || null,
       sessionPreview: maskSession(active.sessionId),
-      hasSession: !!active.sessionId,
-      byPlatform: accounts.getActiveByPlatform(),
+      hasSession: hasAnySession,
+      byPlatform,
+      hasSessionByPlatform,
     },
-    stealth: getStealthMode(),
+    stealth: stealth.getStealthMode(),
+    stealthPlatforms: stealth.getStealthPlatforms(),
+    effectiveAnonByPlatform: buildEffectiveAnonByPlatform(hasSessionByPlatform),
   });
 });
 
@@ -54,13 +70,17 @@ router.post('/api/accounts', (req, res) => {
       return res.status(400).json({ error: 'ttTargetIdc invalid' });
     }
   } else {
-    if (typeof sessionId !== 'string' || sessionId.trim().length < 8 || sessionId.length > 2048 || /[\x00-\x1f\x7f]/.test(sessionId)) {
-      return res.status(400).json({ error: 'token/cookie must be between 8 and 2048 valid characters' });
+    if (typeof sessionId !== 'string' || sessionId.trim().length < 8 || sessionId.length > 8192 || /[\x00-\x1f\x7f]/.test(sessionId)) {
+      return res.status(400).json({ error: 'token/cookie must be between 8 and 8192 valid characters' });
     }
   }
   const safeLabel = stripControlChars(label, 64);
-  const account = accounts.add(safeLabel, sessionId.trim(), ttTargetIdc || '', rawPlat);
-  res.json({ ok: true, id: account.id, label: account.label, platform: account.platform });
+  try {
+    const account = accounts.add(safeLabel, sessionId.trim(), ttTargetIdc || '', rawPlat);
+    res.json({ ok: true, id: account.id, label: account.label, platform: account.platform });
+  } catch (e) {
+    res.status(500).json({ error: safeError(e) });
+  }
 });
 
 // Check health of all saved accounts (must be registered before :id route)
@@ -94,10 +114,14 @@ router.delete('/api/accounts/:id', (req, res) => {
   if (!/^[A-Za-z0-9]+$/.test(id) || id.length > 32) {
     return res.status(400).json({ error: 'invalid id' });
   }
-  accounts.remove(id);
-  invalidateApiCache();
-  invalidateLiveStreamsCache();
-  res.json({ ok: true });
+  try {
+    accounts.remove(id);
+    invalidateAllProviderCaches();
+    invalidateLiveStreamsCache();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: safeError(e) });
+  }
 });
 
 // Switch active account
@@ -107,8 +131,18 @@ router.post('/api/accounts/switch', (req, res) => {
     if (id !== undefined && id !== null && id !== '' && (typeof id !== 'string' || !/^[A-Za-z0-9]+$/.test(id) || id.length > 32)) {
       return res.status(400).json({ error: 'invalid id' });
     }
-    const result = accounts.switchTo(id || null, platform || null);
-    invalidateApiCache();
+    let normPlatform = null;
+    if (platform !== undefined && platform !== null && platform !== '') {
+      if (typeof platform !== 'string') {
+        return res.status(400).json({ error: 'unsupported account platform' });
+      }
+      normPlatform = platform.trim().toLowerCase();
+      if (!accounts.ACCOUNT_PLATFORMS.has(normPlatform)) {
+        return res.status(400).json({ error: 'unsupported account platform' });
+      }
+    }
+    const result = accounts.switchTo(id || null, normPlatform);
+    invalidateAllProviderCaches();
     invalidateLiveStreamsCache();
     res.json({ ok: true, hasSession: !!result.sessionId, platform: result.platform });
   } catch (e) {
@@ -116,13 +150,45 @@ router.post('/api/accounts/switch', (req, res) => {
   }
 });
 
-// Toggle stealth (anonymous) mode
+// Toggle stealth (anonymous) mode — global, single platform, or bulk platform map
 router.post('/api/accounts/stealth', (req, res) => {
-  const { enabled } = req.body || {};
-  setStealthMode(!!enabled);
+  const { enabled, platform, stealthPlatforms } = req.body || {};
+  let targetPlatform = null;
+
+  if (platform !== undefined && platform !== null && platform !== '') {
+    if (typeof platform !== 'string') {
+      return res.status(400).json({ error: 'unsupported account platform' });
+    }
+    const normPlat = platform.trim().toLowerCase();
+    if (!accounts.ACCOUNT_PLATFORMS.has(normPlat)) {
+      return res.status(400).json({ error: 'unsupported account platform' });
+    }
+    stealth.setPlatformStealth(normPlat, !!enabled, { persist: true });
+    targetPlatform = normPlat;
+    console.log(`[accounts] stealth mode [${normPlat}] ${enabled ? 'ON' : 'OFF'}`);
+  } else if (stealthPlatforms !== undefined) {
+    if (!stealthPlatforms || typeof stealthPlatforms !== 'object' || Array.isArray(stealthPlatforms)) {
+      return res.status(400).json({ error: 'invalid stealthPlatforms map' });
+    }
+    if (typeof enabled === 'boolean') {
+      stealth.setStealthMode(enabled, { persist: true });
+    }
+    stealth.setStealthPlatforms(stealthPlatforms, { persist: true });
+    console.log(`[accounts] updated per-platform stealth map (global=${stealth.getStealthMode() ? 'ON' : 'OFF'})`);
+  } else {
+    stealth.setStealthMode(!!enabled, { persist: true });
+    console.log(`[accounts] stealth mode ${enabled ? 'ON' : 'OFF'}`);
+  }
+
+  invalidateAllProviderCaches();
   invalidateLiveStreamsCache();
-  console.log(`[accounts] stealth mode ${enabled ? 'ON' : 'OFF'}`);
-  res.json({ ok: true, stealth: getStealthMode() });
+  try { chat.enforceStealth(targetPlatform); } catch {}
+  res.json({
+    ok: true,
+    stealth: stealth.getStealthMode(),
+    stealthPlatforms: stealth.getStealthPlatforms(),
+    effectiveAnonByPlatform: buildEffectiveAnonByPlatform(),
+  });
 });
 
 module.exports = router;

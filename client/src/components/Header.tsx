@@ -23,7 +23,7 @@ export function Header() {
           </div>
           <div>
             <div className="text-sm font-semibold tracking-tight leading-tight">
-              TikTok LIVE Recorder
+              Live Stream Recorder
             </div>
             <div className="text-[11px] text-muted-foreground font-mono leading-tight">
               {t('localTag')}

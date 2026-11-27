@@ -29,7 +29,8 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
   const [jobs, setJobs] = useState<RecordJob[]>([])
   const jobsRef = useRef<RecordJob[]>([])
   const [now, setNow] = useState(() => Date.now())
-  const [cutting, setCutting] = useState<{ id: number; seconds: number } | null>(null)
+  const [cuttingByJob, setCuttingByJob] = useState<Record<number, number>>({})
+  const [stoppingIds, setStoppingIds] = useState<Set<number>>(() => new Set())
 
   const refresh = useCallback(async () => {
     try {
@@ -64,17 +65,24 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
   }, [])
 
   const handleStop = async (id: number) => {
+    setStoppingIds((prev) => new Set(prev).add(id))
     try {
       await stopRecord(id)
-      toast.info('Recording stopped')
+      toast.info(t('jobStopped'))
       void refresh()
     } catch (e: unknown) {
-      toast.error('Stop failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('jobStopFailed'), { description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setStoppingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
     }
   }
 
   const handleLiveClip = async (id: number, seconds: number) => {
-    setCutting({ id, seconds })
+    setCuttingByJob((prev) => ({ ...prev, [id]: seconds }))
     try {
       const res = await cutLiveClip(id, seconds)
       toast.success(t('liveClipSaved'), {
@@ -87,7 +95,11 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
     } catch (e: unknown) {
       toast.error(t('liveClipFail'), { description: e instanceof Error ? e.message : String(e) })
     } finally {
-      setCutting(null)
+      setCuttingByJob((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
     }
   }
 
@@ -117,7 +129,7 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
                       className={j.exited ? 'text-[10px]' : 'bg-primary text-primary-foreground text-[10px] border-0 gap-1'}
                     >
                       {j.exited ? (
-                        `EXITED ${j.exitCode ?? ''}`
+                        `${t('jobExited')} ${j.exitCode ?? ''}`
                       ) : (
                         <>
                           <Circle className="w-2 h-2 fill-current" />
@@ -129,11 +141,11 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
                     <span className="font-medium font-mono text-sm">@{j.username}</span>
                     <span className="text-xs text-muted-foreground font-mono">{j.kind}/{j.quality}</span>
                     {!!j.part && j.part > 1 && (
-                      <Badge variant="outline" className="text-[10px]">part {j.part}</Badge>
+                      <Badge variant="outline" className="text-[10px]">{t('jobPart')} {j.part}</Badge>
                     )}
                     {!!j.retryCount && j.retryCount > 0 && (
                       <Badge variant="outline" className="text-[10px] text-amber-300 border-amber-500/40">
-                        retry #{j.retryCount}
+                        {t('jobRetry')}{j.retryCount}
                       </Badge>
                     )}
                     <span className={`text-xs font-mono ${j.exited ? 'text-muted-foreground' : 'text-emerald-400'}`}>
@@ -152,8 +164,9 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
                     {!j.exited && (
                       <div className="flex items-center gap-1 shrink-0">
                         {([30, 60] as const).map((sec) => {
-                          const isJobCutting = cutting?.id === j.id
-                          const isThisCutting = isJobCutting && cutting?.seconds === sec
+                          const activeCutSec = cuttingByJob[j.id]
+                          const isJobCutting = activeCutSec !== undefined
+                          const isThisCutting = activeCutSec === sec
                           const label = sec === 30 ? t('liveClip30') : t('liveClip60')
                           return (
                             <Button
@@ -173,8 +186,8 @@ export const ActiveJobs = forwardRef<ActiveJobsRef>(function ActiveJobs(_props, 
                             </Button>
                           )
                         })}
-                        <Button variant="destructive" size="icon-xs" onClick={() => handleStop(j.id)}>
-                          <Square className="w-3 h-3" />
+                        <Button variant="destructive" size="icon-xs" disabled={stoppingIds.has(j.id)} onClick={() => handleStop(j.id)}>
+                          {stoppingIds.has(j.id) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Square className="w-3 h-3" />}
                         </Button>
                       </div>
                     )}

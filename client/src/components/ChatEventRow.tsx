@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { Avatar } from '@/components/Avatar'
 import { HighlightText } from '@/components/HighlightText'
+import { useI18n } from '@/lib/i18n'
 import { safeImageUrl } from '@/lib/utils'
 import type { ChatEvent } from '@/lib/types'
 
@@ -35,6 +36,7 @@ interface Props {
 }
 
 export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Props) {
+  const { t } = useI18n()
   const time = <span className="text-muted-foreground font-mono text-[11px] tabular-nums shrink-0">{timeText}</span>
   const name = ev.user?.nickname || ev.user?.uniqueId || '?'
   const avatar = <Avatar url={ev.user?.profilePictureUrl} name={name} size={22} className="mt-0.5 shrink-0" />
@@ -56,19 +58,25 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
       const repeat = ev.repeatCount || 1
       const totalDiamonds = (ev.diamondCount || 0) * repeat
       return (
-        <div className="flex items-center gap-1.5 py-0.5">
+        <div className="flex items-start gap-1.5 py-0.5">
           {avatar}
           <span className="min-w-0 break-words leading-snug">
             {time} {prefix}{' '}
             <Gift className="inline w-3 h-3 text-amber-400 -mt-0.5 mr-1" />
             <strong className="text-amber-400 font-medium">{name}</strong>{' '}
-            <span className="text-muted-foreground">sent</span>{' '}
+            <span className="text-muted-foreground">{t('chatEventSent')}</span>{' '}
             <span className="text-amber-200">{ev.giftName}</span>{' '}
             <span className="tabular-nums text-xs">×{repeat}</span>{' '}
             <span className="inline-flex items-center gap-0.5 text-amber-300/90 text-xs tabular-nums">
               ({totalDiamonds.toLocaleString()}
               <Gem className="inline w-2.5 h-2.5" />)
             </span>
+            {ev.comment && (
+              <>
+                {' — '}
+                <HighlightText text={ev.comment} keywords={keywords} className="text-foreground/90" />
+              </>
+            )}
           </span>
         </div>
       )
@@ -94,7 +102,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
           <span className="min-w-0 break-words text-foreground/70">
             {time} {prefix}{' '}
             <UserCheck className="inline w-3 h-3 text-muted-foreground -mt-0.5 mr-1" />
-            <span>{name}</span> joined
+            <span>{name}</span> {t('chatEventJoined')}
           </span>
         </div>
       )
@@ -108,7 +116,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
             {time} {prefix}{' '}
             <UserPlus className="inline w-3 h-3 text-emerald-400 -mt-0.5 mr-1" />
             <strong className="text-emerald-400 font-medium">{name}</strong>{' '}
-            <span className="text-foreground/70">{ev.label || 'followed'}</span>
+            <span className="text-foreground/70">{ev.label || t('chatEventFollowed')}</span>
           </span>
         </div>
       )
@@ -120,7 +128,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
           <span className="min-w-0 break-words">
             {time} {prefix}{' '}
             <Share2 className="inline w-3 h-3 text-cyan-400 -mt-0.5 mr-1" />
-            <strong className="text-cyan-400 font-medium">{name}</strong> shared
+            <strong className="text-cyan-400 font-medium">{name}</strong> {t('chatEventShared')}
           </span>
         </div>
       )
@@ -130,7 +138,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
         <div className="py-0.5 text-emerald-400 flex items-center gap-1.5">
           {time} {prefix}
           <CheckCircle2 className="w-3 h-3 shrink-0" />
-          <span className="text-xs">connected to room {ev.roomId || ''}</span>
+          <span className="text-xs">{t('chatEventConnected')} {ev.roomId || ''}</span>
         </div>
       )
 
@@ -143,7 +151,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
         <div className="py-0.5 text-fuchsia-400 flex items-center gap-1.5">
           {time} {prefix}
           <Swords className="w-3 h-3 shrink-0" />
-          <span>PK started{opps ? ` — ${opps}` : ''}</span>
+          <span>{t('chatEventPkStart')}{opps ? ` — ${opps}` : ''}</span>
         </div>
       )
     }
@@ -171,19 +179,26 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
         <div className="py-0.5 text-fuchsia-400 flex items-center gap-1.5 tabular-nums">
           {time} {prefix}
           <Flag className="w-3 h-3 shrink-0" />
-          <span>PK ended{score ? ` — ${score}` : ''}</span>
+          <span>{t('chatEventPkEnd')}{score ? ` — ${score}` : ''}</span>
         </div>
       )
     }
 
     case 'subscribe':
       return (
-        <div className="flex items-center gap-1.5 py-0.5">
+        <div className="flex items-start gap-1.5 py-0.5">
           {avatar}
           <span className="min-w-0 break-words">
             {time} {prefix}{' '}
             <Star className="inline w-3 h-3 text-yellow-400 fill-yellow-400 -mt-0.5 mr-1" />
-            <strong className="text-yellow-400 font-medium">{name}</strong> subscribed
+            <strong className="text-yellow-400 font-medium">{name}</strong>{' '}
+            <span className="text-foreground/85">{ev.label || t('chatEventSubscribed')}</span>
+            {ev.comment && (
+              <>
+                {' — '}
+                <HighlightText text={ev.comment} keywords={keywords} className="text-foreground/90" />
+              </>
+            )}
           </span>
         </div>
       )
@@ -196,7 +211,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
             {time} {prefix}{' '}
             <Sparkles className="inline w-3 h-3 text-amber-300 -mt-0.5 mr-1" />
             <strong className="text-amber-300 font-medium">{name}</strong>{' '}
-            {ev.joined ? 'joined Super Fan' : 'Super Fan'}
+            {ev.joined ? t('chatEventJoinedSuperFan') : t('chatEventSuperFan')}
           </span>
         </div>
       )
@@ -206,7 +221,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
         <div className="py-0.5 text-amber-400 flex items-center gap-1.5">
           {time} {prefix}
           <Package className="w-3 h-3 shrink-0" />
-          <span>Super Fan Box</span>
+          <span>{t('chatEventSuperFanBox')}</span>
         </div>
       )
 
@@ -215,7 +230,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
         <div className="py-0.5 text-sky-300 flex items-center gap-1.5">
           {time} {prefix}
           <BarChart2 className="w-3 h-3 shrink-0" />
-          <span>Poll: {ev.title || 'Live Poll'}</span>
+          <span>{t('chatEventPoll')} {ev.title || t('chatEventLivePoll')}</span>
         </div>
       )
 
@@ -225,7 +240,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
           {time} {prefix}
           <ShoppingBag className="w-3 h-3 shrink-0" />
           <span>
-            {ev.title || `Product #${ev.productNumber ?? ''}`}
+            {ev.title || `${t('chatEventProduct')}${ev.productNumber ?? ''}`}
             {ev.price ? ` (${ev.price})` : ''}
           </span>
         </div>
@@ -236,7 +251,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
         <div className="py-0.5 text-primary flex items-center gap-1.5">
           {time} {prefix}
           <Gift className="w-3 h-3 shrink-0" />
-          <span>Treasure box dropped</span>
+          <span>{t('chatEventTreasureBox')}</span>
         </div>
       )
 
@@ -258,7 +273,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
         <div className="py-0.5 text-indigo-400 flex items-center gap-1.5">
           {time} {prefix}
           <Megaphone className="w-3 h-3 shrink-0" />
-          <span>{ev.introText || 'Live intro'}</span>
+          <span>{ev.introText || t('chatEventLiveIntro')}</span>
         </div>
       )
 
@@ -303,7 +318,7 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
           <div className="py-0.5 text-muted-foreground flex items-center gap-1.5">
             {time} {prefix}
             <Pin className="w-3 h-3 shrink-0" />
-            <span>unpinned</span>
+            <span>{t('chatEventUnpinned')}</span>
           </div>
         )
       }
@@ -312,26 +327,31 @@ export function ChatEventRow({ event: ev, timeText, keywords = [], prefix }: Pro
           {time} {prefix}
           <Pin className="w-3 h-3 shrink-0" />
           <span>
-            pinned: <strong>{ev.pinnedUser?.nickname || '?'}</strong>: {ev.pinnedText || ''}
+            {t('chatEventPinned')} <strong>{ev.pinnedUser?.nickname || '?'}</strong>: {ev.pinnedText || ''}
           </span>
         </div>
       )
 
-    case 'rankUpdate':
+    case 'rankUpdate': {
+      const ranked = (ev.updates || [])
+        .filter((u) => u.ownerRank != null && u.ownerRank !== '')
+        .map((u) => `${t('chatEventRank')} ${u.ownerRank}`)
+      if (ranked.length === 0) return null
       return (
         <div className="py-0.5 text-amber-400/75 flex items-center gap-1.5">
           {time} {prefix}
           <Trophy className="w-3 h-3 shrink-0" />
-          <span>{(ev.updates || []).map((u) => `rank ${u.ownerRank}`).join(', ')}</span>
+          <span>{ranked.join(', ')}</span>
         </div>
       )
+    }
 
     case 'streamEnd':
       return (
         <div className="py-0.5 text-amber-500 flex items-center gap-1.5">
           {time} {prefix}
           <Square className="w-3 h-3 shrink-0" />
-          <span>stream ended</span>
+          <span>{t('chatEventStreamEnded')}</span>
         </div>
       )
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Activity, Users, Gem, MessageSquare, Radio, Filter, Clock, RefreshCw, AlertTriangle } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Header } from '@/components/Header'
 import { ChatEventRow } from '@/components/ChatEventRow'
 import { PlatformBadge } from '@/components/PlatformBadge'
@@ -266,7 +267,9 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<Set<string>>(new Set())
   const [now, setNow] = useState(() => Date.now())
+  const [autoScroll, setAutoScroll] = useState(true)
   const feedRef = useRef<HTMLDivElement>(null)
+  const nearBottomRef = useRef(true)
 
   const sseHandlers = useMemo(() => ({
     dashboard: (json: unknown) => {
@@ -287,37 +290,54 @@ export function DashboardPage() {
     return () => clearInterval(id)
   }, [data?.streams.length])
 
-  // Auto-scroll feed to bottom on new messages
+  // Auto-scroll feed to bottom on new messages only if enabled and already near bottom
   useEffect(() => {
-    if (feedRef.current) {
+    if (autoScroll && nearBottomRef.current && feedRef.current) {
       feedRef.current.scrollTop = feedRef.current.scrollHeight
     }
-  }, [data?.unifiedFeed])
+  }, [data?.unifiedFeed, autoScroll])
+
+  const handleFeedScroll = () => {
+    const el = feedRef.current
+    if (!el) return
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 40
+  }
 
   const allKeys = useMemo(() => {
     return data?.streams.map((stream) => streamKey(stream.platform, stream.username)) ?? []
   }, [data?.streams])
 
+  const activeFilterKeys = useMemo(() => {
+    if (allKeys.length <= 1 || filter.size === 0) return null
+    const valid = [...filter].filter((k) => allKeys.includes(k))
+    return valid.length > 0 ? new Set(valid) : null
+  }, [allKeys, filter])
+
   const filteredFeed = useMemo(() => {
     if (!data) return []
-    if (filter.size === 0) return data.unifiedFeed
+    if (!activeFilterKeys) return data.unifiedFeed
     return data.unifiedFeed.filter(
-      (ev) => ev._username && filter.has(streamKey(ev._platform, ev._username)),
+      (ev) => ev._username && activeFilterKeys.has(streamKey(ev._platform, ev._username)),
     )
-  }, [data, filter])
+  }, [data, activeFilterKeys])
+
+  const visibleFeed = useMemo(() => {
+    return filteredFeed.filter((ev) => ev.type !== 'roomUser' && ev.type !== 'connected' && ev.type !== 'pkUpdate')
+  }, [filteredFeed])
 
   const totalDiamonds = useMemo(() => {
     return data?.streams.reduce((sum, stream) => sum + stream.recentDiamonds, 0) ?? 0
   }, [data?.streams])
 
   const toggleFilter = useCallback((key: string) => {
+    const allowed = new Set(allKeys)
     setFilter((prev) => {
-      const next = new Set(prev)
+      const next = new Set([...prev].filter((k) => allowed.has(k)))
       if (next.has(key)) next.delete(key)
       else next.add(key)
       return next
     })
-  }, [])
+  }, [allKeys])
 
   const clearFilter = useCallback(() => setFilter(new Set()), [])
 
@@ -358,28 +378,46 @@ export function DashboardPage() {
       {/* Unified chat feed */}
       <Card>
         <CardContent className="pt-4 space-y-2">
-          <h3 className="font-semibold text-sm flex items-center gap-2">
-            <MessageSquare className="w-4 h-4 text-amber-400" />
-            {t('dashUnifiedChat')}
-          </h3>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 text-amber-400" />
+              {t('dashUnifiedChat')}
+            </h3>
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+              <Checkbox
+                checked={autoScroll}
+                onCheckedChange={(v) => {
+                  const next = !!v
+                  setAutoScroll(next)
+                  if (next && feedRef.current) {
+                    nearBottomRef.current = true
+                    feedRef.current.scrollTop = feedRef.current.scrollHeight
+                  }
+                }}
+                className="w-3.5 h-3.5"
+              />
+              <span>{t('autoScroll')}</span>
+            </label>
+          </div>
 
           <FilterChips
             streams={data?.streams ?? []}
             allKeys={allKeys}
-            filter={filter}
+            filter={activeFilterKeys ?? new Set<string>()}
             onToggle={toggleFilter}
             onClear={clearFilter}
           />
 
           <div
             ref={feedRef}
+            onScroll={handleFeedScroll}
             className="h-[400px] bg-secondary/50 border border-border rounded-lg p-2 overflow-y-auto text-xs space-y-0.5"
           >
             {loading && !data && <p className="text-muted-foreground">{t('loading')}</p>}
-            {data && filteredFeed.length === 0 && (
+            {data && visibleFeed.length === 0 && (
               <p className="text-muted-foreground">{t('dashNoChat')}</p>
             )}
-            {filteredFeed.map((ev) => (
+            {visibleFeed.map((ev) => (
               <UnifiedChatLine
                 key={`${streamKey(ev._platform, ev._username ?? '')}_${ev.id}`}
                 event={ev}

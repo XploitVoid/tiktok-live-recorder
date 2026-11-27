@@ -5,10 +5,10 @@
 // Requires ffmpeg installed and on PATH.
 // Stop recording with Ctrl+C — ffmpeg will finalize the file cleanly.
 
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env'), quiet: true });
 const { spawn } = require('child_process');
 const fs = require('fs');
-const path = require('path');
 const {
   normalizeUsername,
   fetchApiLive,
@@ -17,8 +17,8 @@ const {
   pickPreferredStream,
 } = require('./lib/room');
 const { resolveFfmpeg, buildRecordArgs } = require('./lib/ffmpeg');
-const { isValidStreamUrl } = require('./lib/utils');
-const { getFfmpegProxyArgs } = require('./lib/proxy-config');
+const { isValidStreamUrl, assertPublicDns, safeError } = require('./lib/utils');
+const { getProxyAgent, getFfmpegProxyEnv } = require('./lib/proxy-config');
 
 function timestamp() {
   const d = new Date();
@@ -28,13 +28,16 @@ function timestamp() {
 
 async function main() {
   const username = normalizeUsername(process.argv[2]);
-  const outDir = process.argv[3] || './recordings';
+  const rawOutDir = process.argv[3] || './recordings';
   if (!username) {
     console.error('Usage: node record.js <username> [outputDir]');
     process.exit(2);
   }
-
-  fs.mkdirSync(outDir, { recursive: true });
+  if (rawOutDir.startsWith('-')) {
+    console.error('Invalid output directory path');
+    process.exit(2);
+  }
+  const outDir = path.resolve(rawOutDir);
 
   const apiData = await fetchApiLive(username);
   if (!isLiveFromApi(apiData)) {
@@ -48,11 +51,21 @@ async function main() {
     console.error('Could not extract a stream URL from API response.');
     process.exit(2);
   }
-  if (!isValidStreamUrl(pick.url)) {
+  if (!isValidStreamUrl(pick.url) || (pick.audioUrl && !isValidStreamUrl(pick.audioUrl))) {
     console.error('Stream URL has invalid protocol.');
     process.exit(2);
   }
+  if (!getProxyAgent()) {
+    try {
+      await assertPublicDns(new URL(pick.url).hostname);
+      if (pick.audioUrl) await assertPublicDns(new URL(pick.audioUrl).hostname);
+    } catch {
+      console.error('Stream host resolved to disallowed IP.');
+      process.exit(2);
+    }
+  }
 
+  fs.mkdirSync(outDir, { recursive: true });
   const outFile = path.join(outDir, `${username}_${timestamp()}.mp4`);
   const ffmpegBin = resolveFfmpeg();
   console.log(`▶ Recording @${username} (${pick.kind}/${pick.quality})`);
@@ -62,9 +75,13 @@ async function main() {
   console.log(`  ffmpeg: ${ffmpegBin}`);
   console.log(`  Press Ctrl+C to stop.\n`);
 
-  const args = buildRecordArgs(pick, outFile, getFfmpegProxyArgs());
+  const args = buildRecordArgs(pick, outFile, []);
+  const proxyEnv = getFfmpegProxyEnv();
 
-  const ff = spawn(ffmpegBin, args, { stdio: ['pipe', 'inherit', 'inherit'] });
+  const ff = spawn(ffmpegBin, args, {
+    stdio: ['pipe', 'inherit', 'inherit'],
+    env: Object.keys(proxyEnv).length > 0 ? { ...process.env, ...proxyEnv } : process.env,
+  });
   ff.stdin?.on('error', () => {});
 
   let stopping = false;
@@ -85,7 +102,7 @@ async function main() {
 
   ff.on('exit', (code) => {
     console.log(`\nffmpeg exited with code ${code}. File: ${outFile}`);
-    process.exit(code ?? 0);
+    process.exit(code === null ? (stopping ? 0 : 1) : code);
   });
   ff.on('error', (err) => {
     console.error('Failed to start ffmpeg. Is it installed and on PATH?');
@@ -95,6 +112,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error('Error:', e?.message || e);
+  console.error('Error:', safeError(e));
   process.exit(2);
 });

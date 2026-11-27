@@ -24,6 +24,11 @@ export function VideoPlayerBox({ videoRef, muted = false, src, showPip = true, o
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [fitMode, setFitMode] = useState<'contain' | 'cover' | 'fill'>('contain')
   const [showOverlay, setShowOverlay] = useState(true)
+  const pipSupported =
+    typeof document !== 'undefined' &&
+    Boolean(document.pictureInPictureEnabled) &&
+    typeof HTMLVideoElement !== 'undefined' &&
+    typeof HTMLVideoElement.prototype.requestPictureInPicture === 'function'
 
   const cycleFitMode = () => {
     setFitMode((prev) => (prev === 'contain' ? 'cover' : prev === 'cover' ? 'fill' : 'contain'))
@@ -58,10 +63,10 @@ export function VideoPlayerBox({ videoRef, muted = false, src, showPip = true, o
           await videoRef.current.requestFullscreen()
         }
       } catch {
-        toast.error('Fullscreen is not supported in this browser')
+        toast.error(t('fullscreenNotSupported'))
       }
     }
-  }, [videoRef])
+  }, [t, videoRef])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -77,12 +82,15 @@ export function VideoPlayerBox({ videoRef, muted = false, src, showPip = true, o
 
   const togglePip = () => {
     const v = videoRef.current
-    if (!v) return
+    if (!v || !pipSupported || typeof v.requestPictureInPicture !== 'function') {
+      toast.error(t('pipNotSupported'))
+      return
+    }
     if (document.pictureInPictureElement) {
       document.exitPictureInPicture().catch(() => {})
     } else {
       v.requestPictureInPicture().catch(() =>
-        toast.error('PiP not supported in this browser'),
+        toast.error(t('pipNotSupported')),
       )
     }
   }
@@ -140,7 +148,7 @@ export function VideoPlayerBox({ videoRef, muted = false, src, showPip = true, o
             <span>{fitLabel}</span>
           </Button>
         )}
-        {showPip && (
+        {showPip && pipSupported && (
           <Button
             type="button"
             variant="secondary"

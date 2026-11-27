@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { useI18n } from '@/lib/i18n'
 import { checkStream } from '@/lib/api'
-import { parseChannelInput, normalizePlatform } from '@/lib/utils'
+import { parseChannelInput, normalizePlatform, hasExplicitPlatformHint } from '@/lib/utils'
 import { PlatformBadge, PlatformSwitch } from '@/components/PlatformBadge'
 import {
   getHistory, addHistory, removeHistory, clearHistory,
@@ -32,6 +32,16 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
   const lastInitialRef = useRef<string | null>(null)
   const lastCheckedRef = useRef<string | null>(null)
   const reqIdRef = useRef(0)
+  const abortRef = useRef<AbortController | null>(null)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      abortRef.current?.abort()
+    }
+  }, [])
 
   const refreshLists = useCallback(() => {
     setHistory(getHistory())
@@ -43,6 +53,9 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
     if (!raw) return
     const parsed = parseChannelInput(raw, overridePlatform ?? platform)
     if (!parsed.username) return
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
     const reqId = ++reqIdRef.current
     lastCheckedRef.current = `${parsed.platform}:${parsed.username}`
     setPlatform(parsed.platform)
@@ -50,16 +63,16 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
     setChecking(true)
     onLoading?.()
     try {
-      const data = await checkStream(parsed.username, parsed.platform)
-      if (reqId !== reqIdRef.current) return
+      const data = await checkStream(parsed.username, parsed.platform, controller.signal)
+      if (controller.signal.aborted || !mountedRef.current || reqId !== reqIdRef.current) return
       addHistory(parsed.username, parsed.platform)
       refreshLists()
       onResult?.(data)
     } catch (e) {
-      if (reqId !== reqIdRef.current) return
+      if (controller.signal.aborted || !mountedRef.current || reqId !== reqIdRef.current) return
       onError?.((e as Error).message)
     } finally {
-      if (reqId === reqIdRef.current) {
+      if (mountedRef.current && reqId === reqIdRef.current) {
         setChecking(false)
       }
     }
@@ -80,8 +93,19 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
     const normalized = parsed?.username || null
     const initialKey = normalized ? `${parsed!.platform}:${normalized}` : null
     if (!initialKey || !normalized) {
+      abortRef.current?.abort()
+      const seq = ++reqIdRef.current
       lastInitialRef.current = null
-      return
+      lastCheckedRef.current = null
+      let cancelled = false
+      Promise.resolve().then(() => {
+        if (!cancelled && mountedRef.current && reqIdRef.current === seq) {
+          setChecking(false)
+        }
+      })
+      return () => {
+        cancelled = true
+      }
     }
     if (lastInitialRef.current === initialKey) return
     if (lastCheckedRef.current === initialKey) {
@@ -124,7 +148,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
   const cleanedInput = parsedInput.username
   const inputIsFav = !!cleanedInput && isFavorite(cleanedInput, parsedInput.platform)
   const normEntryKey = (p: Platform, u: string) => {
-    if (p === 'twitch' || p === 'kick') return `${p}:${u.toLowerCase()}`
+    if (p === 'twitch' || p === 'kick' || p === 'soop') return `${p}:${u.toLowerCase()}`
     if (p === 'youtube') return `youtube:${/^v_|^UC/.test(u) ? u : u.toLowerCase()}`
     return `tiktok:${u}`
   }
@@ -133,7 +157,7 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
 
   const handleInputChange = (val: string) => {
     setUsername(val)
-    if (/^(?:twitch|tiktok|youtube|yt|kick):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be|kick\.com)\//i.test(val)) {
+    if (hasExplicitPlatformHint(val)) {
       const detected = parseChannelInput(val, platform)
       if (detected.platform !== platform) setPlatform(detected.platform)
     }
@@ -149,9 +173,9 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
           {platform !== 'tiktok' ? t('usernameLabelMulti') : t('usernameLabel')}
         </Label>
 
-        <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2">
           <PlatformSwitch value={platform} onChange={setPlatform} size="md" />
-          <div className="relative flex-1 flex items-center">
+          <div className="relative flex-1 min-w-[220px] flex items-center">
             <span className="absolute left-3 text-muted-foreground font-mono text-sm select-none">@</span>
             <Input
               id="uInput"
@@ -167,8 +191,8 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
                 type="button"
                 onClick={() => handleToggleFav(username)}
                 className="absolute right-2.5 text-muted-foreground hover:text-amber-400 transition-colors cursor-pointer p-1"
-                title={inputIsFav ? 'Remove from favorites' : 'Add to favorites'}
-                aria-label="Toggle favorite"
+                title={inputIsFav ? t('favRemove') : t('favAdd')}
+                aria-label={inputIsFav ? t('favRemove') : t('favAdd')}
               >
                 <Star className={`w-4 h-4 ${inputIsFav ? 'fill-amber-400 text-amber-400' : ''}`} />
               </button>
@@ -238,8 +262,8 @@ export function SearchSection({ onLoading, onResult, onError, initialUsername, i
                 <button
                   type="button"
                   onClick={() => handleToggleFav(entry.username, entry.platform)}
-                  title="Pin to favorites"
-                  aria-label={`Pin ${entry.username} to favorites`}
+                  title={t('favPin')}
+                  aria-label={`${t('favPin')} ${entry.username}`}
                   className="p-1 text-muted-foreground/70 hover:text-amber-400 transition-colors cursor-pointer"
                 >
                   <Star className={`w-3 h-3 ${isFavorite(entry.username, entry.platform) ? 'fill-amber-400 text-amber-400' : ''}`} />

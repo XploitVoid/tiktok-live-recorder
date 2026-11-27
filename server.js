@@ -27,6 +27,7 @@ const {
   isCrossSiteRequest,
   stripProto,
   createRateLimiter,
+  createAuthFailLimiter,
 } = require('./lib/security');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -81,7 +82,7 @@ app.use((_req, res, next) => {
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'self'; " +
-    "script-src 'self' https://cdn.jsdelivr.net; " +
+    "script-src 'self' https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js; " +
     "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; " +
     "font-src 'self' https://fonts.gstatic.com data:; " +
     "img-src 'self' https: data:; " +
@@ -130,6 +131,9 @@ const SENSITIVE_GET_PATHS = new Set([
   '/api/transcode',
   '/api/accounts',
   '/api/events/stream',
+  '/api/settings',
+  '/api/search/chat',
+  '/api/search/status',
 ]);
 app.use((req, res, next) => {
   if (req.method !== 'GET') return next();
@@ -156,37 +160,63 @@ app.get('/api/health', (_req, res) => {
 });
 
 // ── Optional shared-token auth + HttpOnly SameSite=Strict session cookie ──
-function isRequestAuthenticated(req) {
+const authFailLimiter = createAuthFailLimiter({ windowMs: 15 * 60_000, max: 15 });
+
+function isHttpsRequest(req) {
+  if (req.secure) return true;
+  if (TRUST_PROXY === false) return false;
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return proto === 'https';
+}
+
+function authenticateRequest(req, res) {
   if (!APP_TOKEN) return true;
-  const headerOrQuery = String(req.headers['x-app-token'] || req.query.token || '');
-  if (headerOrQuery && tokenEquals(headerOrQuery, APP_TOKEN)) return true;
+  const headerToken = req.headers['x-app-token'];
+  const suppliedHeader = typeof headerToken === 'string' ? headerToken : '';
+  if (suppliedHeader) {
+    if (authFailLimiter.isBlocked(req)) {
+      res.status(429).json({ error: 'too many requests' });
+      return null;
+    }
+    if (tokenEquals(suppliedHeader, APP_TOKEN)) {
+      authFailLimiter.reset(req);
+      return true;
+    }
+    authFailLimiter.recordFailure(req);
+    return false;
+  }
   const cookies = parseCookies(req.headers.cookie);
   return verifySessionCookieValue(cookies[AUTH_COOKIE_NAME], APP_TOKEN);
 }
 
-const loginLimiter = createRateLimiter({ windowMs: 15 * 60_000, max: 15 });
-
 app.get('/api/auth/status', (req, res) => {
+  const authed = authenticateRequest(req, res);
+  if (authed === null) return;
   res.json({
     authRequired: !!APP_TOKEN,
-    authenticated: isRequestAuthenticated(req),
+    authenticated: authed,
   });
 });
 
-app.post('/api/auth/login', loginLimiter, (req, res) => {
+app.post('/api/auth/login', (req, res) => {
   if (!APP_TOKEN) {
     return res.json({ ok: true, authRequired: false });
   }
+  if (authFailLimiter.isBlocked(req)) {
+    return res.status(429).json({ error: 'too many requests' });
+  }
   const supplied = String(req.body?.token || '');
   if (!tokenEquals(supplied, APP_TOKEN)) {
+    authFailLimiter.recordFailure(req);
     return res.status(401).json({ error: 'invalid token' });
   }
+  authFailLimiter.reset(req);
   const cookieVal = createSessionCookieValue(APP_TOKEN);
-  const isHttps = req.secure || (TRUST_PROXY !== false && req.headers['x-forwarded-proto'] === 'https');
+  const isHttps = isHttpsRequest(req);
   res.cookie(AUTH_COOKIE_NAME, cookieVal, {
     httpOnly: true,
     sameSite: 'strict',
-    secure: !!isHttps,
+    secure: isHttps,
     path: '/',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
@@ -194,8 +224,8 @@ app.post('/api/auth/login', loginLimiter, (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  const isHttps = req.secure || (TRUST_PROXY !== false && req.headers['x-forwarded-proto'] === 'https');
-  res.clearCookie(AUTH_COOKIE_NAME, { path: '/', sameSite: 'strict', httpOnly: true, secure: !!isHttps });
+  const isHttps = isHttpsRequest(req);
+  res.clearCookie(AUTH_COOKIE_NAME, { path: '/', sameSite: 'strict', httpOnly: true, secure: isHttps });
   res.json({ ok: true });
 });
 
@@ -204,7 +234,9 @@ if (APP_TOKEN) {
     const p = req.path.toLowerCase();
     if (!p.startsWith('/api/') && !p.startsWith('/files/')) return next();
     if (p === '/api/health' || p.startsWith('/api/auth/')) return next();
-    if (!isRequestAuthenticated(req)) {
+    const authed = authenticateRequest(req, res);
+    if (authed === null) return;
+    if (!authed) {
       if (p.startsWith('/api/')) {
         return res.status(401).json({ error: 'unauthorized' });
       }
@@ -220,12 +252,14 @@ if (APP_TOKEN) {
   );
 }
 
-// ── Per-IP rate limit for mutations ──
+// ── Per-IP rate limit for mutations & expensive search ──
 const mutationLimiter = createRateLimiter({ windowMs: 60_000, max: 60 });
+const searchLimiter = createRateLimiter({ windowMs: 60_000, max: 30 });
 app.use((req, res, next) => {
   if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return next();
   return mutationLimiter(req, res, next);
 });
+app.use('/api/search/chat', searchLimiter);
 
 // ── Static files ──
 const clientDist = path.join(__dirname, 'client', 'dist');
@@ -319,7 +353,7 @@ process.on('unhandledRejection', (reason) => {
 
 // ── Start server ──
 httpServer = app.listen(PORT, HOST, () => {
-  console.log(`\n  TikTok LIVE Recorder  →  http://localhost:${PORT}\n`);
+  console.log(`\n  Live Stream Recorder  →  http://localhost:${PORT}\n`);
   console.log(`  ffmpeg: ${resolveFfmpeg()}`);
   const encoder = getEncoder();
   console.log(`  transcode encoder: ${ENCODER_LABELS[encoder] || encoder}`);
@@ -328,7 +362,7 @@ httpServer = app.listen(PORT, HOST, () => {
   watcher.schedulePoller();
   // Probe once immediately so the UI gets quick initial status.
   watcher.pollAll().catch(() => {});
-  if (process.env.QUIET_LOGS !== '1') {
+  if (process.env.DISABLE_BACKGROUND_TASKS !== '1' && process.env.NODE_ENV !== 'test') {
     setImmediate(async () => {
       try { await recoverOrphanedTsFiles(activeFilePaths()); } catch {}
       try { db.syncAllRecordings({ force: true }); } catch {}

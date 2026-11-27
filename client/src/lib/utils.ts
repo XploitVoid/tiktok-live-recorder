@@ -50,6 +50,7 @@ export function normalizePlatform(raw?: unknown, fallback: Platform = 'tiktok'):
   if (p === 'twitch') return 'twitch'
   if (p === 'youtube' || p === 'yt') return 'youtube'
   if (p === 'kick') return 'kick'
+  if (p === 'soop' || p === 'sooplive' || p === 'afreeca' || p === 'afreecatv') return 'soop'
   if (p === 'tiktok') return 'tiktok'
   return fallback
 }
@@ -123,6 +124,35 @@ function cleanYouTubeInput(raw: string): string {
   return s.replace(/^@/, '').trim().toLowerCase()
 }
 
+function cleanSoopInput(raw: string): string {
+  let s = raw.trim()
+  if (!s) return ''
+  if (/^https?:\/\//i.test(s) || /^(?:www\.|m\.|play\.|ch\.|bj\.)?(?:sooplive\.co\.kr|sooplive\.com|afreecatv\.com|afreeca\.tv)\//i.test(s)) {
+    try {
+      const url = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`)
+      const host = url.hostname.toLowerCase()
+      const parts = url.pathname.replace(/^\/+/, '').split('/').filter(Boolean)
+      if (host === 'sooplive.co.kr' || host.endsWith('.sooplive.co.kr') || host === 'afreecatv.com' || host.endsWith('.afreecatv.com') || host === 'afreeca.tv' || host.endsWith('.afreeca.tv')) {
+        const seg = parts.find((p) => !/^(?:station|catch|live|player)$/i.test(p)) || ''
+        const id = seg.replace(/^@/, '').replace(/^kr_/i, '').trim().toLowerCase()
+        return id ? `kr_${id}` : ''
+      }
+      if (host === 'sooplive.com' || host.endsWith('.sooplive.com')) {
+        const seg = parts[0] || ''
+        return seg.replace(/^@/, '').trim().toLowerCase()
+      }
+    } catch {
+      // fall through
+    }
+  }
+  s = s.replace(/[?#].*$/, '').replace(/^@/, '').trim()
+  if (/^kr_/i.test(s)) {
+    const id = s.slice(3).replace(/[/?#].*$/, '').trim().toLowerCase()
+    return id ? `kr_${id}` : ''
+  }
+  return s.replace(/[/?#].*$/, '').trim().toLowerCase()
+}
+
 export function formatChannelUrl(platform: Platform | undefined, username: string): string {
   const plat = normalizePlatform(platform)
   if (plat === 'twitch') {
@@ -139,11 +169,24 @@ export function formatChannelUrl(platform: Platform | undefined, username: strin
     }
     return `https://www.youtube.com/@${encodeURIComponent(username)}/live`
   }
+  if (plat === 'soop') {
+    if (username.startsWith('kr_')) {
+      return `https://play.sooplive.co.kr/${encodeURIComponent(username.slice(3))}`
+    }
+    return `https://www.sooplive.com/${encodeURIComponent(username)}`
+  }
   return `https://www.tiktok.com/@${encodeURIComponent(username)}/live`
 }
 
+const EXPLICIT_PLATFORM_PREFIX_RE = /^(twitch|tiktok|youtube|yt|kick|soop|sooplive|afreeca|afreecatv):(.*)$/i
+const EXPLICIT_PLATFORM_HOST_RE = /(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be|kick\.com|sooplive\.com|sooplive\.co\.kr|afreecatv\.com|afreeca\.tv)\//i
+
+export function hasExplicitPlatformHint(raw: string): boolean {
+  return EXPLICIT_PLATFORM_PREFIX_RE.test(raw.trim()) || EXPLICIT_PLATFORM_HOST_RE.test(raw)
+}
+
 /**
- * Parse a username, explicit platform prefix ("twitch:name", "youtube:@name", "kick:name", "tiktok:@name"),
+ * Parse a username, explicit platform prefix ("twitch:name", "youtube:@name", "kick:name", "soop:id", "tiktok:@name"),
  * or channel URL into { platform, username }.
  */
 export function parseChannelInput(
@@ -153,17 +196,18 @@ export function parseChannelInput(
   const s = raw.trim()
   if (!s) return { platform: fallback, username: '' }
 
-  const prefixMatch = s.match(/^(twitch|tiktok|youtube|yt|kick):(.*)$/i)
+  const prefixMatch = s.match(EXPLICIT_PLATFORM_PREFIX_RE)
   if (prefixMatch) {
     const plat = normalizePlatform(prefixMatch[1])
     const rest = prefixMatch[2].trim()
     if (plat === 'twitch') return { platform: 'twitch', username: cleanTwitchLogin(rest) }
     if (plat === 'youtube') return { platform: 'youtube', username: cleanYouTubeInput(rest) }
     if (plat === 'kick') return { platform: 'kick', username: cleanKickSlug(rest) }
+    if (plat === 'soop') return { platform: 'soop', username: cleanSoopInput(rest) }
     return { platform: 'tiktok', username: cleanUsernameInput(rest) }
   }
 
-  if (/^https?:\/\//i.test(s) || /^(?:www\.|m\.|music\.|gaming\.)?(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be|kick\.com)\//i.test(s)) {
+  if (/^https?:\/\//i.test(s) || /^(?:www\.|m\.|music\.|gaming\.|play\.|ch\.|bj\.)?(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be|kick\.com|sooplive\.com|sooplive\.co\.kr|afreecatv\.com|afreeca\.tv)\//i.test(s)) {
     try {
       const url = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`)
       const host = url.hostname.toLowerCase()
@@ -176,6 +220,9 @@ export function parseChannelInput(
       if (host === 'kick.com' || host.endsWith('.kick.com')) {
         return { platform: 'kick', username: cleanKickSlug(s) }
       }
+      if (host === 'sooplive.com' || host.endsWith('.sooplive.com') || host === 'sooplive.co.kr' || host.endsWith('.sooplive.co.kr') || host === 'afreecatv.com' || host.endsWith('.afreecatv.com') || host === 'afreeca.tv' || host.endsWith('.afreeca.tv')) {
+        return { platform: 'soop', username: cleanSoopInput(s) }
+      }
       if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
         return { platform: 'tiktok', username: cleanUsernameInput(s) }
       }
@@ -187,5 +234,6 @@ export function parseChannelInput(
   if (fallback === 'twitch') return { platform: 'twitch', username: cleanTwitchLogin(s) }
   if (fallback === 'youtube') return { platform: 'youtube', username: cleanYouTubeInput(s) }
   if (fallback === 'kick') return { platform: 'kick', username: cleanKickSlug(s) }
+  if (fallback === 'soop') return { platform: 'soop', username: cleanSoopInput(s) }
   return { platform: 'tiktok', username: cleanUsernameInput(s) }
 }

@@ -18,6 +18,7 @@ import {
   analyzeHighlights,
   cutHighlightClip,
   deleteHighlightClip,
+  ApiError,
 } from '@/lib/api'
 import type { HighlightCandidate, HighlightClip, SpriteMeta } from '@/lib/types'
 import { Avatar } from '@/components/Avatar'
@@ -54,19 +55,22 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
   const [trimOutRaw, setTrimOutRaw] = useState(30)
   const [hoverSec, setHoverSec] = useState<number | null>(null)
 
+  const flooredDur = durationSec && durationSec > 0 ? Math.floor(durationSec) : 0
+  const maxTrimIn = flooredDur > 1 ? flooredDur - 1 : 0
+  const safeTrimIn = durationSec && durationSec > 0 ? Math.min(trimIn, maxTrimIn) : trimIn
   const trimOut = durationSec && durationSec > 0
     ? Math.min(
-        durationSec,
-        trimIn + MAX_CLIP_SEC,
-        Math.max(trimIn + 1, trimOutRaw > durationSec ? Math.min(30, durationSec) : trimOutRaw),
+        flooredDur,
+        safeTrimIn + MAX_CLIP_SEC,
+        Math.max(safeTrimIn + 1, trimOutRaw > flooredDur ? Math.min(30, flooredDur) : trimOutRaw),
       )
-    : Math.min(trimIn + MAX_CLIP_SEC, trimOutRaw)
+    : Math.min(safeTrimIn + MAX_CLIP_SEC, Math.max(safeTrimIn + 1, trimOutRaw))
 
   const verticalItems = {
-    none: 'Original (fast copy)',
-    blur: '9:16 Blur BG',
-    crop: '9:16 Center Crop',
-    'pk-split': '9:16 PK Split (Top/Bot)',
+    none: t('hlVerticalOriginal'),
+    blur: t('hlVerticalBlur'),
+    crop: t('hlVerticalCrop'),
+    'pk-split': t('hlVerticalPkSplit'),
   }
 
   const sensitivityItems = {
@@ -75,18 +79,19 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
     sensitive: t('hlSensitivitySensitive'),
   }
 
+  const presentReasons = useMemo(() => new Set(candidates.map((c) => c.reason)), [candidates])
+  const effectiveReasonFilter = reasonFilter === 'all' || presentReasons.has(reasonFilter) ? reasonFilter : 'all'
+
   const visibleCandidates = useMemo(() => {
-    const filtered = reasonFilter === 'all'
+    const filtered = effectiveReasonFilter === 'all'
       ? candidates
-      : candidates.filter((c) => c.reason === reasonFilter)
+      : candidates.filter((c) => c.reason === effectiveReasonFilter)
     return [...filtered].sort((a, b) =>
       sortBy === 'score'
         ? b.score - a.score || (b.confidence ?? 0) - (a.confidence ?? 0)
         : a.startSec - b.startSec,
     )
-  }, [candidates, reasonFilter, sortBy])
-
-  const presentReasons = useMemo(() => new Set(candidates.map((c) => c.reason)), [candidates])
+  }, [candidates, effectiveReasonFilter, sortBy])
 
   const sseHandlers = useMemo(() => ({
     cut_progress: (raw: unknown) => {
@@ -105,7 +110,6 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
       setCandidates(data.candidates || [])
       setClips(data.clips || [])
       setUsedFallback(!!data.usedFallback)
-      if (data.stats?.sensitivity) setSensitivity(data.stats.sensitivity)
     } catch (e) {
       console.error('getHighlights:', e)
     } finally {
@@ -127,25 +131,36 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
     return () => { active = false }
   }, [recording])
 
+  const formatHighlightError = (e: unknown): string => {
+    if (e instanceof ApiError) {
+      if (e.status === 429 || e.code === 'BUSY') return t('errServerBusy')
+      if (e.status === 507 || e.code === 'DISK_FULL') return t('errDiskFull')
+    }
+    return e instanceof Error ? e.message : String(e)
+  }
+
   const handleAnalyze = async () => {
     if (!hasEvents && !includeAudio) return
     setAnalyzing(true)
+    setReasonFilter('all')
     try {
       await analyzeHighlights(recording, { sensitivity, includeAudio })
       const data = await getHighlights(recording)
       setCandidates(data.candidates || [])
       setClips(data.clips || [])
       setUsedFallback(!!data.usedFallback)
-      toast.success(t('highlights'), { description: `${data.candidates.length} candidates` })
+      toast.success(t('highlights'), { description: `${data.candidates.length} ${t('hlCandidatesCount')}` })
     } catch (e: unknown) {
-      toast.error('Analyze failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('hlAnalyzeFailed'), { description: formatHighlightError(e) })
     } finally {
       setAnalyzing(false)
     }
   }
 
   const handleLoadToTrimmer = (c: HighlightCandidate) => {
-    const start = Math.max(0, Math.floor(c.startSec))
+    const start = durationSec && durationSec > 0
+      ? Math.min(maxTrimIn, Math.max(0, Math.floor(c.startSec)))
+      : Math.max(0, Math.floor(c.startSec))
     const rawEnd = Math.ceil(c.endSec)
     const maxAllowed = durationSec && durationSec > 0 ? Math.min(Math.floor(durationSec), start + MAX_CLIP_SEC) : start + MAX_CLIP_SEC
     setTrimIn(start)
@@ -156,6 +171,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
   const handleCut = async (c: HighlightCandidate) => {
     if (cuttingId !== null) return
     setCuttingId(c.id)
+    setCutPercent(0)
     try {
       const r = await cutHighlightClip(recording, c.startSec, c.endSec, {
         vertical: verticalMode,
@@ -164,7 +180,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
       toast.success(t('hlGenerate'), { description: r.clip.name })
       await refresh()
     } catch (e: unknown) {
-      toast.error('Cut failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('hlCutFailed'), { description: formatHighlightError(e) })
     } finally {
       setCuttingId(null)
       setCutPercent(null)
@@ -172,18 +188,18 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
   }
 
   const handleCutRange = async () => {
-    if (cuttingId !== null || trimOut <= trimIn) return
+    if (cuttingId !== null || trimOut <= safeTrimIn) return
     setCuttingId('custom_trim')
     setCutPercent(0)
     try {
-      const r = await cutHighlightClip(recording, trimIn, trimOut, {
+      const r = await cutHighlightClip(recording, safeTrimIn, trimOut, {
         vertical: verticalMode,
         burnSubtitles: hasEvents ? burnSubtitles : false,
       })
       toast.success(t('hlGenerate'), { description: r.clip.name })
       await refresh()
     } catch (e: unknown) {
-      toast.error('Cut failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('hlCutFailed'), { description: formatHighlightError(e) })
     } finally {
       setCuttingId(null)
       setCutPercent(null)
@@ -193,10 +209,10 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
   const handleDeleteClip = async (clipName: string) => {
     try {
       await deleteHighlightClip(clipName)
-      toast.info('Deleted', { description: clipName })
+      toast.info(t('deleteSuccess'), { description: clipName })
       await refresh()
     } catch (e: unknown) {
-      toast.error('Delete failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('deleteFailed'), { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -220,10 +236,10 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="none">Original (fast copy)</SelectItem>
-                <SelectItem value="blur">9:16 Blur BG</SelectItem>
-                <SelectItem value="crop">9:16 Center Crop</SelectItem>
-                <SelectItem value="pk-split">9:16 PK Split (Top/Bot)</SelectItem>
+                <SelectItem value="none">{t('hlVerticalOriginal')}</SelectItem>
+                <SelectItem value="blur">{t('hlVerticalBlur')}</SelectItem>
+                <SelectItem value="crop">{t('hlVerticalCrop')}</SelectItem>
+                <SelectItem value="pk-split">{t('hlVerticalPkSplit')}</SelectItem>
               </SelectContent>
             </Select>
             <Select items={sensitivityItems} value={sensitivity} onValueChange={(v) => v && setSensitivity(v as typeof sensitivity)}>
@@ -265,6 +281,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                   { id: 'sub_spike', label: t('hlFilterSub'), show: presentReasons.has('sub_spike') },
                   { id: 'chat_spike', label: t('hlFilterChat'), show: presentReasons.has('chat_spike') },
                   { id: 'audio_spike', label: t('hlFilterAudio'), show: presentReasons.has('audio_spike') },
+                  { id: 'activity_spike', label: t('hlFilterActivity'), show: presentReasons.has('activity_spike') },
                 ] as const
               )
                 .filter((f) => f.show)
@@ -274,7 +291,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                     type="button"
                     onClick={() => setReasonFilter(f.id)}
                     className={`px-2 py-0.5 rounded-md text-[11px] border transition-colors cursor-pointer ${
-                      reasonFilter === f.id
+                      effectiveReasonFilter === f.id
                         ? 'bg-primary text-primary-foreground border-primary'
                         : 'bg-secondary/60 text-muted-foreground border-border hover:text-foreground'
                     }`}
@@ -336,13 +353,13 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
               <div
                 className="pointer-events-none absolute top-0 h-full bg-white/25 border-x border-white/70"
                 style={{
-                  left: `${Math.max(0, Math.min(100, (trimIn / durationSec) * 100))}%`,
-                  width: `${Math.max(0.5, Math.min(100, ((trimOut - trimIn) / durationSec) * 100))}%`,
+                  left: `${Math.max(0, Math.min(100, (safeTrimIn / durationSec) * 100))}%`,
+                  width: `${Math.max(0.5, Math.min(100, ((trimOut - safeTrimIn) / durationSec) * 100))}%`,
                 }}
               />
             </div>
 
-            {hoverSec !== null && spriteUrl && spriteMeta && (() => {
+            {hoverSec !== null && spriteUrl && spriteMeta && spriteMeta.intervalSec > 0 && spriteMeta.cols > 0 && spriteMeta.rows > 0 && (() => {
               const idx = Math.min(
                 spriteMeta.cols * spriteMeta.rows - 1,
                 Math.max(0, Math.floor(hoverSec / spriteMeta.intervalSec)),
@@ -356,7 +373,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                     style={{
                       width: spriteMeta.tileWidth,
                       height: spriteMeta.tileHeight,
-                      backgroundImage: `url(${spriteUrl})`,
+                      backgroundImage: `url("${spriteUrl.replace(/["\\]/g, '\\$&')}")`,
                       backgroundPosition: `-${col * spriteMeta.tileWidth}px -${row * spriteMeta.tileHeight}px`,
                       backgroundRepeat: 'no-repeat',
                     }}
@@ -371,7 +388,7 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
               <span className="font-medium text-muted-foreground">{t('trimmerTitle')}</span>
               <div className="flex items-center gap-1.5">
                 <Button size="xs" variant="outline" onClick={() => {
-                  const v = Math.floor(currentTime)
+                  const v = Math.min(maxTrimIn, Math.max(0, Math.floor(currentTime)))
                   setTrimIn(v)
                   if (trimOut <= v) {
                     setTrimOutRaw(Math.min(Math.floor(durationSec), v + 15))
@@ -379,10 +396,10 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                     setTrimOutRaw(Math.min(Math.floor(durationSec), v + MAX_CLIP_SEC))
                   }
                 }}>
-                  {t('trimmerSetIn')} ({fmtTimeSec(trimIn)})
+                  {t('trimmerSetIn')} ({fmtTimeSec(safeTrimIn)})
                 </Button>
                 <Button size="xs" variant="outline" onClick={() => {
-                  const v = Math.min(trimIn + MAX_CLIP_SEC, Math.max(trimIn + 1, Math.ceil(currentTime)))
+                  const v = Math.min(safeTrimIn + MAX_CLIP_SEC, Math.max(safeTrimIn + 1, Math.ceil(currentTime)))
                   setTrimOutRaw(Math.min(Math.floor(durationSec), v))
                 }}>
                   {t('trimmerSetOut')} ({fmtTimeSec(trimOut)})
@@ -391,10 +408,10 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
               <input
                 type="range"
                 min={0}
-                max={Math.max(1, Math.floor(durationSec) - 1)}
-                value={trimIn}
+                max={Math.max(1, maxTrimIn)}
+                value={safeTrimIn}
                 onChange={(e) => {
-                  const v = Number(e.target.value)
+                  const v = Math.min(maxTrimIn, Number(e.target.value))
                   setTrimIn(v)
                   if (trimOut <= v) {
                     setTrimOutRaw(Math.min(Math.floor(durationSec), v + 1))
@@ -403,53 +420,55 @@ export function HighlightsPanel({ recording, hasEvents, durationSec, currentTime
                   }
                 }}
                 className="w-24 accent-primary"
-                aria-label="Trim In"
+                aria-label={t('trimmerSetIn')}
               />
               <input
                 type="range"
-                min={Math.min(Math.floor(durationSec), trimIn + 1)}
-                max={Math.min(Math.max(1, Math.floor(durationSec)), trimIn + MAX_CLIP_SEC)}
+                min={Math.min(Math.floor(durationSec), safeTrimIn + 1)}
+                max={Math.min(Math.max(1, Math.floor(durationSec)), safeTrimIn + MAX_CLIP_SEC)}
                 value={trimOut}
-                onChange={(e) => setTrimOutRaw(Math.min(trimIn + MAX_CLIP_SEC, Math.max(trimIn + 1, Number(e.target.value))))}
+                onChange={(e) => setTrimOutRaw(Math.min(safeTrimIn + MAX_CLIP_SEC, Math.max(safeTrimIn + 1, Number(e.target.value))))}
                 className="w-24 accent-primary"
-                aria-label="Trim Out"
+                aria-label={t('trimmerSetOut')}
               />
               <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
-                {Math.max(0, Math.round(trimOut - trimIn))}s <span className="opacity-70">(max {MAX_CLIP_SEC}s)</span>
+                {Math.max(0, Math.round(trimOut - safeTrimIn))}s <span className="opacity-70">({t('hlMaxClipSec')} {MAX_CLIP_SEC}s)</span>
               </span>
               <Button
                 size="xs"
                 onClick={handleCutRange}
-                disabled={cuttingId !== null || trimOut <= trimIn}
+                disabled={cuttingId !== null || trimOut <= safeTrimIn}
                 className="ml-auto cursor-pointer"
               >
                 <Scissors className="w-3 h-3 mr-1" />
                 {cuttingId === 'custom_trim' ? t('hlGenerating') : t('trimmerCut')}
               </Button>
             </div>
+          </div>
+        )}
 
-            {cutPercent !== null && (
-              <div className="space-y-1">
-                <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
-                  <span>FFmpeg encoding...</span>
-                  <span>{cutPercent}%</span>
-                </div>
-                <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
-                  <div className="h-full bg-primary transition-all duration-150" style={{ width: `${cutPercent}%` }} />
-                </div>
-              </div>
-            )}
+        {cutPercent !== null && (
+          <div className="space-y-1">
+            <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
+              <span>{t('hlEncodingProgress')}</span>
+              <span>{cutPercent}%</span>
+            </div>
+            <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
+              <div className="h-full bg-primary transition-all duration-150" style={{ width: `${cutPercent}%` }} />
+            </div>
           </div>
         )}
 
         {/* Candidates list */}
         <div className="space-y-1.5 max-h-[340px] overflow-y-auto">
-          {!hasEvents && candidates.length === 0 && !includeAudio ? (
-            <p className="text-xs text-muted-foreground">{t('hlNoEvents')}</p>
-          ) : loading && candidates.length === 0 ? (
+          {loading && candidates.length === 0 ? (
             <p className="text-xs text-muted-foreground">{t('loading')}</p>
+          ) : !hasEvents && !includeAudio && candidates.length === 0 ? (
+            <p className="text-xs text-muted-foreground">{t('hlNoEvents')}</p>
           ) : visibleCandidates.length === 0 ? (
-            <p className="text-xs text-muted-foreground">{!hasEvents ? t('hlNoEvents') : t('hlNone')}</p>
+            <p className="text-xs text-muted-foreground">
+              {!hasEvents && includeAudio ? t('hlNoneAudioOnly') : t('hlNone')}
+            </p>
           ) : (
             visibleCandidates.map((c) => (
               <CandidateRow

@@ -3,7 +3,7 @@
 ;   ISCC.exe /DMyAppVersion=1.4.2 /DSourceDir=... /DOutputDir=... packaging\windows\installer.iss
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.5.0"
+  #define MyAppVersion "1.6.0"
 #endif
 
 #ifndef SourceDir
@@ -54,6 +54,13 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\app\lib"
+Type: filesandordirs; Name: "{app}\app\routes"
+Type: filesandordirs; Name: "{app}\app\client"
+Type: filesandordirs; Name: "{app}\app\node_modules"
+Type: filesandordirs; Name: "{app}\runtime"
 
 [Icons]
 Name: "{autoprograms}\TikTok LIVE Recorder\TikTok LIVE Recorder"; Filename: "{app}\TikTok LIVE Recorder.bat"; WorkingDir: "{app}"

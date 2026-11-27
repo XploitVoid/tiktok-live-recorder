@@ -1655,7 +1655,7 @@ test('Kick LIVE provider (HLS, Pusher WS chat, yt-dlp fallback) & multi-platform
   }));
   assert.equal(giftFrame.events[0].type, 'gift');
   assert.equal(giftFrame.events[0].repeatCount, 2);
-  assert.equal(giftFrame.events[0].diamondCount, 1000);
+  assert.equal(giftFrame.events[0].diamondCount, 500);
   assert.equal(kick.parseKickPusherMessage(JSON.stringify({ event: 'pusher:ping' })).command, 'PING');
 
   // 4. KickChatSession Centrifugo connect, subscribe, message push, {} ping/pong, and clean mid-connect disconnect
@@ -2083,4 +2083,1128 @@ test('Auto Highlights v2: MAD Z-score, Thai/EN hype & anti-spam, audio peak fusi
   const wins = det.getClipWindows(t0 - 10_000);
   assert.equal(wins.length, 2);
   assert.ok(wins[0].startSec >= 0);
+});
+
+test('Phase 1 reliability regressions: C2 YouTube pre-aborted AbortSignal & H25 proxy/readEvents', async () => {
+  const os = require('node:os');
+  const youtube = require('../lib/providers/youtube');
+  const proxyConfig = require('../lib/proxy-config');
+  const utils = require('../lib/utils');
+
+  // C2: pre-aborted AbortSignal must reject cleanly without emitting unhandled error on request
+  await assert.rejects(
+    () => youtube.defaultHttpRequest('https://www.youtube.com/@test/live', { signal: AbortSignal.abort() }),
+    /YouTube request aborted/,
+  );
+
+  // H25: getProxyAgent handles multi-proxy string without throwing ERR_INVALID_URL
+  const agent = proxyConfig.getProxyAgent('http://p1.example:8080, socks5://p2.example:1080');
+  assert.ok(agent);
+
+  // H25: readEvents ignores null/primitive JSON lines and returns independent clones
+  const tmpFile = path.join(os.tmpdir(), `tlr-events-p1-${Date.now()}.jsonl`);
+  try {
+    fs.writeFileSync(tmpFile, [
+      JSON.stringify({ id: 1, ts: 1000, type: 'chat', comment: 'hello' }),
+      'null',
+      '[1,2,3]',
+      '"plain"',
+      JSON.stringify({ id: 2, ts: 2000, type: 'chat', comment: 'world' }),
+    ].join('\n'), 'utf8');
+
+    const first = utils.readEvents(tmpFile);
+    assert.equal(first.length, 2);
+    first[0].comment = 'mutated';
+    first.push({ id: 99, ts: 9999, type: 'chat', comment: 'injected' });
+
+    const second = utils.readEvents(tmpFile);
+    assert.equal(second.length, 2);
+    assert.equal(second[0].comment, 'hello');
+  } finally {
+    fs.rmSync(tmpFile, { force: true });
+  }
+});
+
+test('Phase 2 reliability regressions: H7-H22, H26, M11, M13', async () => {
+  const os = require('node:os');
+  const { spawnSync } = require('node:child_process');
+  const ffmpeg = require('../lib/ffmpeg');
+  const transcode = require('../lib/transcode');
+  const room = require('../lib/room');
+  const youtube = require('../lib/providers/youtube');
+  const kick = require('../lib/providers/kick');
+  const twitch = require('../lib/providers/twitch');
+  const providers = require('../lib/providers');
+  const launcher = require('../launcher');
+  const { analyzeRecording, mergeSpikes, topMomentBuckets } = require('../lib/highlights');
+  const { buildLeaderboard } = require('../lib/leaderboard');
+  const { autoTags } = require('../lib/bookmarks');
+  const watcher = require('../lib/watcher');
+
+  // H9: -avoid_negative_ts must be placed AFTER -i in both buildRecordArgs and buildTranscodeArgs
+  const recArgs = ffmpeg.buildRecordArgs({ url: 'https://pull.tiktokcdn.com/live.flv', quality: 'hd' }, 'out.mp4');
+  assert.ok(recArgs.indexOf('-avoid_negative_ts') > recArgs.indexOf('-i'));
+  const txArgs = transcode.buildTranscodeArgs('https://pull.tiktokcdn.com/live.flv', 'libx264');
+  assert.ok(txArgs.indexOf('-avoid_negative_ts') > txArgs.indexOf('-i'));
+
+  // H10: Demuxed YouTube Live HLS (AUDIO group + AUDIO="aud") preserves audioByQuality, master hls URL, and FFmpeg dual-input mapping
+  const demuxedM3u8 = [
+    '#EXTM3U',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="audio",URI="https://rr1---sn.googlevideo.com/audio.m3u8"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,FRAME-RATE=60,AUDIO="aud"',
+    'https://rr1---sn.googlevideo.com/1080p60.m3u8',
+  ].join('\n');
+  const masterUrl = 'https://manifest.googlevideo.com/api/manifest/hls_playlist/master.m3u8';
+  const parsedDemux = youtube.parseYouTubeMasterM3u8(demuxedM3u8, masterUrl);
+  assert.equal(parsedDemux.hls, masterUrl);
+  assert.equal(parsedDemux.audioByQuality.uhd_60, 'https://rr1---sn.googlevideo.com/audio.m3u8');
+  const ytPref = youtube.pickPreferredStream(parsedDemux);
+  assert.equal(ytPref.audioUrl, 'https://rr1---sn.googlevideo.com/audio.m3u8');
+  const demuxArgs = ffmpeg.buildRecordArgs(ytPref, 'out.mp4');
+  assert.equal(demuxArgs.filter((x) => x === '-i').length, 2);
+  assert.ok(demuxArgs.includes('https://rr1---sn.googlevideo.com/audio.m3u8'));
+  assert.ok(demuxArgs.includes('0:v:0') && demuxArgs.includes('1:a:0'));
+
+  // H17: pickPreferredStream handles null safely and prefers HEVC video (incl. custom keys) over audio-only 'ao'
+  assert.equal(room.pickPreferredStream(null), null);
+  const hevcPick = room.pickPreferredStream({
+    flv: { ao: 'https://pull.tiktokcdn.com/ao.flv' },
+    cmaf: {},
+    hlsByQuality: {},
+    hevc: { flv: { custom_hevc: 'https://pull.tiktokcdn.com/hevc.flv' }, hls: {}, cmaf: {} },
+  });
+  assert.equal(hevcPick?.quality, 'hevc:custom_hevc');
+
+  // H18 & H19: YouTube/Kick fetchLiveStatus throw on network/HTTP error instead of fake offline; Twitch falls back on non-2xx Usher
+  await assert.rejects(
+    () => youtube.fetchLiveStatus('LofiGirl', { fetchImpl: async () => { throw new Error('network down'); }, useYtDlpFallback: false }),
+    /network down/,
+  );
+  await assert.rejects(
+    () => kick.fetchLiveStatus('xqc', { fetchImpl: async () => ({ ok: false, status: 502, text: 'bad gw' }), useYtDlpFallback: false }),
+    /Kick API HTTP 502/,
+  );
+  const twNon2xx = await twitch.fetchLiveStatus('shroud', {
+    fetchImpl: async (url) => {
+      if (url.includes('gql.twitch.tv')) {
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            data: {
+              user: { id: '1', login: 'shroud', stream: { id: 's1', type: 'live' } },
+              streamPlaybackAccessToken: { value: 'v', signature: 'sig' },
+            },
+          }),
+        };
+      }
+      return { ok: false, status: 503, text: '' };
+    },
+  });
+  assert.ok(twNon2xx.streams?.hls && twNon2xx.streams.hls.includes('usher.ttvnw.net'));
+
+  // H20: YouTubeChatSession preserves parsed message timestamps (parsed.ts) instead of Date.now()
+  const historicUsec = '1700000123000000';
+  const ytChat = new youtube.YouTubeChatSession('LofiGirl', {
+    apiKey: 'KEY',
+    continuation: 'CONT1',
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: JSON.stringify({
+        continuationContents: {
+          liveChatContinuation: {
+            actions: [{
+              addChatItemAction: {
+                item: {
+                  liveChatTextMessageRenderer: {
+                    id: 'yt-ts-1',
+                    timestampUsec: historicUsec,
+                    authorName: { simpleText: 'Tester' },
+                    message: { runs: [{ text: 'old msg' }] },
+                  },
+                },
+              },
+            }],
+            continuations: [],
+          },
+        },
+      }),
+    }),
+  });
+  ytChat.uiActive = true;
+  ytChat.state = 'connected';
+  await ytChat._pollOnce();
+  assert.equal(ytChat.events.length, 1);
+  assert.equal(ytChat.events[0].ts, 1700000123000);
+  ytChat.disconnect();
+
+  // H22: fetchViaYtDlp maps null viewerCount/release_timestamp to null rather than 0
+  const ytdNull = await youtube.fetchViaYtDlp('https://www.youtube.com/@LofiGirl/live', {
+    ytDlpExec: async () => JSON.stringify({
+      id: 'vid1',
+      is_live: true,
+      concurrent_view_count: null,
+      release_timestamp: null,
+      manifest_url: 'https://manifest.googlevideo.com/a.m3u8',
+    }),
+  });
+  assert.equal(ytdNull.viewerCount, null);
+  assert.equal(ytdNull.startedAtUnix, null);
+
+  // H26: resolveUrls keeps IPv6 loopback for ::1 / ::
+  const v6 = launcher.resolveUrls({ PORT: '3000', HOST: '::1' });
+  assert.equal(v6.probeHost, '::1');
+  assert.equal(v6.healthUrl, 'http://[::1]:3000/api/health');
+
+  // H11 & H12: partial .meta.json can still be compressed and compressed file preserves metadata
+  const stamp = `p2meta_${Date.now()}`;
+  const recName = `${stamp}.mp4`;
+  const recPath = path.join(storage.RECORDINGS_DIR, recName);
+  const metaPath = recPath.replace(/\.mp4$/i, '.meta.json');
+  let compName = null;
+  try {
+    const gen = spawnSync(ffmpeg.resolveFfmpeg(), [
+      '-y', '-f', 'lavfi', '-i', 'testsrc=size=128x128:rate=5',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+      '-t', '1', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', recPath,
+    ], { encoding: 'utf8' });
+    assert.equal(gen.status, 0);
+    // Partial meta (simulates initial .meta.json created at recording start without vcodec)
+    fs.writeFileSync(metaPath, JSON.stringify({
+      startedAt: 1700000500000,
+      username: 'customstreamer',
+      platform: 'twitch',
+      displayTitle: 'Custom Title',
+      notes: 'Keep me',
+    }), 'utf8');
+    const comp = await storage.compressRecording(recName, 'compact');
+    compName = comp.name;
+    const compMeta = storage.readMeta(compName);
+    assert.equal(compMeta.startedAt, 1700000500000);
+    assert.equal(compMeta.username, 'customstreamer');
+    assert.equal(compMeta.platform, 'twitch');
+    assert.equal(compMeta.displayTitle, 'Custom Title');
+    assert.equal(compMeta.notes, 'Keep me');
+  } finally {
+    storage.deleteRecordingBundle(recName);
+    if (compName) storage.deleteRecordingBundle(compName);
+  }
+
+  // H13 & H15: topMomentBuckets -> mergeSpikes keeps ascending idx, and analyzeRecording derives startMs from meta duration/events
+  const mockBuckets = Array.from({ length: 12 }, (_, idx) => ({
+    idx,
+    startSec: idx * 5,
+    endSec: (idx + 1) * 5,
+    score: idx === 10 ? 50 : idx === 2 ? 20 : 0,
+    eventCount: idx === 10 || idx === 2 ? 3 : 0,
+    eventsInBucket: idx === 10 || idx === 2 ? [{ ts: 1700000000000 + idx * 5000, type: 'chat', comment: 'wow', user: { uniqueId: 'u1' } }] : [],
+  }));
+  const topSpikes = topMomentBuckets(mockBuckets);
+  assert.equal(topSpikes[0].idx < topSpikes[1].idx, true);
+  const mergedTop = mergeSpikes(topSpikes, mockBuckets, { durationSec: 60, startMs: 1700000000000 });
+  assert.equal(mergedTop.length, 2);
+
+  const hlBase = `p2start_${Date.now()}`;
+  const hlMp4 = path.join(storage.RECORDINGS_DIR, `${hlBase}.mp4`);
+  const hlEv = hlMp4.replace(/\.mp4$/i, '.events.jsonl');
+  const hlMeta = hlMp4.replace(/\.mp4$/i, '.meta.json');
+  const hlOut = hlMp4.replace(/\.mp4$/i, '.highlights.json');
+  try {
+    fs.writeFileSync(hlMp4, 'fake', 'utf8');
+    fs.writeFileSync(hlMeta, JSON.stringify({ durationSec: 120 }), 'utf8');
+    const approxStart = Math.round(fs.statSync(hlMp4).mtimeMs - 120 * 1000);
+    const lines = [];
+    for (let i = 0; i < 6; i++) {
+      lines.push(JSON.stringify({ id: i + 1, ts: approxStart + 30_000 + i * 500, type: 'chat', user: { uniqueId: `u${i}` }, comment: 'hype lol!' }));
+    }
+    fs.writeFileSync(hlEv, lines.join('\n') + '\n', 'utf8');
+    const hlRes = analyzeRecording(`${hlBase}.mp4`);
+    assert.equal(hlRes.ok, true);
+    assert.ok(hlRes.candidates.length >= 1);
+  } finally {
+    fs.rmSync(hlMp4, { force: true });
+    fs.rmSync(hlEv, { force: true });
+    fs.rmSync(hlMeta, { force: true });
+    fs.rmSync(hlOut, { force: true });
+  }
+
+  // M11: IRC tag single-pass unescape, host-strict URL parse, YouTube dot handle rejection
+  assert.equal(twitch.unescapeIrcTag('hello\\\\:world\\s!'), 'hello\\:world !');
+  assert.notEqual(providers.parseChannelInput('https://evil.com/twitch.tv/alice').platform, 'twitch');
+  assert.equal(youtube.normalizeUsername('..'), '');
+  assert.equal(youtube.normalizeUsername('.env'), '');
+
+  // M13: watcher.setPollSeconds(NaN), bookmarks.autoTags superFan, leaderboard subscribe points & passive member exclusion
+  assert.equal(Number.isFinite(watcher.setPollSeconds(NaN)), true);
+
+  const lbBase = `p2lb_${Date.now()}`;
+  const lbMp4 = path.join(storage.RECORDINGS_DIR, `${lbBase}.mp4`);
+  const lbEv = lbMp4.replace(/\.mp4$/i, '.events.jsonl');
+  try {
+    fs.writeFileSync(lbMp4, 'fake', 'utf8');
+    fs.writeFileSync(lbEv, [
+      JSON.stringify({ id: 1, ts: 1000, type: 'member', user: { uniqueId: 'lurker', nickname: 'Lurker' } }),
+      JSON.stringify({ id: 2, ts: 2000, type: 'superFan', user: { uniqueId: 'fan1', nickname: 'Fan1' } }),
+    ].join('\n') + '\n', 'utf8');
+    assert.equal(autoTags(`${lbBase}.mp4`).includes('subscriber'), true);
+    const lb = buildLeaderboard(`${lbBase}.mp4`);
+    assert.equal(lb.totals.uniqueUsers, 1);
+    assert.equal(lb.overall[0].uniqueId, 'fan1');
+    assert.equal(lb.overall[0].score, 20);
+  } finally {
+    fs.rmSync(lbMp4, { force: true });
+    fs.rmSync(lbEv, { force: true });
+  }
+});
+
+test('Phase 4 polish & micro-fixes: L1, L5, L6, L7 regressions', () => {
+  const youtube = require('../lib/providers/youtube');
+  const twitch = require('../lib/providers/twitch');
+  const kick = require('../lib/providers/kick');
+  const analytics = require('../lib/analytics');
+  const ffmpeg = require('../lib/ffmpeg');
+  const utils = require('../lib/utils');
+  const storage = require('../lib/storage');
+
+  // L5: buildRecordArgs handles audioOnly + useTs without dead branches
+  const aoTsArgs = ffmpeg.buildRecordArgs({ url: 'https://example.com/a.flv', kind: 'flv', audioOnly: true, format: 'ts' }, 'out.mp4');
+  assert.ok(aoTsArgs.includes('-vn'));
+  assert.ok(aoTsArgs.includes('aac_adtstoasc'));
+
+  // L6: YouTube compact viewer count ("1.2K"), Twitch "source" in name, Kick control char sanitization
+  const ytViews = youtube.extractViewerCountFromInitialData({
+    contents: {
+      twoColumnWatchNextResults: {
+        results: {
+          results: {
+            contents: [
+              { videoPrimaryInfoRenderer: { viewCount: { videoViewCountRenderer: { originalViewCount: '1.2K' } } } },
+            ],
+          },
+        },
+      },
+    },
+  });
+  assert.equal(ytViews, 1200);
+
+  const twSrc = twitch.classifyTwitchVariant({ videoGroup: '1080p60', name: '1080p60 (source)', height: 1080, fps: 60 });
+  assert.equal(twSrc.sdkKey, 'origin');
+
+  const kickMsg = kick.parseKickPusherMessage({
+    event: 'App\\Events\\GiftedSubscriptionsEvent',
+    data: JSON.stringify({
+      gifter_username: 'Gifter\x07One',
+      gifted_usernames: ['Alice\x00', 'Bob\n'],
+    }),
+  });
+  assert.equal(kickMsg.events[0].user.nickname, 'GifterOne');
+  assert.equal(kickMsg.events[0].comment, 'Gifted to Alice, Bob');
+
+  // L7: analytics non-string / non-mutation, safeError redaction & dangling symlink guard
+  assert.equal(analytics.spamScore(null), 0);
+  assert.equal(analytics.spamScore('   '), 0);
+  const sampleEv = { type: 'chat', comment: '   ' };
+  const spamRes = analytics.annotateSpam([sampleEv]);
+  assert.equal(spamRes.spamCount, 0);
+  assert.equal('_spamScore' in sampleEv, false);
+
+  assert.equal(utils.safeError('OAuth secretToken123'), '[redacted]');
+  assert.equal(utils.safeError('https://api.example.com/?key=superSecretKey99'), 'https://api.example.com/?[redacted]');
+
+  const danglingName = `dangling_${Date.now()}.mp4`;
+  const danglingPath = path.join(storage.RECORDINGS_DIR, danglingName);
+  try {
+    fs.symlinkSync(path.join(storage.RECORDINGS_DIR, `missing_target_${Date.now()}.mp4`), danglingPath);
+    assert.equal(utils.resolveRecordingPath(storage.RECORDINGS_DIR, danglingName, '.mp4'), null);
+  } catch (err) {
+    // Skip symlink creation assertion on locked-down Windows shells without symlink privilege
+    if (err?.code !== 'EPERM') throw err;
+  } finally {
+    try { fs.unlinkSync(danglingPath); } catch {}
+  }
+});
+
+test('YouTube Live 4K/2K adaptiveFormats extraction, pump segment helpers, and FFmpeg args', async () => {
+  const youtube = require('../lib/providers/youtube');
+  const ffmpeg = require('../lib/ffmpeg');
+  const utils = require('../lib/utils');
+  const pump = require('../lib/youtube-live-pump');
+
+  // 1. classifyYouTubeVariant maps 2160p/1440p distinctly
+  assert.deepEqual(youtube.classifyYouTubeVariant({ height: 2160, fps: 60 }), {
+    sdkKey: 'uhd4k_60',
+    level: 120,
+    label: '2160p60 (4K)',
+  });
+  assert.deepEqual(youtube.classifyYouTubeVariant({ height: 2160, fps: 30 }), {
+    sdkKey: 'uhd4k',
+    level: 115,
+    label: '2160p (4K)',
+  });
+  assert.deepEqual(youtube.classifyYouTubeVariant({ height: 1440, fps: 60 }), {
+    sdkKey: 'qhd_60',
+    level: 105,
+    label: '1440p60 (2K)',
+  });
+  assert.deepEqual(youtube.classifyYouTubeVariant({ height: 1440, fps: 30 }), {
+    sdkKey: 'qhd',
+    level: 100,
+    label: '1440p (2K)',
+  });
+
+  // 2. QUALITY_RE / sanitizeQuality accepts 4K and 2K keys
+  assert.equal(utils.sanitizeQuality('uhd4k_60'), 'uhd4k_60');
+  assert.equal(utils.sanitizeQuality('uhd4k'), 'uhd4k');
+  assert.equal(utils.sanitizeQuality('qhd_60'), 'qhd_60');
+  assert.equal(utils.sanitizeQuality('qhd'), 'qhd');
+
+  // 3. fetchLiveStatus queries ANDROID InnerTube when web adaptiveFormats lack direct .url,
+  //    preserves H.264 1080p60 HLS for browser preview, and prefers uhd4k_60 (yt_adaptive) for recording
+  const html4k = [
+    '<script>',
+    'var ytInitialPlayerResponse = {"videoDetails":{"videoId":"Live4kVid01","title":"4K Live","channelId":"UC1234567890123456789012","author":"4K Chan","isLive":true},"playabilityStatus":{"status":"OK"},"streamingData":{"hlsManifestUrl":"https://manifest.googlevideo.com/web/master.m3u8","adaptiveFormats":[{"itag":315,"height":2160,"fps":60,"mimeType":"video/webm; codecs=\\"vp9\\""}]}};',
+    'var ytInitialData = {};',
+    '</script>',
+    '<script>ytcfg.set({"INNERTUBE_API_KEY":"TEST_4K_KEY"});</script>',
+  ].join('\n');
+  const hls1080 = [
+    '#EXTM3U',
+    '#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,FRAME-RATE=60',
+    'https://rr1---sn.googlevideo.com/1080p60.m3u8',
+  ].join('\n');
+
+  const res4k = await youtube.fetchLiveStatus('v_Live4kVid01', {
+    fetchImpl: async (url) => {
+      if (url.includes('youtube.com/watch')) return { ok: true, status: 200, text: html4k };
+      if (url.includes('/youtubei/v1/player')) {
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            streamingData: {
+              adaptiveFormats: [
+                {
+                  itag: 315,
+                  width: 3840,
+                  height: 2160,
+                  fps: 60,
+                  bitrate: 18000000,
+                  targetDurationSec: 5,
+                  mimeType: 'video/webm; codecs="vp9"',
+                  url: 'https://rr4---sn.googlevideo.com/videoplayback?itag=315',
+                },
+                {
+                  itag: 308,
+                  width: 2560,
+                  height: 1440,
+                  fps: 60,
+                  bitrate: 9000000,
+                  targetDurationSec: 5,
+                  mimeType: 'video/webm; codecs="vp9"',
+                  url: 'https://rr4---sn.googlevideo.com/videoplayback?itag=308',
+                },
+                {
+                  itag: 140,
+                  bitrate: 144000,
+                  mimeType: 'audio/mp4; codecs="mp4a.40.2"',
+                  url: 'https://rr4---sn.googlevideo.com/videoplayback?itag=140',
+                },
+              ],
+            },
+          }),
+        };
+      }
+      if (url.includes('manifest.googlevideo.com')) return { ok: true, status: 200, text: hls1080 };
+      return { ok: false, status: 404, text: '' };
+    },
+  });
+
+  const streams4k = youtube.extractStreamUrls(res4k);
+  assert.equal(streams4k.qualities[0].sdkKey, 'uhd4k_60');
+  assert.equal(streams4k.qualities[1].sdkKey, 'qhd_60');
+  assert.equal(streams4k.hlsByQuality.uhd_60, 'https://rr1---sn.googlevideo.com/1080p60.m3u8');
+  assert.equal(streams4k.hlsByQuality.uhd4k_60, undefined);
+
+  const preferred = youtube.pickPreferredStream(streams4k);
+  assert.equal(preferred.kind, 'yt_adaptive');
+  assert.equal(preferred.quality, 'uhd4k_60');
+  assert.equal(preferred.audioUrl, 'https://rr4---sn.googlevideo.com/videoplayback?itag=140');
+
+  // 4. buildRecordArgs handles kind='yt_adaptive' cleanly without H.264/AAC bitstreams or MPEG-TS
+  const adaptiveArgs = ffmpeg.buildRecordArgs(
+    {
+      url: 'http://127.0.0.1:12345/tok/video',
+      audioUrl: 'http://127.0.0.1:12345/tok/audio',
+      kind: 'yt_adaptive',
+      quality: 'uhd4k_60',
+      format: 'ts',
+      referer: 'https://www.youtube.com/',
+    },
+    'out_4k.mp4',
+    ['-http_proxy', 'http://127.0.0.1:8888'],
+  );
+  assert.equal(adaptiveArgs.includes('h264_mp4toannexb'), false);
+  assert.equal(adaptiveArgs.includes('aac_adtstoasc'), false);
+  assert.equal(adaptiveArgs.includes('mpegts'), false);
+  assert.equal(adaptiveArgs.includes('-http_proxy'), false);
+  assert.ok(adaptiveArgs.includes('-movflags'));
+
+  // 5. prepareWebmSegment & prepareMp4Segment helpers (8-byte EBML VINT 0x01...)
+  const webmBuf = Buffer.from([
+    0x1A, 0x45, 0xDF, 0xA3, 0x01, 0x00,
+    0x18, 0x53, 0x80, 0x67, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05,
+    0x1F, 0x43, 0xB6, 0x75, 0xAA, 0xBB,
+  ]);
+  const webmFirst = pump.prepareWebmSegment(webmBuf, true);
+  assert.deepEqual([...webmFirst.subarray(10, 18)], [0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+  assert.deepEqual(pump.prepareWebmSegment(webmBuf, false), Buffer.from([0x1F, 0x43, 0xB6, 0x75, 0xAA, 0xBB]));
+
+  const mp4Buf = Buffer.alloc(24);
+  mp4Buf.writeUInt32BE(8, 0);
+  mp4Buf.write('ftyp', 4, 'ascii');
+  mp4Buf.writeUInt32BE(8, 8);
+  mp4Buf.write('moov', 12, 'ascii');
+  mp4Buf.writeUInt32BE(8, 16);
+  mp4Buf.write('moof', 20, 'ascii');
+  assert.equal(pump.prepareMp4Segment(mp4Buf, true).length, 24);
+  const mp4Next = pump.prepareMp4Segment(mp4Buf, false);
+  assert.equal(mp4Next.toString('ascii', 4, 8), 'moof');
+});
+
+test('Multi-platform Phase 3: SOOP Live provider, registry, and watcher intervals', async () => {
+  const providers = require('../lib/providers');
+  const soop = require('../lib/providers/soop');
+  const watcher = require('../lib/watcher');
+
+  // 1. Registry & input parsing
+  assert.ok(providers.SUPPORTED_PLATFORMS.includes('soop'));
+  assert.equal(providers.SUPPORTED_PLATFORMS.includes('facebook'), false);
+  assert.equal(providers.SUPPORTED_PLATFORMS.includes('instagram'), false);
+  assert.equal(providers.normalizePlatform('sooplive'), 'soop');
+  assert.equal(providers.normalizePlatform('afreecatv'), 'soop');
+
+  assert.deepEqual(providers.parseChannelInput('https://play.sooplive.co.kr/testerkr/12345'), {
+    platform: 'soop',
+    username: 'kr_testerkr',
+  });
+  assert.deepEqual(providers.parseChannelInput('https://www.afreecatv.com/station/mybj'), {
+    platform: 'soop',
+    username: 'kr_mybj',
+  });
+  assert.deepEqual(providers.parseChannelInput('https://www.sooplive.com/GlobalStreamer'), {
+    platform: 'soop',
+    username: 'globalstreamer',
+  });
+  assert.deepEqual(providers.parseChannelInput('https://www.afreeca.tv/mybj2'), {
+    platform: 'soop',
+    username: 'kr_mybj2',
+  });
+
+  assert.equal(providers.derivePlatformFromFilename('soop_kr_bj/soop_kr_bj_20260101.mp4', null, 'soop_kr_bj'), 'soop');
+  assert.equal(providers.stripPlatformPrefix('soop_kr_bj'), 'kr_bj');
+
+  // 2. SOOP Korea fetchLiveStatus + packet parser + chat session
+  const soopStatus = await soop.fetchLiveStatus('https://play.sooplive.co.kr/kobj', {
+    useYtDlpFallback: false,
+    fetchImpl: async (url, opts) => {
+      if (url.includes('player_live_api.php') && String(opts?.body || '').includes('type=live')) {
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            CHANNEL: {
+              RESULT: 1,
+              BNO: '998877',
+              BJID: 'kobj',
+              BJNICK: 'KO BJ',
+              TITLE: 'SOOP KR Test',
+              CATE: 'Talk',
+              RMD: 'https://livestream-manager.sooplive.co.kr',
+              CHDOMAIN: 'chat.sooplive.co.kr',
+              CHPT: 8000,
+              CHATNO: '998877',
+              FTK: 'ftk123',
+              VIEWPRESET: { total_cnt: 450 },
+            },
+          }),
+        };
+      }
+      if (url.includes('player_live_api.php') && String(opts?.body || '').includes('type=aid')) {
+        return { ok: true, status: 200, text: JSON.stringify({ CHANNEL: { AID: 'aid_tok_1' } }) };
+      }
+      if (url.includes('broad_stream_assign.html')) {
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({ view_url: 'https://live-global-cdn-01.sooplive.co.kr/live/998877/master.m3u8' }),
+        };
+      }
+      if (url.includes('master.m3u8')) {
+        return {
+          ok: true,
+          status: 200,
+          text: '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,FRAME-RATE=60\nhttps://live-global-cdn-01.sooplive.co.kr/live/1080p60.m3u8\n',
+        };
+      }
+      return { ok: false, status: 404, text: '' };
+    },
+  });
+  assert.equal(soop.isLive(soopStatus), true);
+  const soopStreams = soop.extractStreamUrls(soopStatus);
+  assert.equal(soop.hasStreamUrls(soopStreams), true);
+  assert.equal(soop.pickPreferredStream(soopStreams).url, 'https://live-global-cdn-01.sooplive.co.kr/live/1080p60.m3u8');
+  assert.equal(soop.buildSummary('kr_kobj', soopStatus, soopStreams).roomId, '998877');
+
+  const pktChat = soop.buildSoopPacket('0005', '\x0chello world\x0cviewer1\x0c0\x0c0\x0c0\x0cViewer One\x0c');
+  const parsedPkt = soop.parseSoopKoreaPacket(pktChat);
+  assert.equal(parsedPkt.events[0].type, 'chat');
+  assert.equal(parsedPkt.events[0].comment, 'hello world');
+  assert.equal(parsedPkt.events[0].user.nickname, 'Viewer One');
+
+  const pktGift = soop.buildSoopPacket('0018', '\x0ckobj\x0cfan1\x0cSuper Fan\x0c5\x0c');
+  const parsedGift = soop.parseSoopKoreaPacket(pktGift);
+  assert.equal(parsedGift.events[0].type, 'gift');
+  assert.equal(parsedGift.events[0].giftName, 'Star Balloon');
+  assert.equal(parsedGift.events[0].repeatCount, 5);
+
+  const fakeSoopWs = new EventEmitter();
+  fakeSoopWs.readyState = 1;
+  fakeSoopWs.sent = [];
+  fakeSoopWs.send = (d) => fakeSoopWs.sent.push(d);
+  fakeSoopWs.close = () => { fakeSoopWs.readyState = 3; fakeSoopWs.emit('close'); };
+  fakeSoopWs.terminate = () => fakeSoopWs.close();
+  const soopChat = new soop.SoopChatSession('kr_kobj', {
+    chatMeta: soopStatus.chatMeta,
+    wsFactory: () => fakeSoopWs,
+  });
+  soopChat.uiActive = true;
+  const connectSoopP = soopChat.connect();
+  fakeSoopWs.emit('open');
+  await connectSoopP;
+  fakeSoopWs.emit('message', pktChat);
+  fakeSoopWs.emit('message', pktGift);
+  assert.equal(soopChat.events.some((e) => e.type === 'chat' && e.comment === 'hello world'), true);
+  assert.equal(soopChat.events.some((e) => e.type === 'gift' && e.repeatCount === 5), true);
+  soopChat.disconnect();
+  assert.equal(soopChat.state, 'closed');
+
+  // 3. Watcher poll intervals for SOOP
+  assert.equal(watcher.getEffectivePollIntervalMs({ platform: 'soop', priority: 'normal' }, 30), 30_000);
+  assert.equal(watcher.getEffectivePollIntervalMs({ platform: 'soop', priority: 'high' }, 30), 15_000);
+
+  // 4. Windows-unsafe / traversal inputs rejected or safely rendered
+  const utils = require('../lib/utils');
+  assert.equal(providers.parseChannelInput('soop:a:b').username, '');
+  assert.equal(providers.parseChannelInput('soop:../etc/passwd').username, '');
+  const renderedCon = utils.renderRecordingFilename('{username}_{date}', { platform: 'soop', username: 'con' });
+  assert.ok(!renderedCon.includes(':'));
+
+  // 5. SOOP bugfix regressions (C1-C3, H6, M1, L1)
+  // C1: base64 tokens with trailing '=' / '==' are NOT treated as cookie headers
+  assert.equal(soop.formatSoopCookie('Tok1='), 'AuthTicket=Tok1=');
+
+  // C2: single-rendition media playlists still populate hlsByQuality.origin & qualities
+  const mediaPlaylist = '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\nseg1.ts\n';
+  const soopMedia = await soop.fetchLiveStatus('kr_single', {
+    useYtDlpFallback: false,
+    fetchImpl: async (url, opts) => {
+      if (url.includes('player_live_api.php') && String(opts?.body || '').includes('type=live')) {
+        return { ok: true, status: 200, text: JSON.stringify({ CHANNEL: { RESULT: 1, BNO: '111', CATE: '00040001', VIEWPRESET: [{ label: 'org' }] } }) };
+      }
+      if (url.includes('player_live_api.php')) return { ok: true, status: 200, text: JSON.stringify({ CHANNEL: { AID: 'a1' } }) };
+      if (url.includes('broad_stream_assign.html')) {
+        return { ok: true, status: 200, text: JSON.stringify({ view_url: 'https://cdn.sooplive.co.kr/live/auth_playlist.m3u8' }) };
+      }
+      if (url.includes('auth_playlist.m3u8')) return { ok: true, status: 200, text: mediaPlaylist };
+      return { ok: false, status: 404, text: '' };
+    },
+  });
+  assert.equal(soop.extractStreamUrls(soopMedia).hlsByQuality.origin, 'https://cdn.sooplive.co.kr/live/auth_playlist.m3u8?aid=a1');
+  assert.equal(soop.buildSummary('kr_single', soopMedia).liveRoomMode, 'SOOP KR'); // L1 numeric CATE fallback & M1 VIEWPRESET array
+
+  // C3: multi-packet SOOP Korea binary frames, non-00 status code, and ArrayBuffer input
+  const pktMulti1 = soop.buildSoopPacket('0005', '\x0cfirst msg\x0cu1\x0c0\x0c0\x0c0\x0cUser1\x0c');
+  const pktMulti2 = Buffer.from(soop.buildSoopPacket('0018', '\x0ckobj\x0cu2\x0cUser2\x0c3\x0c'));
+  pktMulti2.write('01', 12, 'ascii'); // non-00 status code
+  const combined = Buffer.concat([pktMulti1, pktMulti2]);
+  const ab = combined.buffer.slice(combined.byteOffset, combined.byteOffset + combined.byteLength);
+  const parsedMulti = soop.parseSoopKoreaPacket(ab);
+  assert.equal(parsedMulti.packets.length, 2);
+  assert.equal(parsedMulti.events.length, 2);
+  assert.equal(parsedMulti.events[0].comment, 'first msg');
+  assert.equal(parsedMulti.events[1].type, 'gift');
+  assert.equal(parsedMulti.events[1].repeatCount, 3);
+  assert.equal(parsedMulti.events[1].diamondCount, 10);
+
+  // SoopChatSession 0001 ACK triggers 0002 join immediately, and close clears chatMeta
+  const fakeSoopWs2 = new EventEmitter();
+  fakeSoopWs2.readyState = 1;
+  fakeSoopWs2.sent = [];
+  fakeSoopWs2.send = (d) => fakeSoopWs2.sent.push(Buffer.isBuffer(d) ? d.toString('utf8') : String(d));
+  fakeSoopWs2.close = () => { fakeSoopWs2.readyState = 3; fakeSoopWs2.emit('close'); };
+  fakeSoopWs2.terminate = () => fakeSoopWs2.close();
+  const soopAckSession = new soop.SoopChatSession('kr_ack', {
+    chatMeta: { chdomain: 'chat.sooplive.co.kr', chpt: 8000, chatno: '111', ftk: 'ftkA', bjId: 'ack' },
+    wsFactory: () => fakeSoopWs2,
+  });
+  soopAckSession.uiActive = true;
+  const pAck = soopAckSession.connect();
+  fakeSoopWs2.emit('open');
+  await pAck;
+  assert.equal(fakeSoopWs2.sent.length, 1);
+  assert.match(fakeSoopWs2.sent[0], /^\x1b\t0001/);
+  fakeSoopWs2.emit('message', soop.buildSoopPacket('0001', '\x0c'));
+  assert.equal(fakeSoopWs2.sent.length, 2);
+  assert.match(fakeSoopWs2.sent[1], /^\x1b\t0002/);
+  fakeSoopWs2.emit('close');
+  assert.equal(soopAckSession.chatMeta, null);
+  soopAckSession.disconnect();
+
+  // H6: cleanly offline SOOP channels do NOT spawn yt-dlp
+  let ytDlpCalled = false;
+  await soop.fetchLiveStatus('kr_offline', {
+    fetchImpl: async () => ({ ok: true, status: 200, text: JSON.stringify({ CHANNEL: { RESULT: 0 } }) }),
+    ytDlpExec: async () => { ytDlpCalled = true; return '{}'; },
+  });
+  assert.equal(ytDlpCalled, false);
+
+  // H6 & unified SOOP .com + chapi station enrichment + .co.kr fallback
+  const soopComStation = await soop.fetchLiveStatus('phonics1', {
+    useYtDlpFallback: false,
+    fetchImpl: async (url, opts) => {
+      if (url.includes('live.sooplive.com/afreeca/player_live_api.php') && String(opts?.body || '').includes('type=live')) {
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            CHANNEL: {
+              RESULT: 1,
+              BNO: '298846493',
+              BJID: 'phonics1',
+              BJNICK: 'Minkyo',
+              TITLE: 'SOOP Live Test',
+              CATE: '40019',
+              RMD: 'https://livestream-manager.sooplive.com',
+              CHDOMAIN: 'chat-25.sooplive.com',
+              CHPT: 9000,
+              VIEWPRESET: [{ label: 'org' }],
+            },
+          }),
+        };
+      }
+      if (url.includes('live.sooplive.com/afreeca/player_live_api.php')) {
+        return { ok: true, status: 200, text: JSON.stringify({ CHANNEL: { AID: 'aid_com' } }) };
+      }
+      if (url.includes('chapi.sooplive.com/api/phonics1/station')) {
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify({
+            profile_image: '//profile.img.sooplive.com/LOGO/ph/phonics1/phonics1.jpg',
+            station: {
+              user_nick: 'MinkyoStation',
+              broad_start: '2026-11-25 13:02:25',
+              upd: { fan_cnt: 442197 },
+            },
+            broad: {
+              broad_no: 298846493,
+              broad_title: 'Station Title',
+              current_sum_viewer: 24845,
+            },
+          }),
+        };
+      }
+      if (url.includes('broad_stream_assign.html')) {
+        return { ok: true, status: 200, text: JSON.stringify({ view_url: 'https://live-global-cdn-v02.sooplive.co.kr/live/master.m3u8' }) };
+      }
+      if (url.includes('master.m3u8')) return { ok: true, status: 200, text: mediaPlaylist };
+      return { ok: false, status: 404, text: '' };
+    },
+  });
+  assert.equal(soop.isLive(soopComStation), true);
+  assert.equal(soopComStation.viewerCount, 24845);
+  assert.equal(soopComStation.followers, 442197);
+  assert.equal(soopComStation.avatarThumb, 'https://profile.img.sooplive.com/LOGO/ph/phonics1/phonics1.jpg');
+  assert.equal(soopComStation.startedAtUnix, Math.floor(Date.parse('2026-11-25T13:02:25+09:00') / 1000));
+  const soopComSummary = soop.buildSummary('phonics1', soopComStation);
+  assert.equal(soopComSummary.owner.avatarThumb, 'https://profile.img.sooplive.com/LOGO/ph/phonics1/phonics1.jpg');
+  assert.equal(soopComSummary.owner.followers, 442197);
+
+  // Network fallback from live.sooplive.com to live.sooplive.co.kr
+  const krFallback = await soop.fetchLiveStatus('fallbackuser', {
+    useYtDlpFallback: false,
+    fetchImpl: async (url) => {
+      if (url.includes('live.sooplive.com')) throw new Error('COM timeout');
+      if (url.includes('live.sooplive.co.kr/afreeca/player_live_api.php')) {
+        return { ok: true, status: 200, text: JSON.stringify({ CHANNEL: { RESULT: 1, BNO: '555', RMD: 'https://livestream-manager.sooplive.co.kr' } }) };
+      }
+      if (url.includes('broad_stream_assign.html')) return { ok: true, status: 200, text: JSON.stringify({ view_url: 'https://cdn.sooplive.co.kr/555.m3u8' }) };
+      return { ok: true, status: 200, text: mediaPlaylist };
+    },
+  });
+  assert.equal(soop.isLive(krFallback), true);
+});
+
+test('Unified 5-platform Stealth & Anonymous Engine: per-platform toggles, persistence, zero cookie leaks, and chat enforcement', async () => {
+  const { EventEmitter } = require('node:events');
+  const stealth = require('../lib/stealth');
+  const settings = require('../lib/settings');
+  const accounts = require('../lib/accounts');
+  const room = require('../lib/room');
+  const chat = require('../lib/chat');
+  const twitch = require('../lib/providers/twitch');
+  const youtube = require('../lib/providers/youtube');
+  const kick = require('../lib/providers/kick');
+  const soop = require('../lib/providers/soop');
+
+  const root = path.resolve(__dirname, '..');
+  const settingsFile = path.join(root, 'settings.json');
+  const hadSet = fs.existsSync(settingsFile);
+  const origSet = hadSet ? fs.readFileSync(settingsFile) : null;
+  const prevMode = stealth.getStealthMode();
+  const prevPlatforms = stealth.getStealthPlatforms();
+
+  const prevEnv = {
+    TWITCH_OAUTH_TOKEN: process.env.TWITCH_OAUTH_TOKEN,
+    YOUTUBE_COOKIE: process.env.YOUTUBE_COOKIE,
+    KICK_TOKEN: process.env.KICK_TOKEN,
+    SOOP_COOKIE: process.env.SOOP_COOKIE,
+  };
+
+  try {
+    stealth.setStealthMode(false, { persist: false });
+    stealth.setStealthPlatforms({ tiktok: false, twitch: false, youtube: false, kick: false, soop: false }, { persist: false });
+    process.env.TWITCH_OAUTH_TOKEN = 'tw_secret_oauth';
+    process.env.YOUTUBE_COOKIE = 'SID=yt_secret_cookie';
+    process.env.KICK_TOKEN = 'kick_secret_tok';
+    process.env.SOOP_COOKIE = 'AuthTicket=soop_secret';
+
+    // 1. Stealth engine helpers (UA pool, header stripper, yt-dlp args, persistence)
+    const ua1 = stealth.getStealthUserAgent(true);
+    const ua2 = stealth.getStealthUserAgent(true);
+    assert.ok(ua1.startsWith('Mozilla/5.0 ') && ua2.startsWith('Mozilla/5.0 '));
+    const stripped = stealth.stripIdentityHeaders({
+      Cookie: 'a=b',
+      Authorization: 'Bearer x',
+      'X-CSRFToken': 'c',
+      'X-Goog-Visitor-Id': 'v',
+      Accept: 'application/json',
+    });
+    assert.deepEqual(stripped, { Accept: 'application/json' });
+    assert.deepEqual(stealth.getStealthYtDlpArgs(true).slice(0, 2), ['--no-cookies', '--user-agent']);
+
+    stealth.setPlatformStealth('yt', true, { persist: true });
+    assert.equal(stealth.isPlatformStealth('youtube'), true);
+    assert.equal(stealth.isPlatformStealth('twitch'), false);
+    assert.equal(settings.getPublicSettings().stealthPlatforms.youtube, true);
+
+    stealth.setStealthMode(false, { persist: true });
+    stealth.setStealthPlatforms({ youtube: true, twitch: true, soop: true, kick: false }, { persist: false });
+
+    // 2. Per-platform independence: Kick allowed when stealth.kick=false, Twitch/YouTube/SOOP masked
+    assert.equal(stealth.shouldUseAnonymous('youtube'), true);
+    assert.equal(stealth.shouldUseAnonymous('twitch'), true);
+    assert.equal(stealth.shouldUseAnonymous('soop'), true);
+    assert.equal(stealth.shouldUseAnonymous('kick'), false);
+    assert.equal(stealth.shouldUseAnonymous('kick', { forceAnon: true }), true);
+    assert.equal(stealth.shouldUseAnonymous('kick', { accountId: 'anon' }), true);
+
+    // 3. YouTube InnerTube player + chat poll must strip X-Goog-Visitor-Id, visitorData, and cookie under stealth/anon
+    let innerTubeReqOpts = null;
+    const ytHtml = [
+      '<script>',
+      'var ytInitialPlayerResponse = {"videoDetails":{"videoId":"StealthVid1","title":"YT Stealth","channelId":"UC123","author":"Chan","isLive":true},"playabilityStatus":{"status":"OK"},"streamingData":{}};',
+      'var ytInitialData = {};',
+      '</script>',
+      '<script>ytcfg.set({"INNERTUBE_API_KEY":"YT_KEY","VISITOR_DATA":"SECRET_VISITOR"});</script>',
+    ].join('\n');
+    const ytRes = await youtube.fetchLiveStatus('StealthChan', {
+      useYtDlpFallback: false,
+      fetchImpl: async (url, opts) => {
+        if (url.includes('/live')) return { ok: true, status: 200, text: ytHtml };
+        if (url.includes('/youtubei/v1/player')) {
+          innerTubeReqOpts = { url, opts };
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({ streamingData: { hlsManifestUrl: 'https://manifest.googlevideo.com/m.m3u8' } }),
+          };
+        }
+        return { ok: true, status: 200, text: '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720\nhttps://rr1.googlevideo.com/720.m3u8\n' };
+      },
+    });
+    assert.equal(ytRes.stealth, true);
+    assert.equal(ytRes.authenticated, false);
+    assert.equal(innerTubeReqOpts.opts.forceAnon, false); // carried arg, while per-platform stealth blocks cookie & visitorData
+    assert.equal(innerTubeReqOpts.opts.headers['X-Goog-Visitor-Id'], undefined);
+    assert.equal(innerTubeReqOpts.opts.body.includes('SECRET_VISITOR'), false);
+    const ytBuiltHeaders = youtube.buildYouTubeHeaders({}, 'www.youtube.com');
+    assert.equal(ytBuiltHeaders.Cookie, 'CONSENT=YES+cb'); // no yt_secret_cookie!
+    assert.equal(youtube.buildSummary('StealthChan', ytRes).stealth, true);
+
+    let ytPollAccountId = 'unset';
+    const ytChat = new youtube.YouTubeChatSession('StealthChan', {
+      apiKey: 'YT_KEY',
+      continuation: 'CONT1',
+      fetchImpl: async (_url, opts) => {
+        ytPollAccountId = opts.accountId;
+        return { ok: true, status: 200, text: JSON.stringify({ continuationContents: { liveChatContinuation: { actions: [], continuations: [] } } }) };
+      },
+    });
+    ytChat.accountId = 'anon';
+    ytChat.uiActive = true;
+    ytChat.state = 'connected';
+    await ytChat._pollOnce();
+    assert.equal(ytPollAccountId, 'anon');
+    ytChat.disconnect();
+
+    // 4. Twitch stealth & accountId='anon' omit OAuth header and set summary stealth=true
+    let seenTwAuth = 'unset';
+    const twSt = await twitch.fetchLiveStatus('shroud', {
+      fetchImpl: async (_u, opts) => {
+        seenTwAuth = opts.headers.Authorization;
+        return { ok: true, status: 200, text: JSON.stringify({ data: { user: { id: '1', login: 'shroud', stream: null } } }) };
+      },
+    });
+    assert.equal(seenTwAuth, undefined);
+    assert.equal(twSt.stealth, true);
+    assert.equal(twitch.buildSummary('shroud', twSt).stealth, true);
+
+    // 5. Kick accountId='anon' omits Authorization and adds --no-cookies for yt-dlp
+    let seenKickAuth = 'unset';
+    let seenKickArgs = [];
+    await kick.fetchLiveStatus('xqc', {
+      accountId: 'anon',
+      fetchImpl: async (_u, opts) => {
+        seenKickAuth = opts.headers.Authorization;
+        return { ok: false, status: 404, text: '' };
+      },
+      ytDlpExec: async (_bin, args) => {
+        seenKickArgs = args;
+        return JSON.stringify({ is_live: false });
+      },
+    });
+    assert.equal(seenKickAuth, undefined);
+    assert.equal(seenKickArgs.includes('--no-cookies'), true);
+
+    // 6. SOOP skips cookies under stealth
+    let seenSoopCookie = 'unset';
+    await soop.fetchLiveStatus('kr_off', {
+      useYtDlpFallback: false,
+      fetchImpl: async (_u, opts) => {
+        seenSoopCookie = opts.headers?.Cookie;
+        return { ok: true, status: 200, text: JSON.stringify({ CHANNEL: { RESULT: 0 } }) };
+      },
+    });
+    assert.equal(seenSoopCookie, undefined);
+
+    // 7. TikTok ChatSession uses fresh randomized clientPresets in stealth, and enforceStealth skips stealth in background health check
+    stealth.setPlatformStealth('tiktok', true);
+    const ttChat = new chat.ChatSession('tt_stealth_user');
+    const ttOpts = ttChat._buildConnectOpts({ forceAnon: false });
+    assert.equal(ttOpts.authenticateWs, false);
+    assert.equal(ttOpts.session, undefined);
+    assert.ok(ttOpts.clientPresets?.device);
+
+    // 8b. checkAllAccountsHealth({ skipStealth: true }) skips stealth platforms and only checks non-stealth
+    const accFile = path.join(root, 'accounts.json');
+    const keyFile = path.join(root, '.accounts.key');
+    const hadAcc = fs.existsSync(accFile);
+    const hadKey = fs.existsSync(keyFile);
+    const origAcc = hadAcc ? fs.readFileSync(accFile) : null;
+    const origKey = hadKey ? fs.readFileSync(keyFile) : null;
+    process.env.ACCOUNTS_SECRET = 'stealth-health-test-secret';
+    try {
+      const ttAcc = accounts.add('StealthTT', 'tiktok_stealth_sess_123456', '', 'tiktok');
+      const twAcc = accounts.add('NonStealthKick', 'kick_saved_tok_12345678', '', 'kick');
+      stealth.setPlatformStealth('tiktok', true);
+      stealth.setPlatformStealth('kick', false);
+      const healthRes = await accounts.checkAllAccountsHealth({
+        skipStealth: true,
+        requestImpl: () => { throw new Error('must not ping TikTok under stealth'); },
+      });
+      assert.equal(ttAcc.id in healthRes, false);
+      assert.equal(twAcc.id in healthRes, true);
+      accounts.remove(ttAcc.id);
+      accounts.remove(twAcc.id);
+    } finally {
+      delete process.env.ACCOUNTS_SECRET;
+      if (hadAcc && origAcc) fs.writeFileSync(accFile, origAcc);
+      else fs.rmSync(accFile, { force: true });
+      if (hadKey && origKey) fs.writeFileSync(keyFile, origKey);
+      else fs.rmSync(keyFile, { force: true });
+    }
+
+    // 9. accounts.resolveRequestAuthOptions handles anon, invalid ID, and valid state
+    assert.deepEqual(accounts.resolveRequestAuthOptions({ anon: '1' }, 'tiktok'), { ok: true, forceAnon: true, accountId: 'anon' });
+    assert.deepEqual(accounts.resolveRequestAuthOptions({ accountId: 'anon' }, 'youtube'), { ok: true, forceAnon: true, accountId: 'anon' });
+    assert.equal(accounts.resolveRequestAuthOptions({ accountId: 'nonexistent_id' }, 'twitch').ok, false);
+    assert.equal(typeof accounts.getHasSessionByPlatform().tiktok, 'boolean');
+
+    // 10. room.getStealthMode syncs with stealth.setStealthMode + chat.enforceStealth aborts in-flight connecting TikTok auth session
+    stealth.setStealthMode(true);
+    assert.equal(room.getStealthMode(), true);
+    stealth.setStealthMode(false);
+    stealth.setPlatformStealth('tiktok', false);
+    const origGetActive = accounts.getActiveCredentials;
+    accounts.getActiveCredentials = () => ({ id: null, sessionId: 'tt_auth_session_for_enforce_test', ttTargetIdc: '' });
+    const origProtoAttempt = chat.ChatSession.prototype._attemptConnect;
+    let attemptCalls = 0;
+    const seenAuthFlags = [];
+    chat.ChatSession.prototype._attemptConnect = function patchedAttempt(opts = {}) {
+      attemptCalls++;
+      const built = this._buildConnectOpts(opts);
+      this.usedAuth = !!built.authenticateWs;
+      seenAuthFlags.push(this.usedAuth);
+      if (attemptCalls === 1) {
+        return new Promise(() => {}); // hold first auth attempt in 'connecting'
+      }
+      return Promise.resolve({ state: { roomId: 'r_anon' }, usedAuth: this.usedAuth });
+    };
+    try {
+      const pEnforce = chat.ensureSession('enforce_user', { platform: 'tiktok', source: 'ui' });
+      await new Promise((r) => setImmediate(r));
+      stealth.setPlatformStealth('tiktok', true);
+      chat.enforceStealth('tiktok');
+      await new Promise((r) => setImmediate(r));
+      const s = chat.getSession('enforce_user', 'tiktok');
+      assert.ok(s);
+      assert.equal(seenAuthFlags[0], true);
+      assert.equal(seenAuthFlags[1], false);
+      assert.equal(s.usedAuth, false);
+      assert.equal(s.info().stealth, true);
+      chat.closeSession('enforce_user', { force: true, platform: 'tiktok' });
+      await Promise.race([pEnforce.catch(() => {}), new Promise((r) => setTimeout(r, 20))]);
+    } finally {
+      chat.ChatSession.prototype._attemptConnect = origProtoAttempt;
+      accounts.getActiveCredentials = origGetActive;
+    }
+  } finally {
+    stealth.setStealthMode(prevMode, { persist: false });
+    stealth.setStealthPlatforms(prevPlatforms, { persist: false });
+    for (const [k, v] of Object.entries(prevEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    if (hadSet && origSet) fs.writeFileSync(settingsFile, origSet);
+    else fs.rmSync(settingsFile, { force: true });
+  }
+});
+
+test('Phase 6 functional regressions: audio-only ffmpeg args, Kick post-connect error reconnect, YouTube VOD/4K, protected DELETE 409, and DB emoji/error safety', async () => {
+  const os = require('node:os');
+  const http = require('node:http');
+  const express = require('express');
+  const ffmpeg = require('../lib/ffmpeg');
+  const kick = require('../lib/providers/kick');
+  const youtube = require('../lib/providers/youtube');
+  const db = require('../lib/db');
+  const recordRouter = require('../routes/record');
+
+  // 1. Audio-only buildRecordArgs prefers audioUrl and adds -protocol_whitelist only for HTTP(S) URLs
+  const aoYtArgs = ffmpeg.buildRecordArgs(
+    { url: 'https://video.example.com/v.m3u8', audioUrl: 'https://audio.example.com/a.m4a', kind: 'yt_adaptive', quality: 'yt_adaptive', audioOnly: true },
+    'out.mp4'
+  );
+  assert.ok(aoYtArgs.includes('https://audio.example.com/a.m4a'));
+  assert.equal(aoYtArgs.includes('https://video.example.com/v.m3u8'), false);
+  assert.ok(aoYtArgs.includes('-protocol_whitelist'));
+  assert.ok(aoYtArgs.includes('-vn'));
+
+  const localArgs = ffmpeg.buildRecordArgs({ url: path.join(os.tmpdir(), 'sample.flv'), quality: 'ld' }, 'out.mp4');
+  assert.equal(localArgs.includes('-protocol_whitelist'), false);
+
+  // 2. KickChatSession post-connect rawObj.error triggers reconnect scheduling when consumers exist
+  const wsErr = new EventEmitter();
+  wsErr.readyState = 1;
+  wsErr.send = () => {};
+  wsErr.close = () => { wsErr.readyState = 3; };
+  wsErr.terminate = () => { wsErr.readyState = 3; };
+  const errSess = new kick.KickChatSession('xqc', { chatroomId: '668123', wsFactory: () => wsErr });
+  errSess.uiActive = true;
+  const kp = errSess.connect();
+  await new Promise((r) => setImmediate(r));
+  wsErr.emit('open');
+  wsErr.emit('message', JSON.stringify({ id: 1, connect: { client: 'c1', expires: false } }));
+  await kp;
+  wsErr.emit('message', JSON.stringify({ error: { code: 102, message: 'token expired' } }));
+  assert.equal(errSess.state, 'reconnecting');
+  assert.ok(errSess.reconnectTimer);
+  errSess.disconnect();
+
+  // 3. YouTube rejects archived VOD (isLive: false) and prefers 4K/2K in parseYouTubeMasterM3u8
+  const vodHtml = '<script>var ytInitialPlayerResponse = {"videoDetails":{"videoId":"Vod1","title":"Archived VOD","author":"Chan","isLive":false},"playabilityStatus":{"status":"OK"},"streamingData":{"hlsManifestUrl":"https://manifest.googlevideo.com/vod.m3u8"}};</script>';
+  const vodRes = await youtube.fetchLiveStatus('VodChan', {
+    useYtDlpFallback: false,
+    fetchImpl: async () => ({ ok: true, status: 200, text: vodHtml }),
+  });
+  assert.equal(youtube.isLive(vodRes), false);
+
+  const m3u8 = [
+    '#EXTM3U',
+    '#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080,FRAME-RATE=60',
+    'https://cdn.example/1080p60.m3u8',
+    '#EXT-X-STREAM-INF:BANDWIDTH=12000000,RESOLUTION=3840x2160,FRAME-RATE=60',
+    'https://cdn.example/2160p60.m3u8',
+  ].join('\n');
+  const parsedStreams = youtube.parseYouTubeMasterM3u8(m3u8);
+  const best = youtube.pickPreferredStream(parsedStreams, 'auto');
+  assert.equal(best.quality, 'uhd4k_60');
+  assert.equal(best.url, 'https://cdn.example/2160p60.m3u8');
+
+  // 4. DELETE /api/recordings/:name returns HTTP 409 when recording is protected
+  const protName = `prot_del_${Date.now()}.mp4`;
+  const protMp4 = path.join(storage.RECORDINGS_DIR, protName);
+  const protMeta = path.join(storage.RECORDINGS_DIR, protName.replace(/\.mp4$/, '.meta.json'));
+  const app = express();
+  app.use(express.json());
+  app.use(recordRouter);
+  const srv = http.createServer(app);
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const srvPort = srv.address().port;
+  try {
+    fs.writeFileSync(protMp4, 'mp4');
+    fs.writeFileSync(protMeta, JSON.stringify({ protected: true, startMs: Date.now() }));
+    const delRes = await fetch(`http://127.0.0.1:${srvPort}/api/recordings/${encodeURIComponent(protName)}`, { method: 'DELETE' });
+    assert.equal(delRes.status, 409);
+    assert.equal(fs.existsSync(protMp4), true);
+  } finally {
+    await new Promise((resolve) => srv.close(resolve));
+    fs.rmSync(protMp4, { force: true });
+    fs.rmSync(protMeta, { force: true });
+  }
+
+  // 5. DB emoji / short Unicode search + preserves prior rows on transient readEvents error
+  if (db.isAvailable()) {
+    const dbRec = `db_unicode_${Date.now()}.mp4`;
+    const dbMp4 = path.join(storage.RECORDINGS_DIR, dbRec);
+    const dbEv = path.join(storage.RECORDINGS_DIR, dbRec.replace(/\.mp4$/, '.events.jsonl'));
+    try {
+      fs.writeFileSync(dbMp4, 'mp4');
+      fs.writeFileSync(
+        dbEv,
+        [
+          JSON.stringify({ type: 'chat', ts: 1700000001000, user: { nickname: 'สวัสดี' }, comment: '🔥 fire stream ดี' }),
+        ].join('\n') + '\n',
+        'utf8'
+      );
+      db.indexRecording(dbRec);
+      const fireHits = db.searchChatIndexed('🔥');
+      assert.equal(fireHits.some((h) => h.recording === dbRec), true);
+      const thaiHits = db.searchChatIndexed('ดี');
+      assert.equal(thaiHits.some((h) => h.recording === dbRec), true);
+
+      // Simulate transient read error by swapping events file with a directory (readFileSync -> EISDIR)
+      fs.rmSync(dbEv, { force: true });
+      fs.mkdirSync(dbEv);
+      db.indexRecording(dbRec);
+      const afterErrHits = db.searchChatIndexed('🔥');
+      assert.equal(afterErrHits.some((h) => h.recording === dbRec), true);
+      db.removeRecording(dbRec);
+    } finally {
+      fs.rmSync(dbMp4, { force: true });
+      fs.rmSync(dbEv, { recursive: true, force: true });
+    }
+  }
 });

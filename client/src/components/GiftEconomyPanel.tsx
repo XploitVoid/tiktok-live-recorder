@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { Gem, BarChart3, MessageSquare, Flame, Gift } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
@@ -14,21 +14,52 @@ interface Props {
   onJump?: (sec: number) => void
 }
 
+const MAX_HEATMAP_BINS = 200
+
 export function GiftEconomyPanel({ recording, hasEvents, onJump }: Props) {
   const { t } = useI18n()
-  const [data, setData] = useState<GiftEconomyData | null>(null)
+  const [result, setResult] = useState<{ key: string; data: GiftEconomyData | null; error: string | null }>({
+    key: '',
+    data: null,
+    error: null,
+  })
+  const [reloadNonce, setReloadNonce] = useState(0)
   const [mode, setMode] = useState<'gifts' | 'chat'>('gifts')
 
+  const resultKey = `${recording}:${reloadNonce}`
   useEffect(() => {
     if (!hasEvents) return
     let active = true
     getGiftEconomy(recording)
-      .then((d) => { if (active) setData(d) })
-      .catch((e) => console.error('getGiftEconomy:', e))
+      .then((d) => { if (active) setResult({ key: resultKey, data: d, error: null }) })
+      .catch((e: unknown) => {
+        console.error('getGiftEconomy:', e)
+        if (active) setResult({ key: resultKey, data: null, error: e instanceof Error ? e.message : String(e) })
+      })
     return () => { active = false }
-  }, [recording, hasEvents])
+  }, [recording, hasEvents, resultKey])
 
-  const loading = hasEvents && !data
+  const data = result.key === resultKey ? result.data : null
+  const error = result.key === resultKey ? result.error : null
+  const loading = hasEvents && result.key !== resultKey
+
+  const bins = useMemo(() => {
+    if (!data) return []
+    const raw = mode === 'gifts' ? data.giftHeatmap : data.chatHeatmap
+    if (!raw.length) return []
+    if (raw.length <= MAX_HEATMAP_BINS) {
+      return raw.map((val, idx) => ({ val, startSec: idx * data.bucketSec }))
+    }
+    const groupSize = Math.ceil(raw.length / MAX_HEATMAP_BINS)
+    const out: { val: number; startSec: number }[] = []
+    for (let i = 0; i < raw.length; i += groupSize) {
+      let sum = 0
+      const end = Math.min(raw.length, i + groupSize)
+      for (let j = i; j < end; j++) sum += raw[j]
+      out.push({ val: sum, startSec: i * data.bucketSec })
+    }
+    return out
+  }, [data, mode])
 
   if (!hasEvents) {
     return (
@@ -44,8 +75,7 @@ export function GiftEconomyPanel({ recording, hasEvents, onJump }: Props) {
     )
   }
 
-  const heatmap = data ? (mode === 'gifts' ? data.giftHeatmap : data.chatHeatmap) : []
-  const maxVal = Math.max(1, ...heatmap)
+  const maxVal = bins.reduce((m, b) => Math.max(m, b.val), 1)
 
   return (
     <Card>
@@ -86,7 +116,7 @@ export function GiftEconomyPanel({ recording, hasEvents, onJump }: Props) {
         )}
 
         {/* Heatmap bar chart */}
-        {data && heatmap.length > 0 && (
+        {data && bins.length > 0 && (
           <div className="space-y-1">
             <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
               {mode === 'gifts' ? t('geGiftHeatmap') : t('geChatHeatmap')}
@@ -95,19 +125,18 @@ export function GiftEconomyPanel({ recording, hasEvents, onJump }: Props) {
               className="flex items-end gap-px h-16 bg-secondary/40 rounded-lg p-1 overflow-hidden cursor-pointer"
               title={t('geClickToJump')}
             >
-              {heatmap.map((val, idx) => {
-                const height = Math.max(2, (val / maxVal) * 100)
-                const sec = idx * (data.bucketSec)
+              {bins.map((bin, idx) => {
+                const height = Math.max(2, (bin.val / maxVal) * 100)
                 const color = mode === 'gifts'
-                  ? val > maxVal * 0.7 ? 'bg-pink-400' : val > maxVal * 0.3 ? 'bg-pink-500/70' : 'bg-pink-600/40'
-                  : val > maxVal * 0.7 ? 'bg-sky-400' : val > maxVal * 0.3 ? 'bg-sky-500/70' : 'bg-sky-600/40'
+                  ? bin.val > maxVal * 0.7 ? 'bg-pink-400' : bin.val > maxVal * 0.3 ? 'bg-pink-500/70' : 'bg-pink-600/40'
+                  : bin.val > maxVal * 0.7 ? 'bg-sky-400' : bin.val > maxVal * 0.3 ? 'bg-sky-500/70' : 'bg-sky-600/40'
                 return (
                   <button
                     key={idx}
-                    onClick={() => onJump?.(sec)}
+                    onClick={() => onJump?.(bin.startSec)}
                     className={`flex-1 min-w-[2px] rounded-t transition-all hover:brightness-125 ${color}`}
                     style={{ height: `${height}%` }}
-                    title={`${fmtTimeSec(sec)}: ${val}${mode === 'gifts' ? ' diamonds' : ' msgs'}`}
+                    title={`${fmtTimeSec(bin.startSec)}: ${bin.val}${mode === 'gifts' ? ' diamonds' : ' msgs'}`}
                   />
                 )
               })}
@@ -139,6 +168,14 @@ export function GiftEconomyPanel({ recording, hasEvents, onJump }: Props) {
         )}
 
         {loading && !data && <p className="text-xs text-muted-foreground">{t('loading')}</p>}
+        {error && !data && (
+          <div className="flex items-center gap-2 text-xs text-destructive">
+            <span>{error || t('loadFailed')}</span>
+            <Button variant="outline" size="xs" onClick={() => setReloadNonce((n) => n + 1)}>
+              {t('retry')}
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   )

@@ -69,7 +69,8 @@ router.post('/api/highlights/analyze', async (req, res) => {
       usedFallback: !!result.usedFallback,
     });
   } catch (e) {
-    res.status(500).json({ error: safeError(e) });
+    const status = e.code === 'BUSY' ? 429 : e.code === 'DISK_FULL' ? 507 : 500;
+    res.status(status).json({ error: safeError(e) });
   }
 });
 
@@ -89,7 +90,11 @@ router.post('/api/highlights/cut', async (req, res) => {
     console.log(`[audit] highlight cut: ${name} [${startSec}-${endSec}s v=${vertical} sub=${burnSubtitles}] -> ${out.name}`);
     res.json({ ok: true, clip: out });
   } catch (e) {
-    const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'BAD_RANGE' ? 400 : 500;
+    const status =
+      e.code === 'NOT_FOUND' ? 404 :
+      e.code === 'BAD_RANGE' ? 400 :
+      e.code === 'BUSY' ? 429 :
+      e.code === 'DISK_FULL' ? 507 : 500;
     res.status(status).json({ error: safeError(e), code: e.code });
   }
 });

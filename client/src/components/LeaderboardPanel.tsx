@@ -41,20 +41,29 @@ const TAB_COLORS: Record<TabKey, string> = {
 
 export function LeaderboardPanel({ recording, hasEvents }: Props) {
   const { t } = useI18n()
-  const [data, setData] = useState<LeaderboardData | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [result, setResult] = useState<{ key: string; data: LeaderboardData | null; error: string | null }>({
+    key: '',
+    data: null,
+    error: null,
+  })
+  const [refreshing, setRefreshing] = useState(false)
   const [tab, setTab] = useState<TabKey>('overall')
 
   const refresh = useCallback(async () => {
     if (!hasEvents) return
-    setLoading(true)
+    setRefreshing(true)
     try {
       const d = await getLeaderboard(recording)
-      setData(d)
-    } catch (e) {
+      setResult({ key: recording, data: d, error: null })
+    } catch (e: unknown) {
       console.error('getLeaderboard:', e)
+      setResult((prev) => ({
+        key: recording,
+        data: prev.key === recording ? prev.data : null,
+        error: e instanceof Error ? e.message : String(e),
+      }))
     } finally {
-      setLoading(false)
+      setRefreshing(false)
     }
   }, [recording, hasEvents])
 
@@ -62,10 +71,17 @@ export function LeaderboardPanel({ recording, hasEvents }: Props) {
     if (!hasEvents) return
     let active = true
     getLeaderboard(recording)
-      .then((d) => { if (active) setData(d) })
-      .catch((e) => console.error('getLeaderboard:', e))
+      .then((d) => { if (active) setResult({ key: recording, data: d, error: null }) })
+      .catch((e: unknown) => {
+        console.error('getLeaderboard:', e)
+        if (active) setResult({ key: recording, data: null, error: e instanceof Error ? e.message : String(e) })
+      })
     return () => { active = false }
   }, [recording, hasEvents])
+
+  const data = result.key === recording ? result.data : null
+  const error = result.key === recording ? result.error : null
+  const loading = hasEvents && (result.key !== recording || refreshing)
 
   if (!hasEvents) {
     return (
@@ -155,11 +171,18 @@ export function LeaderboardPanel({ recording, hasEvents }: Props) {
         <div className="space-y-1 max-h-[320px] overflow-y-auto">
           {loading && !data ? (
             <p className="text-xs text-muted-foreground">{t('loading')}</p>
+          ) : error && !data ? (
+            <div className="flex items-center gap-2 text-xs text-destructive">
+              <span>{error || t('loadFailed')}</span>
+              <Button variant="outline" size="xs" onClick={refresh}>
+                {t('retry')}
+              </Button>
+            </div>
           ) : list.length === 0 ? (
             <p className="text-xs text-muted-foreground">{t('lbEmpty')}</p>
           ) : (
             list.map((u, idx) => (
-              <UserRow key={u.uniqueId || u.nickname} rank={idx + 1} user={u} statKey={currentTab.statKey} tab={tab} />
+              <UserRow key={`${u.uniqueId || u.nickname || 'anon'}-${idx}`} rank={idx + 1} user={u} statKey={currentTab.statKey} tab={tab} />
             ))
           )}
         </div>

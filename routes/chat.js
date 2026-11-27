@@ -1,6 +1,7 @@
 // routes/chat.js — /api/chat/* endpoints.
 
 const { Router } = require('express');
+const accounts = require('../lib/accounts');
 const { getProvider, normalizePlatform } = require('../lib/providers');
 const { safeError } = require('../lib/utils');
 const chat = require('../lib/chat');
@@ -62,8 +63,17 @@ router.post('/api/chat/start', async (req, res) => {
   const platform = normalizePlatform(req.body?.platform, 'tiktok');
   const username = getProvider(platform).normalizeUsername(req.body?.username);
   if (!username) return res.status(400).json({ error: 'missing username' });
+  const auth = accounts.resolveRequestAuthOptions(
+    { accountId: req.body?.accountId, anon: req.body?.anon, forceAnon: req.body?.forceAnon },
+    platform,
+  );
+  if (!auth.ok) return res.status(400).json({ error: auth.error });
   try {
-    const s = await chat.ensureSession(username, { platform, source: 'ui' });
+    const s = await chat.ensureSession(username, {
+      platform,
+      source: 'ui',
+      accountId: auth.forceAnon ? 'anon' : auth.accountId,
+    });
     res.json(s.info());
   } catch (e) {
     res.status(500).json({ error: safeError(e) });

@@ -37,6 +37,22 @@ export function fmtViewers(n?: number | null): string {
   return n.toLocaleString()
 }
 
+export function isValidRecordingPath(name: string): boolean {
+  if (!name || typeof name !== 'string') return false
+  if (name.includes('\\')) return false
+  for (let i = 0; i < name.length; i++) {
+    const code = name.charCodeAt(i)
+    if (code <= 0x1f || code === 0x7f) return false
+  }
+  const segments = name.split('/')
+  if (segments.length === 0) return false
+  for (const seg of segments) {
+    if (!seg || seg === '.' || seg === '..') return false
+  }
+  return true
+}
+
 export function recordingFileUrl(name: string): string {
+  if (!isValidRecordingPath(name)) return ''
   return '/files/' + name.split('/').map(encodeURIComponent).join('/')
 }

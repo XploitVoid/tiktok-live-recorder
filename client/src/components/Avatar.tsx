@@ -18,10 +18,11 @@ function colorFor(name: string): string {
 }
 
 function initialOf(name: string): string {
-  if (!name) return '?'
-  // Strip leading non-alphanumeric (e.g. emoji prefixes)
-  const m = name.match(/[\p{L}\p{N}]/u)
-  return (m ? m[0] : name[0]).toUpperCase()
+  const trimmed = name.trim()
+  if (!trimmed) return '?'
+  const m = trimmed.match(/[\p{L}\p{N}]/u)
+  const first = m ? m[0] : ([...trimmed][0] || '?')
+  return first.toUpperCase()
 }
 
 export function Avatar({ url, name = '', size = 18, className = '' }: Props) {

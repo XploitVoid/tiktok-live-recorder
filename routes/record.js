@@ -3,6 +3,7 @@
 const { Router } = require('express');
 const fs = require('fs');
 const path = require('path');
+const accounts = require('../lib/accounts');
 const { parseChannelInput, derivePlatformFromFilename, stripPlatformPrefix } = require('../lib/providers');
 const { safeError, sanitizeQuality, sanitizeAudioBitrate, resolveRecordingPath, readEvents, parseStartTimeFromName } = require('../lib/utils');
 const db = require('../lib/db');
@@ -41,8 +42,20 @@ router.post('/api/record/start', async (req, res) => {
     ? sanitizeAudioBitrate(req.body.audioBitrate, null)
     : undefined;
   if (!username) return res.status(400).json({ error: 'missing username' });
+  const auth = accounts.resolveRequestAuthOptions(
+    { accountId: req.body?.accountId, anon: req.body?.anon, forceAnon: req.body?.forceAnon },
+    platform,
+  );
+  if (!auth.ok) return res.status(400).json({ error: auth.error });
   try {
-    const result = await startRecording(username, quality, { platform, audioOnly, audioBitrate, recordChat });
+    const result = await startRecording(username, quality, {
+      platform,
+      audioOnly,
+      audioBitrate,
+      recordChat,
+      accountId: auth.accountId,
+      forceAnon: auth.forceAnon,
+    });
     invalidateRecordingsCache();
     console.log(`[audit] record start: [${platform}] @${username} q=${quality || 'auto'} ao=${audioOnly} abr=${audioBitrate ?? 'default'} -> ${result.file}`);
     res.json(result);
@@ -141,12 +154,12 @@ router.get('/api/recordings', (_req, res) => {
         }
         const meta = readMeta(f);
         const isActive = activeFiles.has(fullPath);
-        const needsMedia = !meta?.hasMeta || (!!meta.vcodec && !meta.hasThumb);
+        const needsMedia = meta?.vcodec === undefined || (!!meta.vcodec && !meta.hasThumb);
         if (!isActive && needsMedia && st.size > 0 && !isMediaProbeCoolingDown(f)) {
           // Lazily kick off background thumbnail/probe generation for completed files
           setImmediate(() => {
             ensureThumbnailAndMeta(f)
-              .then((updated) => { if (updated?.hasMeta) invalidateRecordingsCache(); })
+              .then((updated) => { if (updated?.vcodec !== undefined || updated?.hasThumb) invalidateRecordingsCache(); })
               .catch(() => {});
           });
         }
@@ -187,7 +200,12 @@ router.get('/api/recordings/:name', (req, res) => {
   try { st = fs.statSync(full); } catch { return res.status(404).json({ error: 'not found' }); }
 
   const meta = readMeta(name);
-  const startMs = parseStartTimeFromName(name) || (Number.isFinite(Number(meta?.startedAt)) ? Number(meta.startedAt) : null);
+  const rawStartedAt = meta?.startedAt;
+  const metaStartMs =
+    rawStartedAt != null && rawStartedAt !== '' && Number.isFinite(Number(rawStartedAt)) && Number(rawStartedAt) > 0
+      ? Number(rawStartedAt)
+      : null;
+  const startMs = parseStartTimeFromName(name) || metaStartMs;
   const eventsFile = full.replace(/\.mp4$/i, '.events.jsonl');
   let events = [];
   let eventsExists = false;
@@ -204,7 +222,7 @@ router.get('/api/recordings/:name', (req, res) => {
   }
 
   // Derive username & platform from metadata, creator subfolder, or filename
-  const userMatch = fileName.match(/^(?:(?:twitch|youtube|kick)_)?(.+?)_\d{4}(?:-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}|\d{4}_\d{6})/);
+  const userMatch = fileName.match(/^(?:(?:twitch|youtube|kick|soop)_)?(.+?)_\d{4}(?:-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}|\d{4}_\d{6})/);
   const platform = derivePlatformFromFilename(name, meta, folder);
   const username = meta?.username || (folder ? stripPlatformPrefix(folder) : null) || (userMatch ? userMatch[1] : null);
 
@@ -243,6 +261,8 @@ router.post('/api/recordings/merge', async (req, res) => {
       e.code === 'BAD_INPUT' ? 400 :
       e.code === 'NOT_FOUND' ? 404 :
       e.code === 'ACTIVE_RECORDING' ? 409 :
+      e.code === 'BUSY' ? 429 :
+      e.code === 'DISK_FULL' ? 507 :
       e.code === 'NO_FFMPEG' ? 503 : 500;
     res.status(status).json({ error: safeError(e), code: e.code });
   }
@@ -269,13 +289,16 @@ router.patch('/api/recordings/:name', (req, res) => {
 router.post('/api/recordings/:name/audio', async (req, res) => {
   const resolved = resolveRecordingPath(RECORDINGS_DIR, req.params.name, '.mp4');
   if (!resolved) return res.status(400).json({ error: 'bad name' });
+  if (activeFilePaths().has(resolved.full)) {
+    return res.status(409).json({ error: 'recording is active' });
+  }
   const format = req.body?.format === 'mp3' ? 'mp3' : 'm4a';
   const bitrate = sanitizeAudioBitrate(req.body?.bitrate, null);
   try {
     const out = await extractAudio(resolved.name, format, bitrate);
     res.json({ ok: true, ...out });
   } catch (e) {
-    const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'NO_FFMPEG' ? 503 : 500;
+    const status = e.code === 'NOT_FOUND' ? 404 : e.code === 'BUSY' ? 429 : e.code === 'DISK_FULL' ? 507 : e.code === 'NO_FFMPEG' ? 503 : 500;
     res.status(status).json({ error: safeError(e) });
   }
 });
@@ -283,6 +306,9 @@ router.post('/api/recordings/:name/audio', async (req, res) => {
 router.post('/api/recordings/:name/compress', async (req, res) => {
   const resolved = resolveRecordingPath(RECORDINGS_DIR, req.params.name, '.mp4');
   if (!resolved) return res.status(400).json({ error: 'bad name' });
+  if (activeFilePaths().has(resolved.full)) {
+    return res.status(409).json({ error: 'recording is active' });
+  }
   const preset = req.body?.preset === 'compact' ? 'compact' : 'balanced';
   try {
     const out = await compressRecording(resolved.name, preset);
@@ -293,6 +319,8 @@ router.post('/api/recordings/:name/compress', async (req, res) => {
   } catch (e) {
     const status =
       e.code === 'NOT_FOUND' ? 404 :
+      e.code === 'BUSY' ? 429 :
+      e.code === 'DISK_FULL' ? 507 :
       e.code === 'NO_FFMPEG' ? 503 :
       (e.code === 'ALREADY_COMPRESSED' || e.code === 'AUDIO_ONLY') ? 400 : 500;
     res.status(status).json({ error: safeError(e) });
@@ -307,6 +335,9 @@ router.delete('/api/recordings/:name', (req, res) => {
   }
   if (!fs.existsSync(resolved.full)) {
     return res.status(404).json({ error: 'not found' });
+  }
+  if (readMeta(resolved.name)?.protected) {
+    return res.status(409).json({ error: 'recording is protected' });
   }
   try {
     deleteRecordingBundle(resolved.name);

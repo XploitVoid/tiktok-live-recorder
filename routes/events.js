@@ -40,8 +40,10 @@ router.get('/api/events/stream', (req, res) => {
     if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
     for (const fn of cleanups) { try { fn(); } catch {} }
     cleanups.length = 0;
+    if (!res.writableEnded && !res.destroyed) {
+      try { res.end(); } catch {}
+    }
   };
-  req.on('close', cleanup);
   res.on('close', cleanup);
   res.on('error', cleanup);
 
@@ -145,7 +147,11 @@ router.get('/api/events/stream', (req, res) => {
 
     // Keepalive comment every 15s to prevent proxy/browser idle timeouts
     heartbeat = setInterval(() => {
-      if (closed || res.writableEnded || res.destroyed) return;
+      if (closed) return;
+      if (res.writableEnded || res.destroyed) {
+        cleanup();
+        return;
+      }
       try {
         res.write(': keepalive\n\n');
       } catch {

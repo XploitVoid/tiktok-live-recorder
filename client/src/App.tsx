@@ -1,8 +1,8 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { I18nProvider } from '@/lib/i18n'
+import { I18nProvider, useI18n } from '@/lib/i18n'
 import { AuthGate } from '@/components/AuthGate'
 import { Header } from '@/components/Header'
 import { HomePage } from '@/pages/HomePage'
@@ -15,9 +15,10 @@ const ReplayPage = lazy(() => import('@/pages/ReplayPage').then((m) => ({ defaul
 const DashboardPage = lazy(() => import('@/pages/DashboardPage').then((m) => ({ default: m.DashboardPage })))
 
 function PageFallback() {
+  const { t } = useI18n()
   return (
     <div className="max-w-5xl mx-auto p-6">
-      <div className="animate-pulse text-sm text-muted-foreground">Loading…</div>
+      <div className="animate-pulse text-sm text-muted-foreground">{t('loading')}</div>
     </div>
   )
 }
@@ -44,6 +45,7 @@ function App() {
                   <Route path="/grid" element={<GridPage />} />
                   <Route path="/replay" element={<ReplayPage />} />
                   <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Suspense>
             </AuthGate>

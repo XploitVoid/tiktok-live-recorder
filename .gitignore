@@ -10,6 +10,9 @@ accounts.json.tmp
 .accounts.key
 .accounts.key.tmp
 *.key
+*.pem
+*.p12
+*.pfx
 
 # ── User data ──
 watchlist.json
@@ -22,6 +25,7 @@ recorder.db-shm
 recordings/
 
 # ── Build output ──
+.cache/
 client/dist/
 release-dist/
 

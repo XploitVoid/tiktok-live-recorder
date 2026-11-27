@@ -8,6 +8,7 @@ const BADGE_STYLES: Record<Platform, string> = {
   twitch: 'bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/30',
   youtube: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30',
   kick: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30',
+  soop: 'bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/30',
 }
 
 const ACTIVE_SWITCH_STYLES: Record<Platform, string> = {
@@ -15,6 +16,7 @@ const ACTIVE_SWITCH_STYLES: Record<Platform, string> = {
   twitch: 'bg-purple-500/20 text-purple-700 dark:text-purple-300 border border-purple-500/40 shadow-xs',
   youtube: 'bg-red-500/20 text-red-700 dark:text-red-300 border border-red-500/40 shadow-xs',
   kick: 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40 shadow-xs',
+  soop: 'bg-sky-500/20 text-sky-700 dark:text-sky-300 border border-sky-500/40 shadow-xs',
 }
 
 export function PlatformBadge({
@@ -26,20 +28,19 @@ export function PlatformBadge({
 }) {
   const { t } = useI18n()
   const plat = normalizePlatform(platform)
-  const label =
-    plat === 'twitch'
-      ? t('platformTwitch')
-      : plat === 'youtube'
-        ? t('platformYouTube')
-        : plat === 'kick'
-          ? t('platformKick')
-          : t('platformTikTok')
+  const labelMap: Record<Platform, string> = {
+    tiktok: t('platformTikTok'),
+    twitch: t('platformTwitch'),
+    youtube: t('platformYouTube'),
+    kick: t('platformKick'),
+    soop: t('platformSoop'),
+  }
   return (
     <Badge
       variant="secondary"
       className={cn('text-[10px] px-1.5 py-0 font-medium shrink-0', BADGE_STYLES[plat], className)}
     >
-      {label}
+      {labelMap[plat]}
     </Badge>
   )
 }
@@ -54,13 +55,14 @@ export function PlatformSwitch({
   size?: 'sm' | 'md'
 }) {
   const { t } = useI18n()
-  const heightCls = size === 'sm' ? 'h-8' : 'h-10'
-  const btnCls = size === 'sm' ? 'px-2 text-xs' : 'px-2.5 text-xs'
+  const containerCls = size === 'sm' ? 'min-h-8' : 'min-h-10'
+  const btnCls = size === 'sm' ? 'h-7 px-2 text-xs' : 'h-8 px-2.5 text-xs'
   const options: { id: Platform; label: string }[] = [
     { id: 'tiktok', label: t('platformTikTok') },
     { id: 'twitch', label: t('platformTwitch') },
     { id: 'youtube', label: t('platformYouTube') },
     { id: 'kick', label: t('platformKick') },
+    { id: 'soop', label: t('platformSoop') },
   ]
 
   return (
@@ -68,8 +70,8 @@ export function PlatformSwitch({
       role="group"
       aria-label="Platform"
       className={cn(
-        'inline-flex items-center rounded-lg border border-border bg-secondary/70 p-0.5 shrink-0',
-        heightCls,
+        'inline-flex flex-wrap items-center gap-0.5 rounded-lg border border-border bg-secondary/70 p-0.5 max-w-full',
+        containerCls,
       )}
     >
       {options.map((opt) => (
@@ -79,7 +81,7 @@ export function PlatformSwitch({
           onClick={() => onChange(opt.id)}
           aria-pressed={value === opt.id}
           className={cn(
-            'h-full rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap',
+            'rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap',
             btnCls,
             value === opt.id
               ? ACTIVE_SWITCH_STYLES[opt.id]

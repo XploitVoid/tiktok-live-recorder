@@ -9,6 +9,8 @@ const path = require('node:path');
 const { resolveUrls } = require('../launcher');
 const {
   normalizeVersion,
+  normalizeNodeVersion,
+  parseArgs,
   getTargetName,
   isUnixExecutablePath,
   assertNoSecretsInDir,
@@ -228,6 +230,50 @@ test('package-release.createUnixTarGz preserves 0755 executable bits and writes 
     const longLine = findLine('long-file-name.txt');
     assert.ok(longLine, 'Long PAX path entry missing from tar listing');
     assert.match(longLine, /a{50}\/b{50}\/long-file-name\.txt/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('package-release Phase 5 regressions: node version validation, strict parseArgs, secret extensions, and escaping symlinks', async () => {
+  assert.equal(normalizeNodeVersion('local'), 'local');
+  assert.equal(normalizeNodeVersion('v22.23.5'), 'v22.23.5');
+  assert.equal(normalizeNodeVersion('22.23.5'), 'v22.23.5');
+  assert.throws(() => normalizeNodeVersion('../evil'), /Invalid --node-version/i);
+  assert.throws(() => normalizeNodeVersion('v22/foo'), /Invalid --node-version/i);
+
+  assert.throws(() => parseArgs(['--version']), /Missing value for --version/i);
+  assert.throws(() => parseArgs(['--node-version']), /Missing value for --node-version/i);
+  assert.throws(() => parseArgs(['--node-version', '../bad']), /Invalid --node-version/i);
+  assert.equal(parseArgs(['--node-version', '22.23.5']).nodeVersion, 'v22.23.5');
+
+  for (const secretName of ['temp.tmp', 'cert.pem', 'bundle.p12', 'win.pfx']) {
+    withTempDir((dir) => {
+      fs.writeFileSync(path.join(dir, secretName), 'secret');
+      assert.throws(() => assertNoSecretsInDir(dir), /Forbidden secret/);
+    });
+  }
+
+  // Symlink containment check in createUnixTarGz (skip on Windows EPERM)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlr-tar-sym-'));
+  try {
+    const bundle = 'bundle-v1.6.0';
+    const base = path.join(dir, bundle);
+    fs.mkdirSync(base, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'outside-secret.txt'), 'secret');
+    let symCreated = false;
+    try {
+      fs.symlinkSync('../outside-secret.txt', path.join(base, 'escape-link.txt'));
+      symCreated = true;
+    } catch (e) {
+      if (e?.code !== 'EPERM' && e?.code !== 'EACCES') throw e;
+    }
+    if (symCreated) {
+      await assert.rejects(
+        () => createUnixTarGz(dir, bundle, path.join(dir, 'out.tar.gz'), isUnixExecutablePath),
+        /escaping symlink/i
+      );
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

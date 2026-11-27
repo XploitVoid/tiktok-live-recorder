@@ -7,7 +7,22 @@ const {
   parseChannelInput,
 } = require('../lib/providers');
 const watcher = require('../lib/watcher');
+const accounts = require('../lib/accounts');
 const { safeError, sanitizeQuality, sanitizeAudioBitrate } = require('../lib/utils');
+
+function validateWatchAccountId(raw, platform) {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null || raw === '' || raw === 'default') return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid accountId' };
+  const id = raw.trim();
+  if (id === 'anon') return { ok: true, value: 'anon' };
+  if (!/^[A-Za-z0-9]{1,32}$/.test(id)) return { ok: false, error: 'invalid accountId' };
+  const exists = accounts.getAll().some(
+    (a) => a.id === id && accounts.normalizeAccountPlatform(a.platform) === platform,
+  );
+  if (!exists) return { ok: false, error: 'invalid accountId' };
+  return { ok: true, value: id };
+}
 
 const router = Router();
 
@@ -18,6 +33,8 @@ router.get('/api/watch', (_req, res) => {
 router.post('/api/watch', (req, res) => {
   const { platform, username } = parseChannelInput(req.body?.username, req.body?.platform);
   if (!username) return res.status(400).json({ error: 'missing username' });
+  const acctCheck = validateWatchAccountId(req.body?.accountId, platform);
+  if (!acctCheck.ok) return res.status(400).json({ error: acctCheck.error });
   const result = watcher.addToWatchlist(username, {
     platform,
     autoRecord: !!req.body?.autoRecord,
@@ -26,7 +43,7 @@ router.post('/api/watch', (req, res) => {
     audioBitrate: sanitizeAudioBitrate(req.body?.audioBitrate, null),
     recordChat: req.body?.recordChat !== false,
     priority: req.body?.priority,
-    accountId: req.body?.accountId,
+    accountId: acctCheck.value,
     minViewers: req.body?.minViewers,
     scheduleStart: req.body?.scheduleStart,
     scheduleEnd: req.body?.scheduleEnd,
@@ -38,6 +55,8 @@ router.post('/api/watch', (req, res) => {
 router.patch('/api/watch/:username', (req, res) => {
   const platform = normalizePlatform(req.query.platform || req.body?.platform, 'tiktok');
   const username = getProvider(platform).normalizeUsername(req.params.username);
+  const acctCheck = validateWatchAccountId(req.body?.accountId, platform);
+  if (!acctCheck.ok) return res.status(400).json({ error: acctCheck.error });
   const result = watcher.updateWatchEntry(username, {
     platform,
     autoRecord: typeof req.body?.autoRecord === 'boolean' ? req.body.autoRecord : undefined,
@@ -46,7 +65,7 @@ router.patch('/api/watch/:username', (req, res) => {
     audioBitrate: req.body?.audioBitrate !== undefined ? sanitizeAudioBitrate(req.body.audioBitrate, null) : undefined,
     recordChat: typeof req.body?.recordChat === 'boolean' ? req.body.recordChat : undefined,
     priority: req.body?.priority,
-    accountId: req.body?.accountId,
+    accountId: acctCheck.value,
     minViewers: req.body?.minViewers,
     scheduleStart: req.body?.scheduleStart,
     scheduleEnd: req.body?.scheduleEnd,
@@ -156,7 +175,7 @@ router.get('/api/watch/live-streams', async (_req, res) => {
               uniqueId: summary.owner.uniqueId || undefined,
               avatarThumb: summary.owner.avatarThumb || extractAvatarThumb(apiData?.user),
             } : undefined,
-            streams: { hls: streams.hls, hlsByQuality: streams.hlsByQuality, flv: streams.flv },
+            streams: { hls: streams.hls, hlsByQuality: streams.hlsByQuality, flv: streams.flv, cmaf: streams.cmaf },
           });
         } catch {
           // ignore individual failures so one bad user doesn't kill the response

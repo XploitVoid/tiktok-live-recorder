@@ -7,7 +7,8 @@ const { Readable } = require('stream');
 const { spawn } = require('child_process');
 const { resolveFfmpeg, isFfmpegAvailable } = require('../lib/ffmpeg');
 const { isAllowedCdnUrl, assertPublicDns, safeError } = require('../lib/utils');
-const { getProxyAgent } = require('../lib/proxy-config');
+const { getProxyAgent, getFfmpegProxyEnv } = require('../lib/proxy-config');
+const { getStealthMode, getStealthUserAgent } = require('../lib/stealth');
 const {
   MAX_CONCURRENT_TRANSCODES,
   transcodeProcs,
@@ -55,6 +56,7 @@ function requestViaAgent(target, headers, agent, timeoutMs) {
     const parsed = new URL(target);
     const mod = parsed.protocol === 'http:' ? http : https;
     const req = mod.request(parsed, { method: 'GET', headers, agent }, (res) => {
+      req.setTimeout(0);
       const hdrs = {
         get: (name) => {
           const v = res.headers[name.toLowerCase()];
@@ -72,19 +74,35 @@ function requestViaAgent(target, headers, agent, timeoutMs) {
         headers: hdrs,
         getNodeStream: () => res,
         cancelBody: () => { try { res.destroy(); } catch {} },
-        readBuffer: (maxBytes) => new Promise((resBuf, rejBuf) => {
+        readBuffer: (maxBytes, bufTimeoutMs = UPSTREAM_TIMEOUT_MS) => new Promise((resBuf, rejBuf) => {
           const chunks = [];
           let total = 0;
+          let ended = false;
+          const finish = (err, buf) => {
+            if (ended) return;
+            ended = true;
+            clearTimeout(timer);
+            if (err) rejBuf(err);
+            else resBuf(buf);
+          };
+          const timer = setTimeout(() => {
+            try { res.destroy(); } catch {}
+            finish(new Error('manifest timeout'));
+          }, bufTimeoutMs);
+          timer.unref?.();
           res.on('data', (c) => {
             total += c.length;
             if (total > maxBytes) {
-              res.destroy();
-              return rejBuf(new Error('manifest too large'));
+              try { res.destroy(); } catch {}
+              return finish(new Error('manifest too large'));
             }
             chunks.push(c);
           });
-          res.on('end', () => resBuf(Buffer.concat(chunks)));
-          res.on('error', rejBuf);
+          res.on('end', () => finish(null, Buffer.concat(chunks)));
+          res.on('close', () => {
+            if (!ended) finish(new Error('upstream closed early'));
+          });
+          res.on('error', (err) => finish(err));
         }),
       });
     });
@@ -116,22 +134,30 @@ function wrapFetchResponse(res, target) {
         }
       } catch {}
     },
-    readBuffer: async (maxBytes) => {
+    readBuffer: async (maxBytes, bufTimeoutMs = UPSTREAM_TIMEOUT_MS) => {
       if (!res.body) return Buffer.alloc(0);
       const reader = res.body.getReader();
       const chunks = [];
       let total = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-        if (total > maxBytes) {
-          try { await reader.cancel(); } catch {}
-          throw new Error('manifest too large');
+      const timer = setTimeout(() => {
+        try { reader.cancel(new Error('manifest timeout')).catch(() => {}); } catch {}
+      }, bufTimeoutMs);
+      timer.unref?.();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > maxBytes) {
+            try { await reader.cancel(); } catch {}
+            throw new Error('manifest too large');
+          }
+          chunks.push(Buffer.from(value));
         }
-        chunks.push(Buffer.from(value));
+        return Buffer.concat(chunks);
+      } finally {
+        clearTimeout(timer);
       }
-      return Buffer.concat(chunks);
     },
   };
 }
@@ -178,15 +204,48 @@ async function safeFetch(target, init = {}, hops = 0) {
   return upstream;
 }
 
+const MAX_PROXY_IPS = 10_000;
 function checkProxyRate(ip) {
   const now = Date.now();
   let bucket = proxyHitsByIp.get(ip);
   if (!bucket || bucket.resetAt < now) {
+    if (!bucket && proxyHitsByIp.size >= MAX_PROXY_IPS) {
+      const oldestKey = proxyHitsByIp.keys().next().value;
+      if (oldestKey !== undefined) proxyHitsByIp.delete(oldestKey);
+    }
     bucket = { count: 0, resetAt: now + PROXY_RATE_WINDOW };
     proxyHitsByIp.set(ip, bucket);
   }
   bucket.count++;
   return bucket.count <= PROXY_RATE_LIMIT;
+}
+
+function resolveRefererForHost(host) {
+  const h = String(host || '').toLowerCase();
+  if (h.endsWith('.ttvnw.net') || h === 'ttvnw.net' || h.endsWith('.jtvnw.net') || h === 'jtvnw.net') {
+    return 'https://www.twitch.tv/';
+  }
+  if (
+    h.endsWith('.googlevideo.com') || h === 'googlevideo.com' ||
+    h.endsWith('.ytimg.com') || h === 'ytimg.com' ||
+    h.endsWith('.ggpht.com') || h === 'ggpht.com'
+  ) {
+    return 'https://www.youtube.com/';
+  }
+  if (h.endsWith('.live-video.net') || h === 'live-video.net' || h.endsWith('.kick.com') || h === 'kick.com') {
+    return 'https://kick.com/';
+  }
+  if (
+    h.endsWith('.sooplive.co.kr') || h === 'sooplive.co.kr' ||
+    h.endsWith('.afreecatv.com') || h === 'afreecatv.com' ||
+    h.endsWith('.afreeca.tv') || h === 'afreeca.tv'
+  ) {
+    return 'https://play.sooplive.co.kr/';
+  }
+  if (h.endsWith('.sooplive.com') || h === 'sooplive.com' || h.endsWith('.sooplive-cdn.com') || h === 'sooplive-cdn.com') {
+    return 'https://play.sooplive.com/';
+  }
+  return 'https://www.tiktok.com/';
 }
 
 router.get('/api/proxy', async (req, res) => {
@@ -201,26 +260,11 @@ router.get('/api/proxy', async (req, res) => {
 
   try {
     const targetHost = new URL(target).hostname.toLowerCase();
-    let referer = 'https://www.tiktok.com/';
-    if (targetHost.endsWith('.ttvnw.net') || targetHost === 'ttvnw.net' || targetHost.endsWith('.jtvnw.net') || targetHost === 'jtvnw.net') {
-      referer = 'https://www.twitch.tv/';
-    } else if (
-      targetHost.endsWith('.googlevideo.com') || targetHost === 'googlevideo.com' ||
-      targetHost.endsWith('.ytimg.com') || targetHost === 'ytimg.com' ||
-      targetHost.endsWith('.ggpht.com') || targetHost === 'ggpht.com'
-    ) {
-      referer = 'https://www.youtube.com/';
-    } else if (
-      targetHost.endsWith('.live-video.net') || targetHost === 'live-video.net' ||
-      targetHost.endsWith('.kick.com') || targetHost === 'kick.com'
-    ) {
-      referer = 'https://kick.com/';
-    }
+    const referer = resolveRefererForHost(targetHost);
     const upstream = await safeFetch(target, {
       headers: {
         // Some CDNs check referer/UA
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+        'User-Agent': getStealthUserAgent(getStealthMode()),
         'Referer': referer,
       },
     });
@@ -231,14 +275,6 @@ router.get('/api/proxy', async (req, res) => {
       return res.status(502).type('text/plain').send('disallowed upstream content-type');
     }
 
-    res.status(upstream.status);
-    upstream.headers.forEach((v, k) => {
-      const lk = k.toLowerCase();
-      if (SAFE_RESPONSE_HEADERS.has(lk)) {
-        res.setHeader(lk, v);
-      }
-    });
-
     // Rewrite m3u8 manifests so segments also go through this proxy.
     const effectiveUrl = upstream.finalUrl || target;
     if (upstream.status >= 200 && upstream.status < 300 && (/mpegurl|m3u8/i.test(ct) || /\.m3u8(\?|$)/i.test(effectiveUrl))) {
@@ -247,7 +283,17 @@ router.get('/api/proxy', async (req, res) => {
         await upstream.cancelBody();
         return res.status(502).type('text/plain').send('manifest too large');
       }
-      const buf = await upstream.readBuffer(MAX_MANIFEST_BYTES);
+      const onCloseManifest = () => {
+        try { Promise.resolve(upstream.cancelBody()).catch(() => {}); } catch {}
+      };
+      res.on('close', onCloseManifest);
+      let buf;
+      try {
+        buf = await upstream.readBuffer(MAX_MANIFEST_BYTES);
+      } finally {
+        res.off('close', onCloseManifest);
+      }
+      if (res.writableEnded || res.destroyed) return;
       const text = buf.toString('utf8');
       const baseUrl = new URL(effectiveUrl);
       const rewriteProxyUri = (rawUri) => {
@@ -274,10 +320,25 @@ router.get('/api/proxy', async (req, res) => {
           } catch { return line; }
         })
         .join('\n');
+      res.status(upstream.status);
+      upstream.headers.forEach((v, k) => {
+        const lk = k.toLowerCase();
+        if (SAFE_RESPONSE_HEADERS.has(lk)) {
+          res.setHeader(lk, v);
+        }
+      });
       res.setHeader('content-type', 'application/vnd.apple.mpegurl');
       res.setHeader('cache-control', 'no-store');
       return res.send(rewritten);
     }
+
+    res.status(upstream.status);
+    upstream.headers.forEach((v, k) => {
+      const lk = k.toLowerCase();
+      if (SAFE_RESPONSE_HEADERS.has(lk)) {
+        res.setHeader(lk, v);
+      }
+    });
 
     const nodeStream = upstream.getNodeStream();
     if (nodeStream) {
@@ -319,6 +380,37 @@ router.get('/api/proxy', async (req, res) => {
 // Pipes ffmpeg output as FLV (H.264 + AAC) so flv.js can play it.
 // Used when the browser cannot decode HEVC natively.
 
+async function resolveSafeTranscodeTarget(initialUrl) {
+  let cur = initialUrl;
+  if (getProxyAgent()) return cur;
+  for (let hop = 0; hop < 4; hop++) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 2000);
+    t.unref?.();
+    let res;
+    try {
+      res = await fetch(cur, { method: 'HEAD', redirect: 'manual', signal: ac.signal });
+      res.body?.cancel?.().catch(() => {});
+    } catch {
+      return cur;
+    } finally {
+      clearTimeout(t);
+    }
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc) return cur;
+      let next;
+      try { next = new URL(loc, cur).toString(); } catch { throw new Error('invalid redirect URL'); }
+      if (!isAllowedCdnUrl(next)) throw new Error('redirect to disallowed host');
+      await assertPublicDns(new URL(next).hostname);
+      cur = next;
+      continue;
+    }
+    return cur;
+  }
+  throw new Error('too many redirects');
+}
+
 router.get('/api/transcode', async (req, res) => {
   const target = req.query.url;
   if (typeof target !== 'string' || !isAllowedCdnUrl(target)) {
@@ -333,14 +425,16 @@ router.get('/api/transcode', async (req, res) => {
     return res.status(429).send('max concurrent transcodes reached');
   }
 
+  let safeTarget = target;
   try {
     await assertPublicDns(new URL(target).hostname);
+    safeTarget = await resolveSafeTranscodeTarget(target);
   } catch (e) {
     return res.status(400).send(safeError(e));
   }
 
   // Re-check limits and client socket after async DNS lookup to close race conditions
-  if (req.destroyed || res.destroyed || res.writableEnded) return;
+  if (res.destroyed || res.writableEnded) return;
   const ipActiveAfter = transcodeCountByIp.get(ip) || 0;
   if (ipActiveAfter >= MAX_TRANSCODES_PER_IP || transcodeProcs.size >= MAX_CONCURRENT_TRANSCODES) {
     return res.status(429).send('max concurrent transcodes reached');
@@ -368,16 +462,45 @@ router.get('/api/transcode', async (req, res) => {
   try {
     const ffmpegBin = resolveFfmpeg();
     const encoder = getEncoder();
-    const args = buildTranscodeArgs(target, encoder);
-    proc = spawn(ffmpegBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const targetHost = new URL(safeTarget).hostname.toLowerCase();
+    const referer = resolveRefererForHost(targetHost);
+    const args = buildTranscodeArgs(safeTarget, encoder, { referer, useEnvProxy: true });
+    const proxyEnv = getFfmpegProxyEnv();
+    proc = spawn(ffmpegBin, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: Object.keys(proxyEnv).length > 0 ? { ...process.env, ...proxyEnv } : process.env,
+    });
     transcodeProcs.add(proc);
-    transcodeCountByIp.set(ip, ipActiveAfter + 1);
+    transcodeCountByIp.set(ip, (transcodeCountByIp.get(ip) || 0) + 1);
     counted = true;
     console.log(`[transcode] start enc=${encoder} (${transcodeProcs.size}/${MAX_CONCURRENT_TRANSCODES})`);
 
-    res.setHeader('content-type', 'video/x-flv');
-    res.setHeader('cache-control', 'no-store');
-    proc.stdout.pipe(res);
+    let headersWritten = false;
+    let totalBytes = 0;
+    const ensureHeaders = () => {
+      if (headersWritten || res.headersSent) return;
+      headersWritten = true;
+      res.setHeader('content-type', 'video/x-flv');
+      res.setHeader('cache-control', 'no-store');
+    };
+    proc.stdout.on('data', (chunk) => {
+      if (res.destroyed || res.writableEnded) return;
+      ensureHeaders();
+      totalBytes += chunk.length;
+      if (!res.write(chunk)) {
+        proc.stdout.pause();
+      }
+    });
+    res.on('drain', () => {
+      if (proc && !proc.killed) {
+        try { proc.stdout.resume(); } catch {}
+      }
+    });
+    proc.stdout.on('error', () => {
+      cleanup();
+      if (!res.headersSent) res.status(502).end();
+      else if (!res.writableEnded) res.end();
+    });
 
     let stderrTail = '';
     proc.stderr.on('data', (b) => { stderrTail = (stderrTail + b.toString()).slice(-500); });
@@ -386,20 +509,23 @@ router.get('/api/transcode', async (req, res) => {
       console.warn('[transcode] ffmpeg spawn error:', err?.message || err);
       cleanup();
       if (!res.headersSent) res.status(502).end();
-      else res.end();
+      else if (!res.writableEnded) res.end();
     });
-    proc.on('exit', (code) => {
+    proc.on('close', (code) => {
       if (code !== 0 && code !== null) console.warn('[transcode] ffmpeg exit', code, stderrTail);
       cleanup();
-      if (!res.headersSent) res.status(502).end();
-      else res.end();
+      if (!res.headersSent) {
+        res.status(code === 0 && totalBytes > 0 ? 200 : 502).end();
+      } else if (!res.writableEnded) {
+        res.end();
+      }
     });
-    req.on('close', cleanup);
     res.on('close', cleanup);
+    res.on('error', cleanup);
   } catch (e) {
     cleanup();
     if (!res.headersSent) res.status(502).send(safeError(e));
-    else res.end();
+    else if (!res.writableEnded) res.end();
   }
 });
 

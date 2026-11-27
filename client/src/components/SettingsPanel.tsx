@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { HardDrive, Settings2, Trash2, ChevronDown, ChevronUp, Save, BellRing, Database, RefreshCw } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { HardDrive, Settings2, Trash2, ChevronDown, ChevronUp, Save, BellRing, Database, RefreshCw, AlertTriangle } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -34,35 +34,71 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
   const [discordWebhookUrl, setDiscordWebhookUrl] = useState('')
   const [telegramBotToken, setTelegramBotToken] = useState('')
   const [telegramChatId, setTelegramChatId] = useState('')
+  const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [retryingLoad, setRetryingLoad] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testingWebhook, setTestingWebhook] = useState(false)
+  const mountedRef = useRef(true)
+  const loadSeqRef = useRef(0)
+
+  const applySettingsToForm = useCallback((s: AppSettings) => {
+    setSettings(s)
+    setMinFreeGb(String(s.minFreeGb))
+    setMaxRecordingsGb(String(s.maxRecordingsGb))
+    setRetentionDays(String(s.retentionDays))
+    setSegmentMinutes(String(s.segmentMinutes))
+    setAutoRetryRecord(s.autoRetryRecord)
+    setAutoMergeParts(s.autoMergeParts ?? true)
+    setStalledTimeoutSec(String(s.stalledTimeoutSec ?? 25))
+    setDefaultAudioBitrate(s.defaultAudioBitrate || 'copy')
+    setOrganizeByCreator(!!s.organizeByCreator)
+    setFilenameTemplate(s.filenameTemplate || '{username}_{date}_{time}')
+    setRecordFormat(s.recordFormat === 'ts' ? 'ts' : 'mp4')
+    setTelegramChatId(s.telegramChatId || '')
+  }, [])
+
+  const parseNumericField = (raw: string, fallback: number): number => {
+    const trimmed = raw.trim()
+    if (!trimmed) return fallback
+    const n = Number(trimmed)
+    return Number.isFinite(n) ? n : fallback
+  }
+
+  const runSettingsFetch = useCallback(() => {
+    const seq = ++loadSeqRef.current
+    return getSettings()
+      .then((res) => {
+        if (!mountedRef.current || seq !== loadSeqRef.current) return
+        setDisk(res.disk)
+        applySettingsToForm(res.settings)
+        setLoaded(true)
+        setLoadError(null)
+      })
+      .catch((e: unknown) => {
+        if (!mountedRef.current || seq !== loadSeqRef.current) return
+        setLoadError(e instanceof Error ? e.message : String(e))
+      })
+      .finally(() => {
+        if (mountedRef.current && seq === loadSeqRef.current) {
+          setRetryingLoad(false)
+        }
+      })
+  }, [applySettingsToForm])
+
+  const handleRetryLoad = () => {
+    setRetryingLoad(true)
+    void runSettingsFetch()
+  }
 
   useEffect(() => {
-    let active = true
-    getSettings()
-      .then((res) => {
-        if (!active) return
-        setSettings(res.settings)
-        setDisk(res.disk)
-        setMinFreeGb(String(res.settings.minFreeGb))
-        setMaxRecordingsGb(String(res.settings.maxRecordingsGb))
-        setRetentionDays(String(res.settings.retentionDays))
-        setSegmentMinutes(String(res.settings.segmentMinutes))
-        setAutoRetryRecord(res.settings.autoRetryRecord)
-        setAutoMergeParts(res.settings.autoMergeParts ?? true)
-        setStalledTimeoutSec(String(res.settings.stalledTimeoutSec ?? 25))
-        setDefaultAudioBitrate(res.settings.defaultAudioBitrate || 'copy')
-        setOrganizeByCreator(!!res.settings.organizeByCreator)
-        setFilenameTemplate(res.settings.filenameTemplate || '{username}_{date}_{time}')
-        setRecordFormat(res.settings.recordFormat === 'ts' ? 'ts' : 'mp4')
-        setTelegramChatId(res.settings.telegramChatId || '')
-      })
-      .catch(() => { /* ignore */ })
+    mountedRef.current = true
+    void runSettingsFetch()
     getSearchIndexStatus()
-      .then((s) => { if (active) setSearchIndex(s) })
+      .then((s) => { if (mountedRef.current) setSearchIndex(s) })
       .catch(() => { /* ignore */ })
-    return () => { active = false }
-  }, [])
+    return () => { mountedRef.current = false }
+  }, [runSettingsFetch])
 
   useEffect(() => {
     if (!open) return
@@ -74,16 +110,17 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
   }, [open])
 
   const handleSave = async () => {
+    if (!loaded || saving) return
     setSaving(true)
     try {
       const patch: Record<string, unknown> = {
-        minFreeGb: Number(minFreeGb),
-        maxRecordingsGb: Number(maxRecordingsGb),
-        retentionDays: Number(retentionDays),
-        segmentMinutes: Number(segmentMinutes),
+        minFreeGb: parseNumericField(minFreeGb, settings?.minFreeGb ?? 2),
+        maxRecordingsGb: parseNumericField(maxRecordingsGb, settings?.maxRecordingsGb ?? 0),
+        retentionDays: parseNumericField(retentionDays, settings?.retentionDays ?? 0),
+        segmentMinutes: parseNumericField(segmentMinutes, settings?.segmentMinutes ?? 0),
         autoRetryRecord,
         autoMergeParts,
-        stalledTimeoutSec: Number(stalledTimeoutSec),
+        stalledTimeoutSec: parseNumericField(stalledTimeoutSec, settings?.stalledTimeoutSec ?? 25),
         defaultAudioBitrate: defaultAudioBitrate === 'copy' ? null : defaultAudioBitrate,
         organizeByCreator,
         filenameTemplate: filenameTemplate.trim() || '{username}_{date}_{time}',
@@ -94,11 +131,8 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
       if (discordWebhookUrl.trim()) patch.discordWebhookUrl = discordWebhookUrl.trim()
       if (telegramBotToken.trim()) patch.telegramBotToken = telegramBotToken.trim()
       const res = await saveSettings(patch)
-      setSettings(res.settings)
       setDisk(res.disk)
-      setOrganizeByCreator(!!res.settings.organizeByCreator)
-      setFilenameTemplate(res.settings.filenameTemplate || '{username}_{date}_{time}')
-      setRecordFormat(res.settings.recordFormat === 'ts' ? 'ts' : 'mp4')
+      applySettingsToForm(res.settings)
       setProxyUrl('')
       setDiscordWebhookUrl('')
       setTelegramBotToken('')
@@ -117,8 +151,8 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
         ? { discordWebhookUrl: '' }
         : { telegramBotToken: '', telegramChatId: '' }
       const res = await saveSettings(patch)
-      setSettings(res.settings)
       setDisk(res.disk)
+      applySettingsToForm(res.settings)
       if (which === 'discord') setDiscordWebhookUrl('')
       else { setTelegramBotToken(''); setTelegramChatId('') }
       toast.info(t('settingsSaved'))
@@ -145,8 +179,8 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
     setSaving(true)
     try {
       const res = await saveSettings({ proxyUrl: '' })
-      setSettings(res.settings)
       setDisk(res.disk)
+      applySettingsToForm(res.settings)
       setProxyUrl('')
       toast.info(t('settingsSaved'))
     } catch (e: unknown) {
@@ -210,20 +244,20 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
             {disk && (
               <span className="text-xs text-muted-foreground font-mono tabular-nums">
                 {fmtBytes(disk.recordingsBytes)}
-                {disk.freeBytes != null ? ` / Free ${fmtBytes(disk.freeBytes)}` : ''}
+                {disk.freeBytes != null ? ` / ${t('settingsFreeLabel')} ${fmtBytes(disk.freeBytes)}` : ''}
               </span>
             )}
             {disk?.lowSpace && (
-              <Badge variant="destructive" className="text-[10px]">LOW DISK</Badge>
+              <Badge variant="destructive" className="text-[10px]">{t('settingsLowDisk')}</Badge>
             )}
             {settings?.hasProxy && (
               <Badge variant="secondary" className="text-[10px] border border-border">
-                Proxy ON
+                {t('settingsProxyOn')}
               </Badge>
             )}
             {(settings?.hasDiscordWebhook || settings?.hasTelegram) && (
               <Badge variant="secondary" className="text-[10px] border border-border">
-                Alerts ON
+                {t('settingsAlertsOn')}
               </Badge>
             )}
           </div>
@@ -235,13 +269,31 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
 
         {open && (
           <div className="mt-4 pt-3 border-t border-border/70 space-y-3.5 text-xs">
+            {loadError && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{t('settingsLoadFailed')}: {loadError}</span>
+                </div>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={handleRetryLoad}
+                  disabled={retryingLoad}
+                  className="h-7 shrink-0"
+                >
+                  <RefreshCw className={retryingLoad ? 'w-3 h-3 mr-1 animate-spin' : 'w-3 h-3 mr-1'} />
+                  {t('retry')}
+                </Button>
+              </div>
+            )}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div>
-                <label className="text-muted-foreground block mb-1">Min Free Disk (GB)</label>
+                <label className="text-muted-foreground block mb-1">{t('settingsMinFreeGb')}</label>
                 <Input type="number" min={0} step={0.5} value={minFreeGb} onChange={(e) => setMinFreeGb(e.target.value)} className="h-8 text-xs tabular-nums" />
               </div>
               <div>
-                <label className="text-muted-foreground block mb-1">Max Quota (GB, 0=off)</label>
+                <label className="text-muted-foreground block mb-1">{t('settingsMaxQuotaGb')}</label>
                 <Input type="number" min={0} step={1} value={maxRecordingsGb} onChange={(e) => setMaxRecordingsGb(e.target.value)} className="h-8 text-xs tabular-nums" />
               </div>
               <div>
@@ -349,13 +401,13 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
                   type="password"
                   value={discordWebhookUrl}
                   onChange={(e) => setDiscordWebhookUrl(e.target.value)}
-                  placeholder={settings?.hasDiscordWebhook ? `Discord: ${settings.discordWebhookPreview}` : 'Discord Webhook URL (https://discord.com/api/webhooks/...)'}
+                  placeholder={settings?.hasDiscordWebhook ? `Discord: ${settings.discordWebhookPreview}` : t('settingsDiscordPlaceholder')}
                   autoComplete="off"
                   className="h-8 text-xs flex-1 font-mono"
                 />
                 {settings?.hasDiscordWebhook && (
                   <Button size="xs" variant="outline" onClick={() => handleClearWebhook('discord')} disabled={saving} className="h-8">
-                    {t('btnCancel')}
+                    {t('btnClear')}
                   </Button>
                 )}
               </div>
@@ -364,20 +416,20 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
                   type="password"
                   value={telegramBotToken}
                   onChange={(e) => setTelegramBotToken(e.target.value)}
-                  placeholder={(settings?.hasTelegram || settings?.hasTelegramToken) ? `Telegram: ${settings.telegramBotPreview}` : 'Telegram Bot Token'}
+                  placeholder={(settings?.hasTelegram || settings?.hasTelegramToken) ? `Telegram: ${settings.telegramBotPreview}` : t('settingsTelegramTokenPlaceholder')}
                   autoComplete="off"
                   className="h-8 text-xs flex-1 font-mono"
                 />
                 <Input
                   value={telegramChatId}
                   onChange={(e) => setTelegramChatId(e.target.value)}
-                  placeholder="Chat ID"
+                  placeholder={t('settingsTelegramChatIdPlaceholder')}
                   autoComplete="off"
                   className="h-8 text-xs w-28 font-mono"
                 />
                 {(settings?.hasTelegram || settings?.hasTelegramToken) && (
                   <Button size="xs" variant="outline" onClick={() => handleClearWebhook('telegram')} disabled={saving} className="h-8">
-                    {t('btnCancel')}
+                    {t('btnClear')}
                   </Button>
                 )}
               </div>
@@ -388,13 +440,13 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
                 type="password"
                 value={proxyUrl}
                 onChange={(e) => setProxyUrl(e.target.value)}
-                placeholder={settings?.hasProxy ? `Current: ${settings.proxyPreview}` : `${t('settingsProxyPlaceholder')} (comma-separated failover)`}
+                placeholder={settings?.hasProxy ? `${t('settingsCurrentProxy')} ${settings.proxyPreview}` : `${t('settingsProxyPlaceholder')} ${t('settingsProxyFailoverHint')}`}
                 autoComplete="off"
                 className="h-8 text-xs flex-1 min-w-[220px] font-mono"
               />
               {settings?.hasProxy && (
                 <Button size="xs" variant="outline" onClick={handleClearProxy} disabled={saving} className="h-8">
-                  {t('btnCancel')} Proxy
+                  {t('settingsClearProxy')}
                 </Button>
               )}
               {(settings?.hasDiscordWebhook || settings?.hasTelegram) && (
@@ -405,7 +457,7 @@ export function SettingsPanel({ onCleanup }: { onCleanup?: () => void }) {
               <Button size="xs" variant="outline" onClick={handleCleanup} className="h-8">
                 <Trash2 className="w-3 h-3 mr-1" /> {t('settingsRunCleanup')}
               </Button>
-              <Button size="xs" onClick={handleSave} disabled={saving} className="h-8 cursor-pointer">
+              <Button size="xs" onClick={handleSave} disabled={saving || !loaded} className="h-8 cursor-pointer">
                 <Save className="w-3 h-3 mr-1" /> {t('btnSave')}
               </Button>
             </div>

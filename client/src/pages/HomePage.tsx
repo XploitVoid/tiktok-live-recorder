@@ -1,5 +1,5 @@
-import { useState, useRef, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import { useSearchParams, useLocation } from 'react-router-dom'
 import { SearchSection } from '@/components/SearchSection'
 import { StatusSection, StatusSkeleton } from '@/components/StatusSection'
 import { StreamPlayer, BlockedStreams } from '@/components/StreamPlayer'
@@ -14,6 +14,7 @@ import { toast } from 'sonner'
 
 export function HomePage() {
   const { t } = useI18n()
+  const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
   const initialUsername = searchParams.get('u') || undefined
   const rawPlatform = searchParams.get('platform')
@@ -23,6 +24,34 @@ export function HomePage() {
   const [result, setResult] = useState<CheckResult | null>(null)
   const jobsRef = useRef<{ refresh: () => void }>(null)
   const filesRef = useRef<{ refresh: () => void }>(null)
+  const mountedRef = useRef(true)
+  const pathnameRef = useRef(location.pathname)
+  const prevInitialUserRef = useRef(initialUsername)
+
+  useEffect(() => {
+    pathnameRef.current = location.pathname
+  }, [location.pathname])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  // Clear stale check results when the user navigates back to plain `/`
+  useEffect(() => {
+    const prev = prevInitialUserRef.current
+    prevInitialUserRef.current = initialUsername
+    if (prev && !initialUsername) {
+      let cancelled = false
+      Promise.resolve().then(() => {
+        if (!cancelled) {
+          setResult(null)
+          setLoading(false)
+        }
+      })
+      return () => { cancelled = true }
+    }
+  }, [initialUsername])
 
   const handleLoading = useCallback(() => {
     setLoading(true)
@@ -30,6 +59,7 @@ export function HomePage() {
 
   const handleResult = useCallback(
     (data: CheckResult) => {
+      if (!mountedRef.current || pathnameRef.current !== '/') return
       setLoading(false)
       setResult(data)
       if (data.username) {

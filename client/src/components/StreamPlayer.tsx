@@ -77,61 +77,104 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
     }
 
     const isAo = (u: string) => u && /only_audio=1/.test(u)
-    let flvUrl: string | undefined, hlsUrl: string | undefined
+    let flvUrl: string | undefined, hlsUrl: string | undefined, cmafUrl: string | undefined
 
     if (quality === 'auto') {
       const flvMap = streams.flv || {}
+      const hlsMap = streams.hlsByQuality || {}
+      const cmafMap = streams.cmaf || {}
       flvUrl = flvMap.hd || flvMap.origin || flvMap.uhd || flvMap.sd || flvMap.ld ||
         Object.values(flvMap).find((u) => u && !isAo(u))
-      hlsUrl = streams.hls
+      hlsUrl = streams.hls || hlsMap.hd || hlsMap.origin || hlsMap.uhd || hlsMap.sd || hlsMap.ld ||
+        Object.values(hlsMap).find((u) => u && !isAo(u))
+      cmafUrl = cmafMap.hd || cmafMap.origin || cmafMap.uhd || cmafMap.sd || cmafMap.ld ||
+        Object.values(cmafMap).find((u) => u && !isAo(u))
+      if (!flvUrl && !hlsUrl && !cmafUrl) {
+        const hevcFlv = streams.hevc?.flv || {}
+        const hevcHls = streams.hevc?.hls || {}
+        const hFlv = hevcFlv.hd || hevcFlv.origin || hevcFlv.uhd || hevcFlv.sd || hevcFlv.ld ||
+          Object.values(hevcFlv).find((u) => u && !isAo(u))
+        const hHls = hevcHls.hd || hevcHls.origin || hevcHls.uhd || hevcHls.sd || hevcHls.ld ||
+          Object.values(hevcHls).find((u) => u && !isAo(u))
+        if (hFlv || hHls) {
+          codec = 'hevc'
+          flvUrl = hFlv
+          hlsUrl = hHls
+        }
+      }
     } else if (codec === 'hevc') {
       flvUrl = streams.hevc?.flv?.[key!]
       hlsUrl = streams.hevc?.hls?.[key!]
     } else {
       flvUrl = streams.flv?.[key!]
-      hlsUrl = streams.hlsByQuality?.[key!] || streams.hls
+      hlsUrl = streams.hlsByQuality?.[key!] || (!streams.flv?.[key!] && !streams.cmaf?.[key!] ? streams.hls : undefined)
+      cmafUrl = streams.cmaf?.[key!]
     }
 
-    const label = quality === 'auto' ? 'auto' : `${codec.toUpperCase()}:${key}`
+    const label = quality === 'auto' ? (codec === 'hevc' ? 'HEVC:auto' : 'auto') : `${codec.toUpperCase()}:${key}`
 
     const MAX_RETRIES = 3
     let retries = 0
     let cancelled = false
-    const timers: ReturnType<typeof setTimeout>[] = []
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
     let nativeMetaHandler: (() => void) | null = null
 
+    const onPlaying = () => {
+      retries = 0
+    }
+    video.addEventListener('playing', onPlaying)
+
+    const scheduleRetry = (fn: () => void, giveUpMsg: string, onGiveUp?: () => void) => {
+      if (cancelled || retryTimer !== null) return
+      if (retries >= MAX_RETRIES) {
+        setPlayerInfo(giveUpMsg)
+        onGiveUp?.()
+        return
+      }
+      retries++
+      const delay = Math.min(10_000, 1500 * Math.pow(2, retries - 1))
+      retryTimer = setTimeout(() => {
+        retryTimer = null
+        if (!cancelled) fn()
+      }, delay)
+    }
+
     const attachFlvErrorHandler = (p: FlvPlayer) => {
-      p.on(flvjs!.Events.ERROR, () => {
-        if (cancelled || retries++ >= MAX_RETRIES) {
-          if (!cancelled) setPlayerInfo('Stream error (gave up after retries)')
-          return
-        }
-        const id = setTimeout(() => {
-          if (cancelled) return
-          try { p.unload(); p.load(); p.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
-        }, 3000)
-        timers.push(id)
+      const flvLib = window.flvjs
+      if (!flvLib) return
+      p.on(flvLib.Events.ERROR, () => {
+        scheduleRetry(
+          () => { try { p.unload(); p.load(); p.play().catch(() => { /* ignore */ }) } catch { /* ignore */ } },
+          `${tRef.current('playerStreamError')} (gave up after retries)`,
+          () => {
+            try { p.destroy() } catch { /* ignore */ }
+            playersRef.current = playersRef.current.filter((x) => x !== p)
+          },
+        )
       })
     }
     const attachHlsErrorHandler = (h: HlsInstance) => {
-      h.on(Hls!.Events.ERROR, (...args: unknown[]) => {
+      const hlsLib = window.Hls
+      if (!hlsLib) return
+      h.on(hlsLib.Events.ERROR, (...args: unknown[]) => {
         const errData = args[1] as { fatal?: boolean; type?: string; details?: string } | undefined
         if (!errData?.fatal || cancelled) return
-        if (retries++ >= MAX_RETRIES) {
-          setPlayerInfo(`Stream error (${errData.details || errData.type || 'gave up after retries'})`)
-          return
-        }
-        const id = setTimeout(() => {
-          if (cancelled) return
-          try {
-            if (errData.type === Hls!.ErrorTypes.NETWORK_ERROR) {
-              h.startLoad()
-            } else {
-              h.recoverMediaError()
-            }
-          } catch { /* ignore */ }
-        }, 3000)
-        timers.push(id)
+        scheduleRetry(
+          () => {
+            try {
+              if (errData.type === hlsLib.ErrorTypes.NETWORK_ERROR) {
+                h.startLoad()
+              } else {
+                h.recoverMediaError()
+              }
+            } catch { /* ignore */ }
+          },
+          `${tRef.current('playerStreamError')} (${errData.details || errData.type || 'gave up after retries'})`,
+          () => {
+            try { h.destroy() } catch { /* ignore */ }
+            playersRef.current = playersRef.current.filter((x) => x !== h)
+          },
+        )
       })
     }
 
@@ -145,21 +188,36 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
       lazyLoad: false,
     }
 
-    if (codec === 'hevc') {
-      // Prefer continuous FLV stream first (avoids 2-6s HLS segment pauses);
-      // fall back to HLS if FLV is unavailable or fails.
-      const candidates = [flvUrl, hlsUrl].filter((u): u is string => !!u)
-      if (candidates.length === 0) { setPlayerInfo('No HEVC stream URL available'); return }
-      if (!flvjs || !flvjs.isSupported()) {
-        setPlayerInfo('flv.js required for HEVC transcoding'); return
+    const flvLib = window.flvjs
+    const hlsLib = window.Hls
+
+    const attachTranscode = (candidates: string[], errPrefix: string, infoText: string) => {
+      if (candidates.length === 0) {
+        video.removeEventListener('playing', onPlaying)
+        setPlayerInfo(tRef.current('playerNoPlayable'))
+        return
+      }
+      if (!flvLib || !flvLib.isSupported()) {
+        video.removeEventListener('playing', onPlaying)
+        setPlayerInfo(`flv.js required for ${errPrefix} transcoding`)
+        return
+      }
+
+      const abortAndTearDown = () => {
+        cancelled = true
+        if (retryTimer !== null) {
+          clearTimeout(retryTimer)
+          retryTimer = null
+        }
+        tearDown()
       }
 
       let candidateIdx = 0
-      const startHevc = (idx: number) => {
+      const start = (idx: number) => {
         if (cancelled) return
         const srcUrl = candidates[idx]
         const transcodeUrl = '/api/transcode?url=' + encodeURIComponent(srcUrl)
-        const p = flvjs!.createPlayer({
+        const p = flvLib.createPlayer({
           type: 'flv',
           url: transcodeUrl,
           isLive: true,
@@ -170,50 +228,57 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
         p.attachMediaElement(video)
         p.load()
         p.play().catch(() => {})
-        p.on(flvjs!.Events.ERROR, (_errType: unknown, _errDetail: unknown, info: unknown) => {
-          if (cancelled) return
+        p.on(flvLib.Events.ERROR, (_errType: unknown, _errDetail: unknown, info: unknown) => {
+          if (cancelled || retryTimer !== null) return
           const code = (info as { code?: number } | undefined)?.code
           if (code === 503) {
-            setPlayerInfo('HEVC transcode unavailable: ffmpeg is not installed on the server')
+            setPlayerInfo(`${errPrefix} transcode unavailable: ffmpeg is not installed on the server`)
             toast.error(tRef.current('ffmpegRequiredTitle'), { description: tRef.current('ffmpegRequiredDesc') })
-            tearDown()
+            abortAndTearDown()
             return
           }
           if (candidateIdx + 1 < candidates.length) {
             candidateIdx++
             try { p.destroy() } catch { /* ignore */ }
             playersRef.current = playersRef.current.filter((x) => x !== p)
-            startHevc(candidateIdx)
+            start(candidateIdx)
             return
           }
-          if (retries++ >= MAX_RETRIES) {
-            setPlayerInfo('HEVC transcode failed (check server logs / ffmpeg)')
-            tearDown()
+          if (retries >= MAX_RETRIES) {
+            setPlayerInfo(`${errPrefix} transcode failed (check server logs / ffmpeg)`)
+            abortAndTearDown()
             return
           }
-          const id = setTimeout(() => {
-            if (cancelled) return
-            try { p.unload(); p.load(); p.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
-          }, 3000)
-          timers.push(id)
+          scheduleRetry(
+            () => { try { p.unload(); p.load(); p.play().catch(() => { /* ignore */ }) } catch { /* ignore */ } },
+            `${errPrefix} transcode failed (check server logs / ffmpeg)`,
+            abortAndTearDown,
+          )
         })
         playersRef.current.push(p)
       }
 
-      startHevc(0)
-      setPlayerInfo(`Transcode H.264 ← ${label} · ⚠ CPU intensive`)
-    } else if (flvUrl && flvjs && flvjs.isSupported()) {
+      start(0)
+      setPlayerInfo(infoText)
+    }
+
+    if (codec === 'hevc') {
+      // Prefer continuous FLV stream first (avoids 2-6s HLS segment pauses);
+      // fall back to HLS if FLV is unavailable or fails.
+      const candidates = [flvUrl, hlsUrl].filter((u): u is string => !!u)
+      attachTranscode(candidates, 'HEVC', `Transcode H.264 ← ${label} · ⚠ CPU intensive`)
+    } else if (flvUrl && flvLib && flvLib.isSupported()) {
       const proxied = '/api/proxy?url=' + encodeURIComponent(flvUrl)
-      const p = flvjs.createPlayer({ type: 'flv', url: proxied, isLive: true, cors: true }, flvConfig)
+      const p = flvLib.createPlayer({ type: 'flv', url: proxied, isLive: true, cors: true }, flvConfig)
       p.attachMediaElement(video); p.load(); p.play().catch(() => {})
       attachFlvErrorHandler(p)
       playersRef.current.push(p)
       setPlayerInfo(`FLV (flv.js) · ${label} · via local proxy`)
-    } else if (hlsUrl && Hls && Hls.isSupported()) {
+    } else if (hlsUrl && hlsLib && hlsLib.isSupported()) {
       const proxied = '/api/proxy?url=' + encodeURIComponent(hlsUrl)
-      const h = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 30 })
+      const h = new hlsLib({ enableWorker: true, lowLatencyMode: false, backBufferLength: 30 })
       h.loadSource(proxied); h.attachMedia(video)
-      h.on(Hls.Events.MANIFEST_PARSED, () => {
+      h.on(hlsLib.Events.MANIFEST_PARSED, () => {
         if (!cancelled) video.play().catch(() => {})
       })
       attachHlsErrorHandler(h)
@@ -227,24 +292,32 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
       video.addEventListener('loadedmetadata', nativeMetaHandler)
       video.play().catch(() => {})
       video.onerror = () => {
-        if (cancelled || retries++ >= MAX_RETRIES) {
-          if (!cancelled) setPlayerInfo('Stream error (gave up after retries)')
-          return
-        }
-        const id = setTimeout(() => {
-          if (cancelled) return
-          try { video.load(); video.play().catch(() => { /* ignore */ }) } catch { /* ignore */ }
-        }, 3000)
-        timers.push(id)
+        scheduleRetry(
+          () => { try { video.load(); video.play().catch(() => { /* ignore */ }) } catch { /* ignore */ } },
+          `${tRef.current('playerStreamError')} (gave up after retries)`,
+          () => {
+            video.onerror = null
+            if (nativeMetaHandler) video.removeEventListener('loadedmetadata', nativeMetaHandler)
+            try { video.pause() } catch { /* ignore */ }
+            video.removeAttribute('src')
+            try { video.load() } catch { /* ignore */ }
+          },
+        )
       }
       setPlayerInfo(`HLS (native) · ${label} · via local proxy`)
+    } else if (cmafUrl) {
+      attachTranscode([cmafUrl], 'DASH', `Transcode DASH → FLV · ${label}`)
     } else {
-      setPlayerInfo('No playable stream in this browser')
+      setPlayerInfo(tRef.current('playerNoPlayable'))
     }
 
     return () => {
       cancelled = true
-      for (const id of timers) clearTimeout(id)
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer)
+        retryTimer = null
+      }
+      video.removeEventListener('playing', onPlaying)
       if (nativeMetaHandler) {
         video.removeEventListener('loadedmetadata', nativeMetaHandler)
       }
@@ -287,7 +360,8 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
   const h264Keys = [...new Set([
     ...Object.keys(s.flv || {}),
     ...Object.keys(s.hlsByQuality || {}),
-  ])].filter(k => !isAudioOnly(k, s.flv) && !isAudioOnly(k, s.hlsByQuality))
+    ...Object.keys(s.cmaf || {}),
+  ])].filter(k => !isAudioOnly(k, s.flv) && !isAudioOnly(k, s.hlsByQuality) && !isAudioOnly(k, s.cmaf))
 
   const hevcKeys = [...new Set([
     ...Object.keys(s.hevc?.flv || {}),
@@ -298,7 +372,11 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
   const recordQualities: { value: string; label: string }[] = []
   const qs = s.qualities?.length
     ? s.qualities
-    : (Object.keys(s.flv || {}).length ? Object.keys(s.flv || {}) : Object.keys(s.hlsByQuality || {}))
+    : (Object.keys(s.flv || {}).length
+        ? Object.keys(s.flv || {})
+        : Object.keys(s.hlsByQuality || {}).length
+          ? Object.keys(s.hlsByQuality || {})
+          : Object.keys(s.cmaf || {}))
         .map(k => ({ name: k, sdkKey: k }))
   for (const q of qs) {
     if (q.sdkKey === 'ao') continue
@@ -316,7 +394,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
   }
 
   const playerQualityItems: Record<string, string> = {
-    auto: 'Auto (highest H.264)',
+    auto: t('playerQualityAutoH264'),
   }
   for (const q of h264Keys) {
     const m = s.qualities?.find(x => x.sdkKey === q)
@@ -350,13 +428,13 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
         audioBitrate: abr,
         platform: data.platform,
       })
-      toast.success(result.reused ? 'Already recording' : `Recording @${data.username}`, {
+      toast.success(result.reused ? t('playerAlreadyRecording') : `${t('playerRecordingStarted')} @${data.username}`, {
         description: result.file,
       })
       setRecordMsg(`→ ${result.file}`)
       onRecordStarted?.()
     } catch (e: unknown) {
-      toast.error('Record failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('playerRecordFailed'), { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setRecording(false)
     }
@@ -364,6 +442,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
 
   // Stream URL rows
   const urlRows: { label: string; url: string }[] = []
+  if (s.hls) urlRows.push({ label: 'hls/master', url: s.hls })
   for (const [q, u] of Object.entries(s.hlsByQuality || {})) urlRows.push({ label: `h264 hls/${q}`, url: u })
   for (const [q, u] of Object.entries(s.flv || {})) urlRows.push({ label: `h264 flv/${q}`, url: u })
   for (const [q, u] of Object.entries(s.cmaf || {})) urlRows.push({ label: `h264 mpd/${q}`, url: u })
@@ -384,10 +463,10 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="auto">Auto (highest H.264)</SelectItem>
+                  <SelectItem value="auto">{t('playerQualityAutoH264')}</SelectItem>
                   {h264Keys.length > 0 && (
                     <SelectGroup>
-                      <SelectLabel>H.264 (compatible)</SelectLabel>
+                      <SelectLabel>{t('playerCodecH264')}</SelectLabel>
                       {h264Keys.map(q => {
                         const m = s.qualities?.find(x => x.sdkKey === q)
                         return <SelectItem key={q} value={`h264:${q}`}>{m?.name ? `${m.name} (${q})` : q}</SelectItem>
@@ -396,7 +475,7 @@ export function StreamPlayer({ data, onRecordStarted }: Props) {
                   )}
                   {hevcKeys.length > 0 && (
                     <SelectGroup>
-                      <SelectLabel>HEVC / H.265</SelectLabel>
+                      <SelectLabel>{t('playerCodecHevc')}</SelectLabel>
                       {hevcKeys.map(q => {
                         const m = s.hevcQualities?.find(x => x.sdkKey === q)
                         return <SelectItem key={q} value={`hevc:${q}`}>{m?.name ? `${m.name} (${q})` : q}</SelectItem>
@@ -518,6 +597,7 @@ export function BlockedStreams({ data }: { data: CheckResult }) {
 }
 
 function UrlRow({ label, url }: { label: string; url: string }) {
+  const { t } = useI18n()
   const [copied, setCopied] = useState(false)
 
   const copy = async () => {
@@ -543,7 +623,7 @@ function UrlRow({ label, url }: { label: string; url: string }) {
         setCopied(true)
         setTimeout(() => setCopied(false), 1200)
       } catch {
-        toast.error('Copy failed (clipboard requires HTTPS or localhost)')
+        toast.error(t('copyFailed'))
       }
     }
   }

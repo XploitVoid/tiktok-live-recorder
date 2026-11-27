@@ -27,7 +27,9 @@ function normPlatform(p?: unknown): Platform {
 
 function normUsername(username: string, platform: Platform): string {
   const s = username.trim()
-  if (platform === 'twitch' || platform === 'kick') return s.toLowerCase()
+  if (platform === 'twitch' || platform === 'kick' || platform === 'soop') {
+    return s.toLowerCase()
+  }
   if (platform === 'youtube') {
     if (/^v_[A-Za-z0-9_-]{11}$/.test(s) || /^UC[A-Za-z0-9_-]{22}$/.test(s)) return s
     return s.toLowerCase()
@@ -75,6 +77,18 @@ export function getHistory(): HistoryEntry[] {
   }
 }
 
+function safeSetStorage(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch { /* ignore quota/security errors */ }
+}
+
+function safeRemoveStorage(key: string): void {
+  try {
+    localStorage.removeItem(key)
+  } catch { /* ignore security errors */ }
+}
+
 export function addHistory(username: string, platform: Platform = 'tiktok'): void {
   const p = normPlatform(platform)
   const u = normUsername(username, p)
@@ -82,17 +96,17 @@ export function addHistory(username: string, platform: Platform = 'tiktok'): voi
   const list = getHistory().filter((e) => !sameEntry(e, u, p))
   list.unshift({ username: u, platform: p, lastUsed: Date.now() })
   while (list.length > MAX_HISTORY) list.pop()
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(list))
+  safeSetStorage(HISTORY_KEY, JSON.stringify(list))
 }
 
 export function removeHistory(username: string, platform: Platform = 'tiktok'): void {
   const p = normPlatform(platform)
   const list = getHistory().filter((e) => !sameEntry(e, username, p))
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(list))
+  safeSetStorage(HISTORY_KEY, JSON.stringify(list))
 }
 
 export function clearHistory(): void {
-  localStorage.removeItem(HISTORY_KEY)
+  safeRemoveStorage(HISTORY_KEY)
 }
 
 // ── Favorites ──
@@ -133,13 +147,13 @@ export function addFavorite(username: string, platform: Platform = 'tiktok'): vo
   if (!u) return
   const list = getFavorites().filter((e) => !sameEntry(e, u, p))
   list.unshift({ username: u, platform: p })
-  localStorage.setItem(FAVORITES_KEY, JSON.stringify(list))
+  safeSetStorage(FAVORITES_KEY, JSON.stringify(list))
 }
 
 export function removeFavorite(username: string, platform: Platform = 'tiktok'): void {
   const p = normPlatform(platform)
   const list = getFavorites().filter((e) => !sameEntry(e, username, p))
-  localStorage.setItem(FAVORITES_KEY, JSON.stringify(list))
+  safeSetStorage(FAVORITES_KEY, JSON.stringify(list))
 }
 
 export function isFavorite(username: string, platform: Platform = 'tiktok'): boolean {

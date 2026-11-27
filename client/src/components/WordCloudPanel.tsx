@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Hash } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { useI18n } from '@/lib/i18n'
 import { getWordFrequency } from '@/lib/api'
 import type { WordFrequencyData } from '@/lib/types'
@@ -12,18 +13,29 @@ interface Props {
 
 export function WordCloudPanel({ recording, hasEvents }: Props) {
   const { t } = useI18n()
-  const [data, setData] = useState<WordFrequencyData | null>(null)
+  const [result, setResult] = useState<{ key: string; data: WordFrequencyData | null; error: string | null }>({
+    key: '',
+    data: null,
+    error: null,
+  })
+  const [reloadNonce, setReloadNonce] = useState(0)
 
+  const resultKey = `${recording}:${reloadNonce}`
   useEffect(() => {
     if (!hasEvents) return
     let active = true
     getWordFrequency(recording)
-      .then((d) => { if (active) setData(d) })
-      .catch((e) => console.error('getWordFrequency:', e))
+      .then((d) => { if (active) setResult({ key: resultKey, data: d, error: null }) })
+      .catch((e: unknown) => {
+        console.error('getWordFrequency:', e)
+        if (active) setResult({ key: resultKey, data: null, error: e instanceof Error ? e.message : String(e) })
+      })
     return () => { active = false }
-  }, [recording, hasEvents])
+  }, [recording, hasEvents, resultKey])
 
-  const loading = hasEvents && !data
+  const data = result.key === resultKey ? result.data : null
+  const error = result.key === resultKey ? result.error : null
+  const loading = hasEvents && result.key !== resultKey
 
   if (!hasEvents) return null
 
@@ -44,6 +56,14 @@ export function WordCloudPanel({ recording, hasEvents }: Props) {
         </div>
 
         {loading && !data && <p className="text-xs text-muted-foreground">{t('loading')}</p>}
+        {error && !data && (
+          <div className="flex items-center gap-2 text-xs text-destructive">
+            <span>{error || t('loadFailed')}</span>
+            <Button variant="outline" size="xs" onClick={() => setReloadNonce((n) => n + 1)}>
+              {t('retry')}
+            </Button>
+          </div>
+        )}
 
         {/* Word cloud (sized by frequency) */}
         {phrases.length > 0 && (

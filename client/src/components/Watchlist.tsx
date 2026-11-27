@@ -11,7 +11,7 @@ import { Separator } from '@/components/ui/separator'
 import { useI18n } from '@/lib/i18n'
 import { useEventStream } from '@/lib/useEventStream'
 import { fmtTime } from '@/lib/format'
-import { parseChannelInput } from '@/lib/utils'
+import { parseChannelInput, hasExplicitPlatformHint } from '@/lib/utils'
 import { PlatformBadge, PlatformSwitch } from '@/components/PlatformBadge'
 import * as api from '@/lib/api'
 import type { Platform, WatchData, WatchEvent } from '@/lib/types'
@@ -30,7 +30,7 @@ export function Watchlist({ onJobsChanged }: Props) {
   const [addQuality, setAddQuality] = useState('')
   const [addAutoRecord, setAddAutoRecord] = useState(true)
   const [adding, setAdding] = useState(false)
-  const [pollSeconds, setPollSeconds] = useState(30)
+  const [pollSecondsInput, setPollSecondsInput] = useState('30')
   const [polling, setPolling] = useState(false)
   const [accounts, setAccounts] = useState<api.AccountInfo[]>([])
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -54,12 +54,15 @@ export function Watchlist({ onJobsChanged }: Props) {
 
   const mergeWatchEvents = useCallback((incoming: WatchEvent[]) => {
     if (!incoming.length) return
+    const valid = incoming.filter((ev) => ev && ev.id)
+    if (!valid.length) return
+    for (const ev of valid) {
+      lastEventIdRef.current = Math.max(lastEventIdRef.current, ev.id)
+    }
     setEvents((prev) => {
       const seen = new Set(prev.map((e) => e.id))
       const next = [...prev]
-      for (const ev of incoming) {
-        if (!ev || !ev.id) continue
-        lastEventIdRef.current = Math.max(lastEventIdRef.current, ev.id)
+      for (const ev of valid) {
         if (!seen.has(ev.id)) {
           seen.add(ev.id)
           next.push(ev)
@@ -87,7 +90,7 @@ export function Watchlist({ onJobsChanged }: Props) {
       const data = await api.getWatch()
       setWatchData(data)
       if (!pollDirtyRef.current && !pollFocusedRef.current) {
-        setPollSeconds(data.pollSeconds)
+        setPollSecondsInput(String(data.pollSeconds))
       }
     } catch { /* ignore */ }
   }, [])
@@ -98,7 +101,7 @@ export function Watchlist({ onJobsChanged }: Props) {
       if (data && Array.isArray(data.list)) {
         setWatchData(data)
         if (!pollDirtyRef.current && !pollFocusedRef.current) {
-          setPollSeconds(data.pollSeconds)
+          setPollSecondsInput(String(data.pollSeconds))
         }
       }
       void syncMissedEvents()
@@ -120,6 +123,7 @@ export function Watchlist({ onJobsChanged }: Props) {
   useEventStream('channels=watch', sseHandlers, true, notifsEnabled)
 
   const handleAdd = async () => {
+    if (adding) return
     const parsed = parseChannelInput(addUsername, addPlatform)
     if (!parsed.username) return
     setAdding(true)
@@ -129,12 +133,12 @@ export function Watchlist({ onJobsChanged }: Props) {
         audioOnly: quality === 'ao',
         platform: parsed.platform,
       })
-      toast.success('Added to watchlist', { description: `@${parsed.username}` })
+      toast.success(t('watchAdded'), { description: `@${parsed.username}` })
       setAddPlatform(parsed.platform)
       setAddUsername('')
       void refreshWatch()
     } catch (e: unknown) {
-      toast.error('Add failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('watchAddFailed'), { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setAdding(false)
     }
@@ -143,20 +147,20 @@ export function Watchlist({ onJobsChanged }: Props) {
   const handleRemove = async (username: string, platform?: Platform) => {
     try {
       await api.removeWatch(username, platform)
-      toast.info('Removed', { description: '@' + username })
+      toast.info(t('watchRemoved'), { description: '@' + username })
       void refreshWatch()
     } catch (e: unknown) {
-      toast.error('Remove failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('watchRemoveFailed'), { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
   const handleToggleAutoRecord = async (username: string, autoRecord: boolean, platform?: Platform) => {
     try {
       await api.patchWatch(username, { autoRecord, platform })
-      toast.info(autoRecord ? 'Auto-record on' : 'Auto-record off', { description: '@' + username })
+      toast.info(autoRecord ? t('watchAutoRecOn') : t('watchAutoRecOff'), { description: '@' + username })
       void refreshWatch()
     } catch (e: unknown) {
-      toast.error('Update failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('updateFailed'), { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -167,10 +171,10 @@ export function Watchlist({ onJobsChanged }: Props) {
         patch.quality = null
       }
       await api.patchWatch(entry.username, patch)
-      toast.info(audioOnly ? 'Audio-only on' : 'Audio-only off', { description: '@' + entry.username })
+      toast.info(audioOnly ? t('watchAudioOnlyOn') : t('watchAudioOnlyOff'), { description: '@' + entry.username })
       void refreshWatch()
     } catch (e: unknown) {
-      toast.error('Update failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('updateFailed'), { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -190,12 +194,13 @@ export function Watchlist({ onJobsChanged }: Props) {
     api.getAccounts().then((r) => setAccounts(r.accounts || [])).catch(() => {})
   }
 
-  const saveChannelConfig = async (username: string, platform?: Platform) => {
+  const saveChannelConfig = async (username: string, platform?: Platform, accountIdOverride?: string) => {
+    const accountIdToSave = accountIdOverride !== undefined ? accountIdOverride : cfgAccountId
     try {
       await api.patchWatch(username, {
         platform,
         priority: cfgPriority,
-        accountId: cfgAccountId === 'default' ? null : cfgAccountId,
+        accountId: accountIdToSave === 'default' ? null : accountIdToSave,
         minViewers: cfgMinViewers.trim() ? Number(cfgMinViewers) : null,
         scheduleStart: cfgSchedStart.trim() || null,
         scheduleEnd: cfgSchedEnd.trim() || null,
@@ -205,22 +210,26 @@ export function Watchlist({ onJobsChanged }: Props) {
       toast.success(t('settingsSaved'), { description: '@' + username })
       void refreshWatch()
     } catch (err: unknown) {
-      toast.error('Update failed', { description: err instanceof Error ? err.message : String(err) })
+      toast.error(t('updateFailed'), { description: err instanceof Error ? err.message : String(err) })
     }
   }
 
   const handleSavePoll = async () => {
-    if (!Number.isFinite(pollSeconds) || pollSeconds < 10) {
-      toast.warning('Invalid interval', { description: 'Minimum 10 seconds' })
+    const trimmed = pollSecondsInput.trim()
+    const parsed = trimmed ? Number(trimmed) : NaN
+    if (!Number.isFinite(parsed) || parsed < 10) {
+      toast.warning(t('watchInvalidInterval'), { description: t('watchMinInterval') })
       return
     }
+    const clamped = Math.max(10, Math.round(parsed))
+    setPollSecondsInput(String(clamped))
     try {
-      await api.savePollSeconds(pollSeconds)
+      await api.savePollSeconds(clamped)
       pollDirtyRef.current = false
-      toast.success('Poll interval saved', { description: pollSeconds + 's' })
+      toast.success(t('watchPollSaved'), { description: clamped + 's' })
       void refreshWatch()
     } catch (e: unknown) {
-      toast.error('Save failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('saveFailed'), { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -230,7 +239,7 @@ export function Watchlist({ onJobsChanged }: Props) {
       await api.pollNow()
       void refreshWatch()
     } catch (e: unknown) {
-      toast.error('Poll failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('watchPollFailed'), { description: e instanceof Error ? e.message : String(e) })
     } finally {
       setPolling(false)
     }
@@ -238,18 +247,23 @@ export function Watchlist({ onJobsChanged }: Props) {
 
   const handleEnableNotifs = async () => {
     if (!('Notification' in window)) {
-      toast.warning('Notifications not supported')
+      toast.warning(t('watchNotifsUnsupported'))
       return
     }
     const perm = await Notification.requestPermission()
     const enabled = perm === 'granted'
     setNotifsEnabled(enabled)
-    toast[enabled ? 'success' : 'warning'](enabled ? 'Notifications enabled' : 'Notifications denied')
+    toast[enabled ? 'success' : 'warning'](enabled ? t('watchNotifsEnabled') : t('watchNotifsDenied'))
   }
 
   const addQualityItems = useMemo(() => ({
     auto: t('qAuto'),
+    uhd4k_60: '4K 60fps (2160p)',
+    uhd4k: '4K (2160p)',
+    qhd_60: '2K 60fps (1440p)',
+    qhd: '2K (1440p)',
     origin: 'origin',
+    uhd_60: '1080p60',
     uhd: 'uhd (1080p)',
     hd: 'hd (720p)',
     sd: 'sd',
@@ -258,25 +272,16 @@ export function Watchlist({ onJobsChanged }: Props) {
   }), [t])
 
   const priorityItems = {
-    normal: 'Normal Poll',
-    high: 'High Priority',
+    normal: t('watchPriorityNormal'),
+    high: t('watchPriorityHigh'),
   }
-
-  const accountItems = useMemo(() => {
-    const map: Record<string, string> = {
-      default: 'Active Account',
-      anon: 'Anonymous',
-    }
-    for (const a of accounts) map[a.id] = a.label
-    return map
-  }, [accounts])
 
   return (
     <Card>
       <CardContent className="pt-5">
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
           <h2 className="font-semibold flex items-center gap-2 text-foreground">
-            <Eye className="w-4 h-4 text-pink-400" /> Watchlist
+            <Eye className="w-4 h-4 text-pink-400" /> {t('watchlistTitle')}
             <span className="text-xs text-muted-foreground font-normal">{t('watchlistSub')}</span>
           </h2>
           <div className="flex items-center gap-1.5 text-xs flex-wrap">
@@ -286,12 +291,27 @@ export function Watchlist({ onJobsChanged }: Props) {
                 type="number"
                 min={10}
                 step={5}
-                value={pollSeconds}
+                value={pollSecondsInput}
                 onFocus={() => { pollFocusedRef.current = true }}
-                onBlur={() => { pollFocusedRef.current = false }}
+                onBlur={() => {
+                  pollFocusedRef.current = false
+                  const trimmed = pollSecondsInput.trim()
+                  if (!trimmed) {
+                    setPollSecondsInput(String(watchData.pollSeconds))
+                    pollDirtyRef.current = false
+                    return
+                  }
+                  const parsed = Number(trimmed)
+                  if (!Number.isFinite(parsed)) {
+                    setPollSecondsInput(String(watchData.pollSeconds))
+                    pollDirtyRef.current = false
+                    return
+                  }
+                  setPollSecondsInput(String(Math.max(10, Math.round(parsed))))
+                }}
                 onChange={(e) => {
                   pollDirtyRef.current = true
-                  setPollSeconds(Number(e.target.value))
+                  setPollSecondsInput(e.target.value)
                 }}
                 className="poll-every-input w-9 h-full text-center text-xs bg-transparent border-0 p-0 m-0 outline-none leading-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
               />
@@ -306,7 +326,7 @@ export function Watchlist({ onJobsChanged }: Props) {
             </Button>
             <Button variant="outline" size="xs" onClick={handleEnableNotifs}>
               <Bell className="w-3 h-3 mr-1" />
-              {notifsEnabled ? 'Notifs ON' : t('btnNotif')}
+              {notifsEnabled ? t('watchNotifsOn') : t('btnNotif')}
             </Button>
           </div>
         </div>
@@ -320,12 +340,17 @@ export function Watchlist({ onJobsChanged }: Props) {
               onChange={(e) => {
                 const val = e.target.value
                 setAddUsername(val)
-                if (/^(?:twitch|tiktok|youtube|yt|kick):/i.test(val.trim()) || /(?:twitch\.tv|tiktok\.com|youtube\.com|youtu\.be|kick\.com)\//i.test(val)) {
+                if (hasExplicitPlatformHint(val)) {
                   const detected = parseChannelInput(val, addPlatform)
                   if (detected.platform !== addPlatform) setAddPlatform(detected.platform)
                 }
               }}
-              onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !adding) {
+                  e.preventDefault()
+                  void handleAdd()
+                }
+              }}
               placeholder={t('watchPlaceholderMulti')}
               className="border-0 bg-transparent shadow-none text-sm h-8 focus-visible:ring-0 px-1"
               autoComplete="off"
@@ -338,7 +363,12 @@ export function Watchlist({ onJobsChanged }: Props) {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="auto">{t('qAuto')}</SelectItem>
+              <SelectItem value="uhd4k_60">4K 60fps (2160p)</SelectItem>
+              <SelectItem value="uhd4k">4K (2160p)</SelectItem>
+              <SelectItem value="qhd_60">2K 60fps (1440p)</SelectItem>
+              <SelectItem value="qhd">2K (1440p)</SelectItem>
               <SelectItem value="origin">origin</SelectItem>
+              <SelectItem value="uhd_60">1080p60</SelectItem>
               <SelectItem value="uhd">uhd (1080p)</SelectItem>
               <SelectItem value="hd">hd (720p)</SelectItem>
               <SelectItem value="sd">sd</SelectItem>
@@ -367,6 +397,17 @@ export function Watchlist({ onJobsChanged }: Props) {
           ) : (
             watchData.list.map((e) => {
               const entryKey = `${e.platform || 'tiktok'}:${e.username}`
+              const entryPlatform = e.platform || 'tiktok'
+              const platformAccounts = accounts.filter((a) => (a.platform || 'tiktok') === entryPlatform)
+              const entryAccountItems: Record<string, string> = {
+                default: t('watchActiveAccount'),
+                anon: t('accAnonymous'),
+              }
+              for (const a of platformAccounts) entryAccountItems[a.id] = a.label
+              const effectiveAccountId =
+                cfgAccountId === 'default' || cfgAccountId === 'anon' || platformAccounts.some((a) => a.id === cfgAccountId)
+                  ? cfgAccountId
+                  : 'default'
               return (
               <div key={entryKey} className="bg-secondary/70 border border-border/50 rounded-lg px-2.5 py-1.5 space-y-1.5">
                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
@@ -384,9 +425,19 @@ export function Watchlist({ onJobsChanged }: Props) {
                   </Badge>
                   {e.platform && e.platform !== 'tiktok' && <PlatformBadge platform={e.platform} />}
                   <span className="text-sm font-medium font-mono">@{e.username}</span>
+                  {e.lastError?.trim() && (
+                    <Badge
+                      variant="secondary"
+                      title={e.lastError}
+                      className="text-[10px] px-1.5 py-0 gap-1 bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30 max-w-[220px] shrink-0"
+                    >
+                      <AlertCircle className="w-2.5 h-2.5 shrink-0" />
+                      <span className="truncate">{e.lastError}</span>
+                    </Badge>
+                  )}
                   {e.priority === 'high' && (
-                    <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-amber-600/30 text-amber-200 border-amber-600/40" title="High priority polling">
-                      <Zap className="w-2.5 h-2.5 mr-0.5" /> Fast
+                    <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-amber-600/30 text-amber-200 border-amber-600/40" title={t('watchPriorityHigh')}>
+                      <Zap className="w-2.5 h-2.5 mr-0.5" /> {t('watchFastBadge')}
                     </Badge>
                   )}
                   {e.recordChat === false && (
@@ -425,13 +476,13 @@ export function Watchlist({ onJobsChanged }: Props) {
                   </label>
                   <span className="text-xs text-muted-foreground">{e.quality || 'auto'}</span>
                   {e.lastChangedAt && (
-                    <span className="text-xs text-muted-foreground hidden md:inline">since {new Date(e.lastChangedAt).toLocaleTimeString()}</span>
+                    <span className="text-xs text-muted-foreground hidden md:inline">{t('watchSince')} {new Date(e.lastChangedAt).toLocaleTimeString()}</span>
                   )}
                   <Button
                     variant="ghost"
                     size="icon-xs"
                     onClick={() => openChannelConfig(e)}
-                    title="Channel rules (priority, schedule, min viewers, account)"
+                    title={t('watchRulesTooltip')}
                     className={editingKey === entryKey ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}
                   >
                     <SlidersHorizontal className="w-3.5 h-3.5" />
@@ -455,18 +506,18 @@ export function Watchlist({ onJobsChanged }: Props) {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="normal">Normal Poll</SelectItem>
-                        <SelectItem value="high">High Priority</SelectItem>
+                        <SelectItem value="normal">{t('watchPriorityNormal')}</SelectItem>
+                        <SelectItem value="high">{t('watchPriorityHigh')}</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Select items={accountItems} value={cfgAccountId} onValueChange={(v) => v && setCfgAccountId(v)}>
+                    <Select items={entryAccountItems} value={effectiveAccountId} onValueChange={(v) => v && setCfgAccountId(v)}>
                       <SelectTrigger className="w-[140px] h-7 text-xs">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="default">Active Account</SelectItem>
-                        <SelectItem value="anon">Anonymous</SelectItem>
-                        {accounts.map((a) => (
+                        <SelectItem value="default">{t('watchActiveAccount')}</SelectItem>
+                        <SelectItem value="anon">{t('accAnonymous')}</SelectItem>
+                        {platformAccounts.map((a) => (
                           <SelectItem key={a.id} value={a.id}>{a.label}</SelectItem>
                         ))}
                       </SelectContent>
@@ -474,7 +525,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                     <Input
                       type="number"
                       min={0}
-                      placeholder="Min viewers"
+                      placeholder={t('watchMinViewersPlaceholder')}
                       value={cfgMinViewers}
                       onChange={(ev) => setCfgMinViewers(ev.target.value)}
                       className="h-7 w-24 text-xs tabular-nums"
@@ -485,7 +536,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                         value={cfgSchedStart}
                         onChange={(ev) => setCfgSchedStart(ev.target.value)}
                         className="h-7 w-24 text-xs"
-                        aria-label="Schedule start"
+                        aria-label={t('watchScheduleStart')}
                       />
                       <span className="text-muted-foreground">-</span>
                       <Input
@@ -493,7 +544,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                         value={cfgSchedEnd}
                         onChange={(ev) => setCfgSchedEnd(ev.target.value)}
                         className="h-7 w-24 text-xs"
-                        aria-label="Schedule end"
+                        aria-label={t('watchScheduleEnd')}
                       />
                     </div>
                     <label className="flex items-center gap-1.5 cursor-pointer px-1">
@@ -504,7 +555,7 @@ export function Watchlist({ onJobsChanged }: Props) {
                       />
                       <span>{t('watchRecordChat')}</span>
                     </label>
-                    <Button size="xs" onClick={() => saveChannelConfig(e.username, e.platform)} className="h-7 ml-auto">
+                    <Button size="xs" onClick={() => saveChannelConfig(e.username, e.platform, effectiveAccountId)} className="h-7 ml-auto">
                       <Save className="w-3 h-3 mr-1" /> {t('btnSave')}
                     </Button>
                   </div>

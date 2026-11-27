@@ -11,7 +11,7 @@ const FLV_SRI = 'sha384-XeE1sKdKcsuvSZKnQHiuBPgM5gqTRLXKh/IUe1bgkTTQcwLOid3l8tq+
 
 let hlsPromise: Promise<void> | null = null
 let flvPromise: Promise<void> | null = null
-let playersPromise: Promise<void> | null = null
+let playersPromise: Promise<{ hls: boolean; flv: boolean }> | null = null
 
 function loadScript(src: string, integrity: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -62,15 +62,18 @@ export function loadFlv(): Promise<void> {
   return flvPromise
 }
 
-// Load both in parallel — used by pages that need to choose at runtime.
-export function loadPlayers(): Promise<void> {
+// Load both in parallel — allow partial success if one CDN script fails so the
+// other player (or native HLS) can still work.
+export function loadPlayers(): Promise<{ hls: boolean; flv: boolean }> {
   if (!playersPromise) {
-    playersPromise = Promise.all([loadHls(), loadFlv()])
-      .then(() => undefined)
-      .catch((err) => {
+    playersPromise = Promise.allSettled([loadHls(), loadFlv()]).then((results) => {
+      const hls = results[0].status === 'fulfilled'
+      const flv = results[1].status === 'fulfilled'
+      if (!hls || !flv) {
         playersPromise = null
-        throw err
-      })
+      }
+      return { hls, flv }
+    })
   }
   return playersPromise
 }

@@ -3,7 +3,7 @@ import { Sparkles, X, ShieldOff, MessageSquare, Pin } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { useI18n } from '@/lib/i18n'
-import { startChat, stopChat } from '@/lib/api'
+import { startChat, stopChat, getChatEvents } from '@/lib/api'
 import { useEventStream } from '@/lib/useEventStream'
 import { fmtTime } from '@/lib/format'
 import { normalizePlatform } from '@/lib/utils'
@@ -41,6 +41,7 @@ export function ChatPanel({ username, platform }: Props) {
   const resolvedPlatform = normalizePlatform(platform)
   const [events, setEvents] = useState<ChatEvent[]>([])
   const [state, setState] = useState('')
+  const [chatError, setChatError] = useState<string | null>(null)
   const [streaming, setStreaming] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -49,10 +50,10 @@ export function ChatPanel({ username, platform }: Props) {
   const [kwInput, setKwInput] = useState('')
   const [hideSpam, setHideSpam] = useState(false)
   const [pinnedMessage, setPinnedMessage] = useState<{ text: string; user: string } | null>(null)
-  const [connectSinceId, setConnectSinceId] = useState(0)
   const feedRef = useRef<HTMLDivElement>(null)
   const lastIdRef = useRef(0)
   const streamingRef = useRef(false)
+  const actionSeqRef = useRef(0)
   const activeTargetRef = useRef<string | null>(`${resolvedPlatform}:${username}`)
 
   useEffect(() => {
@@ -87,8 +88,34 @@ export function ChatPanel({ username, platform }: Props) {
     refreshKeywords()
   }
 
-  const ingestEvents = useCallback((incoming: ChatEvent[], nextState: string, viewerCount?: number) => {
-    setState(nextState + (viewerCount != null ? ` · ${viewerCount.toLocaleString()}` : ''))
+  const applyChatState = useCallback((nextState?: string | null, error?: string | null, viewerCount?: number) => {
+    if (!nextState) return
+    const viewerPart = viewerCount != null ? ` · ${viewerCount.toLocaleString()}` : ''
+    const errPart = error ? `: ${error}` : ''
+    setState(`${nextState}${errPart}${viewerPart}`)
+    if (error || nextState === 'error') {
+      setChatError(error || nextState)
+    } else {
+      setChatError(null)
+    }
+    if (nextState === 'closed' || nextState === 'error' || nextState === 'stopped' || nextState === 'idle') {
+      streamingRef.current = false
+      setStreaming(false)
+      setConnecting(false)
+    } else if (nextState === 'connecting') {
+      setConnecting(true)
+    } else if (nextState === 'connected' || nextState === 'listening' || nextState === 'live') {
+      setConnecting(false)
+    }
+  }, [])
+
+  const ingestEvents = useCallback((
+    incoming: ChatEvent[],
+    nextState?: string | null,
+    viewerCount?: number,
+    error?: string | null,
+  ) => {
+    applyChatState(nextState, error, viewerCount)
     if (!incoming.length) return
     const fresh = incoming.filter((ev) => ev.id > lastIdRef.current)
     if (!fresh.length) return
@@ -107,37 +134,41 @@ export function ChatPanel({ username, platform }: Props) {
     }
     setEvents((prev) => [...prev, ...fresh].slice(-300))
     setEventCount((prev) => prev + fresh.length)
-  }, [])
+  }, [applyChatState])
 
   useEffect(() => {
+    const targetKey = `${resolvedPlatform}:${username}`
     const onVis = () => {
-      if (document.hidden) {
-        setConnectSinceId(lastIdRef.current)
-      }
+      if (document.hidden || !streamingRef.current) return
+      getChatEvents(username, lastIdRef.current, resolvedPlatform)
+        .then((res) => {
+          if (activeTargetRef.current !== targetKey || !res) return
+          ingestEvents(res.events || [], res.state, res.viewerCount, res.error)
+        })
+        .catch(() => { /* ignore catch-up errors */ })
     }
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
-  }, [])
+  }, [username, resolvedPlatform, ingestEvents])
 
   const sseQuery = streaming
-    ? `chat=${encodeURIComponent(username)}&platform=${resolvedPlatform}&sinceId=${connectSinceId}`
+    ? `chat=${encodeURIComponent(username)}&platform=${resolvedPlatform}&sinceId=0`
     : null
   const sseHandlers = useMemo(() => ({
     chat_snapshot: (raw: unknown) => {
       const snap = raw as ChatPollResult
-      ingestEvents(snap.events || [], snap.state, snap.viewerCount)
+      ingestEvents(snap.events || [], snap.state, snap.viewerCount, snap.error)
     },
     chat_event: (raw: unknown) => {
-      const msg = raw as { event: ChatEvent; state: string; viewerCount?: number }
-      if (msg?.event) ingestEvents([msg.event], msg.state, msg.viewerCount)
+      const msg = raw as { event?: ChatEvent; state?: string; error?: string | null; viewerCount?: number }
+      if (msg?.event) ingestEvents([msg.event], msg.state, msg.viewerCount, msg.error)
+      else if (msg?.state) applyChatState(msg.state, msg.error, msg.viewerCount)
     },
     chat_state: (raw: unknown) => {
-      const msg = raw as { state: string; error?: string; viewerCount?: number }
-      if (msg?.state) {
-        setState(msg.state + (msg.viewerCount != null ? ` · ${msg.viewerCount.toLocaleString()}` : ''))
-      }
+      const msg = raw as { state?: string; error?: string | null; viewerCount?: number }
+      applyChatState(msg?.state, msg?.error, msg?.viewerCount)
     },
-  }), [ingestEvents])
+  }), [ingestEvents, applyChatState])
 
   useEventStream(sseQuery, sseHandlers, streaming)
 
@@ -149,41 +180,50 @@ export function ChatPanel({ username, platform }: Props) {
 
   const handleStart = async () => {
     if (streaming || connecting) return
+    const seq = ++actionSeqRef.current
     const targetUser = username
     const targetPlatform = resolvedPlatform
     const targetKey = `${targetPlatform}:${targetUser}`
     setConnecting(true)
+    setChatError(null)
     lastIdRef.current = 0
-    setConnectSinceId(0)
     setEventCount(0)
     setEvents([])
     setPinnedMessage(null)
-    setState('connecting...')
+    setState(t('chatConnecting'))
     try {
       await startChat(targetUser, targetPlatform)
-      if (activeTargetRef.current !== targetKey) {
-        void stopChat(targetUser, targetPlatform).catch(() => {})
+      if (activeTargetRef.current !== targetKey || actionSeqRef.current !== seq) {
+        if (activeTargetRef.current !== targetKey) {
+          void stopChat(targetUser, targetPlatform).catch(() => {})
+        }
         return
       }
       streamingRef.current = true
       setStreaming(true)
     } catch (e: unknown) {
-      if (activeTargetRef.current === targetKey) {
-        setState('error: ' + (e instanceof Error ? e.message : String(e)))
+      if (activeTargetRef.current === targetKey && actionSeqRef.current === seq) {
+        applyChatState('error', e instanceof Error ? e.message : String(e))
       }
     } finally {
-      if (activeTargetRef.current === targetKey) {
+      if (activeTargetRef.current === targetKey && actionSeqRef.current === seq) {
         setConnecting(false)
       }
     }
   }
 
   const handleStop = async () => {
+    const seq = ++actionSeqRef.current
+    const targetKey = `${resolvedPlatform}:${username}`
     streamingRef.current = false
     setStreaming(false)
-    setState('stopping...')
+    setConnecting(false)
+    setChatError(null)
+    setState(t('chatStopping'))
     try { await stopChat(username, resolvedPlatform) } catch { /* ignore */ }
-    setState('stopped')
+    if (activeTargetRef.current === targetKey && actionSeqRef.current === seq) {
+      setState(t('chatStopped'))
+    }
   }
 
   return (
@@ -191,8 +231,12 @@ export function ChatPanel({ username, platform }: Props) {
       <div className="flex items-center justify-between mb-2">
         <h2 className="font-semibold text-foreground flex items-center gap-2 text-sm">
           <MessageSquare className="w-4 h-4 text-muted-foreground" />
-          <span>Chat</span>
-          {state && <span className="text-xs text-muted-foreground font-normal font-mono tabular-nums">· {state}</span>}
+          <span>{t('chatTitle')}</span>
+          {state && (
+            <span className={`text-xs font-normal font-mono tabular-nums ${chatError ? 'text-destructive' : 'text-muted-foreground'}`}>
+              · {state}
+            </span>
+          )}
         </h2>
         <div className="flex gap-1">
           <Button size="xs" onClick={handleStart} disabled={streaming || connecting} className="cursor-pointer">
@@ -235,7 +279,7 @@ export function ChatPanel({ username, platform }: Props) {
             type="button"
             onClick={() => setPinnedMessage(null)}
             className="text-muted-foreground hover:text-foreground p-0.5 cursor-pointer"
-            aria-label="Dismiss pinned message"
+            aria-label={t('chatDismissPin')}
           >
             <X className="w-3 h-3" />
           </button>
@@ -254,7 +298,7 @@ export function ChatPanel({ username, platform }: Props) {
         )}
       </div>
       <div className="text-xs text-muted-foreground mt-1 flex justify-between items-center">
-        <span>{eventCount} events</span>
+        <span>{eventCount} {t('chatEventsCount')}</span>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-1.5 cursor-pointer">
             <Checkbox

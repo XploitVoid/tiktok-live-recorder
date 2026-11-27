@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/lib/i18n'
 import { fmtBytes, fmtTimeSec, recordingFileUrl } from '@/lib/format'
-import { getRecordings, deleteRecording, extractRecordingAudio, compressRecording, updateRecordingMeta, mergeRecordings, searchChatAll, type ChatSearchResult } from '@/lib/api'
+import { getRecordings, deleteRecording, extractRecordingAudio, compressRecording, updateRecordingMeta, mergeRecordings, searchChatAll, ApiError, type ChatSearchResult } from '@/lib/api'
 import { useEventStream } from '@/lib/useEventStream'
 import type { RecordingFile } from '@/lib/types'
 import { toast } from 'sonner'
@@ -24,10 +24,10 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
   const { t } = useI18n()
   const [files, setFiles] = useState<RecordingFile[]>([])
   const [query, setQuery] = useState('')
-  const [filterMode, setFilterMode] = useState<'all' | 'tiktok' | 'twitch' | 'youtube' | 'kick' | 'chat' | 'highlights' | 'protected'>('all')
+  const [filterMode, setFilterMode] = useState<'all' | 'tiktok' | 'twitch' | 'youtube' | 'kick' | 'soop' | 'chat' | 'highlights' | 'protected'>('all')
   const [sortMode, setSortMode] = useState<'newest' | 'largest' | 'longest'>('newest')
-  const [extracting, setExtracting] = useState<string | null>(null)
-  const [compressing, setCompressing] = useState<string | null>(null)
+  const [extractingKeys, setExtractingKeys] = useState<Set<string>>(() => new Set())
+  const [compressingNames, setCompressingNames] = useState<Set<string>>(() => new Set())
   const [editingName, setEditingName] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
   const [editNotes, setEditNotes] = useState('')
@@ -72,21 +72,43 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
   }), [refresh])
   useEventStream('channels=jobs', sseHandlers, true)
 
+  useEffect(() => {
+    const onVis = () => {
+      if (!document.hidden) void refresh()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [refresh])
+
+  const formatActionError = (e: unknown): string => {
+    if (e instanceof ApiError) {
+      if (e.status === 429 || e.code === 'BUSY') return t('errServerBusy')
+      if (e.status === 507 || e.code === 'DISK_FULL') return t('errDiskFull')
+    }
+    return e instanceof Error ? e.message : String(e)
+  }
+
   const handleDelete = async (name: string) => {
     try {
       await deleteRecording(name)
-      toast.info('Deleted', { description: name })
+      toast.info(t('deleteSuccess'), { description: name })
       void refresh()
     } catch (e: unknown) {
-      toast.error('Delete failed', { description: e instanceof Error ? e.message : String(e) })
+      if (e instanceof ApiError && (e.status === 409 || /protected/i.test(e.message))) {
+        toast.error(t('savedDeleteProtected'), { description: name })
+        void refresh()
+      } else {
+        toast.error(t('deleteFailed'), { description: formatActionError(e) })
+      }
     }
   }
 
   const handleExtractAudio = async (name: string, format: 'm4a' | 'mp3') => {
-    setExtracting(`${name}:${format}`)
+    const key = `${name}:${format}`
+    setExtractingKeys((prev) => new Set(prev).add(key))
     try {
       const res = await extractRecordingAudio(name, format)
-      toast.success(`Audio ready (${format.toUpperCase()})`, { description: res.name })
+      toast.success(`${t('savedAudioReady')} (${format.toUpperCase()})`, { description: res.name })
       const a = document.createElement('a')
       a.href = res.url
       a.download = res.name
@@ -94,14 +116,18 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
       a.click()
       a.remove()
     } catch (e: unknown) {
-      toast.error('Audio extract failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('savedExtractFailed'), { description: formatActionError(e) })
     } finally {
-      setExtracting(null)
+      setExtractingKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
     }
   }
 
   const handleCompress = async (name: string) => {
-    setCompressing(name)
+    setCompressingNames((prev) => new Set(prev).add(name))
     toast.info(t('savedCompressing'), { description: name })
     try {
       const res = await compressRecording(name, 'balanced')
@@ -111,9 +137,13 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
       })
       void refresh()
     } catch (e: unknown) {
-      toast.error('Compress failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('savedCompressFailed'), { description: formatActionError(e) })
     } finally {
-      setCompressing(null)
+      setCompressingNames((prev) => {
+        const next = new Set(prev)
+        next.delete(name)
+        return next
+      })
     }
   }
 
@@ -124,7 +154,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
       toast.success(next ? t('savedProtect') : t('savedUnprotect'), { description: f.name })
       void refresh()
     } catch (e: unknown) {
-      toast.error('Update failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('updateFailed'), { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -141,7 +171,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
       toast.success(t('settingsSaved'))
       void refresh()
     } catch (e: unknown) {
-      toast.error('Update failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('updateFailed'), { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -158,10 +188,32 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
   }
 
   const orderedSelectedFiles = useMemo(() => {
+    const parseKey = (fileName: string) => {
+      const base = fileName.split(/[\\/]/).pop() || fileName
+      let ts: number | null = null
+      const compact = base.match(/(?:^|[_-])(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:[_-]|$|\.)/)
+      const dashed = !compact && base.match(/(?:^|[_-])(\d{4})-(\d{2})-(\d{2})[_T-](\d{2})-(\d{2})-(\d{2})(?:[_-]|$|\.)/)
+      const m = compact || dashed
+      if (m) {
+        const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]))
+        if (Number.isFinite(ms)) ts = ms
+      }
+      const partMatch = base.match(/(?:^|[_-])p(\d+)(?:\D|$)/i)
+      const part = partMatch ? Number(partMatch[1]) : 0
+      return { ts, part }
+    }
     const byName = new Map(files.map((f) => [f.name, f]))
     return [...selectedFiles]
       .filter((name) => byName.has(name))
       .sort((a, b) => {
+        const ka = parseKey(a)
+        const kb = parseKey(b)
+        if (ka.ts !== null && kb.ts !== null && ka.ts !== kb.ts) {
+          return ka.ts - kb.ts
+        }
+        if (ka.part !== kb.part) {
+          return ka.part - kb.part
+        }
         const diff = (byName.get(a)?.mtime || 0) - (byName.get(b)?.mtime || 0)
         return diff !== 0 ? diff : a.localeCompare(b)
       })
@@ -181,7 +233,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
       exitMergeMode()
       void refresh()
     } catch (e: unknown) {
-      toast.error(t('mergeFail'), { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('mergeFail'), { description: formatActionError(e) })
     } finally {
       setMerging(false)
     }
@@ -203,7 +255,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
       setChatResults(res.results || [])
     } catch (e: unknown) {
       if (!mountedRef.current || reqId !== chatReqIdRef.current) return
-      toast.error('Search failed', { description: e instanceof Error ? e.message : String(e) })
+      toast.error(t('searchFailed'), { description: e instanceof Error ? e.message : String(e) })
     } finally {
       if (mountedRef.current && reqId === chatReqIdRef.current) {
         setChatSearching(false)
@@ -222,6 +274,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
       if (filterMode === 'twitch' && f.platform !== 'twitch') return false
       if (filterMode === 'youtube' && f.platform !== 'youtube') return false
       if (filterMode === 'kick' && f.platform !== 'kick') return false
+      if (filterMode === 'soop' && f.platform !== 'soop') return false
       if (filterMode === 'chat' && !f.hasEvents) return false
       if (filterMode === 'highlights' && !(f.highlightCount && f.highlightCount > 0)) return false
       if (filterMode === 'protected' && !f.protected) return false
@@ -240,6 +293,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
     twitch: t('platformTwitch'),
     youtube: t('platformYouTube'),
     kick: t('platformKick'),
+    soop: t('platformSoop'),
     chat: t('fChat'),
     highlights: t('highlights'),
     protected: t('savedFilterProtected'),
@@ -248,7 +302,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
   const sortItems = useMemo(() => ({
     newest: t('savedSortNewest'),
     largest: t('savedSortLargest'),
-    longest: 'Longest',
+    longest: t('savedSortLongest'),
   }), [t])
 
   return (
@@ -394,6 +448,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                 <SelectItem value="twitch">{t('platformTwitch')}</SelectItem>
                 <SelectItem value="youtube">{t('platformYouTube')}</SelectItem>
                 <SelectItem value="kick">{t('platformKick')}</SelectItem>
+                <SelectItem value="soop">{t('platformSoop')}</SelectItem>
                 <SelectItem value="chat">{t('fChat')}</SelectItem>
                 <SelectItem value="highlights">{t('highlights')}</SelectItem>
                 <SelectItem value="protected">{t('savedFilterProtected')}</SelectItem>
@@ -406,7 +461,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
               <SelectContent>
                 <SelectItem value="newest">{t('savedSortNewest')}</SelectItem>
                 <SelectItem value="largest">{t('savedSortLargest')}</SelectItem>
-                <SelectItem value="longest">Longest</SelectItem>
+                <SelectItem value="longest">{t('savedSortLongest')}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -441,7 +496,7 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                     />
                   ) : (
                     <div className="w-12 h-7 rounded bg-zinc-800/80 border border-border flex items-center justify-center text-[10px] text-muted-foreground shrink-0">
-                      {isAudioOnly ? 'Audio' : 'MP4'}
+                      {isAudioOnly ? t('savedAudioBadge') : 'MP4'}
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
@@ -476,16 +531,16 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                       <span className="text-[10px] text-muted-foreground">{fmtBytes(f.sizeBytes)}</span>
                       {f.hasEvents && (
                         <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-pink-700/30 text-pink-200 border-pink-700/40">
-                          <MessageSquare className="w-2.5 h-2.5 mr-0.5" /> chat
+                          <MessageSquare className="w-2.5 h-2.5 mr-0.5" /> {t('savedChatBadge')}
                         </Badge>
                       )}
                       {!!f.highlightCount && f.highlightCount > 0 && (
-                        <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-amber-700/30 text-amber-200 border-amber-700/40" title={`${f.highlightCount} highlight candidates`}>
+                        <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-amber-700/30 text-amber-200 border-amber-700/40" title={`${f.highlightCount} ${t('savedHighlightsTooltip')}`}>
                           <Sparkles className="w-2.5 h-2.5 mr-0.5" /> {f.highlightCount}
                         </Badge>
                       )}
                       {!!f.clipCount && f.clipCount > 0 && (
-                        <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-indigo-700/30 text-indigo-200 border-indigo-700/40" title={`${f.clipCount} cut clips`}>
+                        <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-indigo-700/30 text-indigo-200 border-indigo-700/40" title={`${f.clipCount} ${t('savedClipsTooltip')}`}>
                           <Scissors className="w-2.5 h-2.5 mr-0.5" /> {f.clipCount}
                         </Badge>
                       )}
@@ -518,23 +573,26 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                   <Button
                     variant="outline"
                     size="xs"
-                    disabled={extracting === `${f.name}:m4a`}
+                    disabled={extractingKeys.has(`${f.name}:m4a`)}
                     onClick={() => handleExtractAudio(f.name, 'm4a')}
                     title={t('savedExtractAudio')}
                     className="h-6 px-2 text-xs"
                   >
-                    <Music className="w-3 h-3 mr-1" /> M4A
+                    {extractingKeys.has(`${f.name}:m4a`)
+                      ? <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                      : <Music className="w-3 h-3 mr-1" />}
+                    M4A
                   </Button>
                   {!isAudioOnly && !/_(balanced|compact)\.mp4$/i.test(f.name) && (
                     <Button
                       variant="outline"
                       size="xs"
-                      disabled={compressing === f.name}
+                      disabled={compressingNames.has(f.name)}
                       onClick={() => handleCompress(f.name)}
                       title={t('savedCompress')}
                       className="h-6 px-2 text-xs"
                     >
-                      {compressing === f.name
+                      {compressingNames.has(f.name)
                         ? <Loader2 className="w-3 h-3 animate-spin mr-1" />
                         : <FileArchive className="w-3 h-3 mr-1" />}
                       720p
@@ -564,13 +622,13 @@ export const SavedRecordings = forwardRef<SavedRecordingsRef>(function SavedReco
                     <Input
                       value={editTitle}
                       onChange={(e) => setEditTitle(e.target.value)}
-                      placeholder="Custom title..."
+                      placeholder={t('savedTitlePlaceholder')}
                       className="h-7 text-xs flex-1 min-w-[140px]"
                     />
                     <Input
                       value={editNotes}
                       onChange={(e) => setEditNotes(e.target.value)}
-                      placeholder="Notes / tags..."
+                      placeholder={t('savedNotesPlaceholder')}
                       className="h-7 text-xs flex-1 min-w-[160px]"
                     />
                     <Button size="xs" onClick={() => saveEditMeta(f.name)} className="h-7 px-2">

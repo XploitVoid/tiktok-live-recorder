@@ -16,11 +16,11 @@ RUN apk add --no-cache ffmpeg yt-dlp
 
 WORKDIR /app
 
-# Copy backend dependencies and install
+# Copy backend dependencies and install without lifecycle scripts; system ffmpeg/ffprobe come from apk
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && rm -rf node_modules/ffprobe-static/bin node_modules/ffmpeg-static/ffmpeg* && npm cache clean --force
 
-# Copy backend source code
+# Copy backend source code (kept root-owned so runtime node user cannot modify source)
 COPY server.js check.js get-stream.js record.js ./
 COPY lib/ ./lib/
 COPY routes/ ./routes/
@@ -28,8 +28,8 @@ COPY routes/ ./routes/
 # Copy the built client from Stage 1
 COPY --from=builder /app/client/dist ./client/dist
 
-# Ensure the recordings directories exist and drop root privileges
-RUN mkdir -p recordings/highlights recordings/thumbs recordings/audio && chown -R node:node /app
+# Ensure /app (for runtime db/config creation) and /app/recordings are writable by node, while source subdirs remain root-owned
+RUN mkdir -p recordings/highlights recordings/thumbs recordings/audio && chown node:node /app && chown -R node:node /app/recordings
 
 USER node
 

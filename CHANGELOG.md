@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Multi-platform live recording, chat capture, and Watchlist support across **TikTok LIVE, Twitch, YouTube Live (including 4K/2K `yt_adaptive`), Kick, and SOOP**.
+- Unified 5-platform Stealth & Anonymous Engine with global and per-platform toggles.
+- Smart Highlights v2 using MAD Z-score detection, Thai/English hype filtering, anti-spam, and audio peak fusion.
+
+### Changed
+- Rebranded the web interface to **Live Stream Recorder** (`Multi-Platform · Local Studio`) with generalized bilingual (`th`/`en`) multi-platform copy.
+- Hardened Docker production builds (`root:root` source ownership, writable `/app` & `/app/recordings`, `--ignore-scripts`), Inno Setup clean upgrades (`[InstallDelete]`), and portable release packaging (`SHASUMS256.txt` verification, private `.cache/node`, symlink containment).
+
+### Security
+- Enforced brute-force rate limiting on auth endpoints and removed `?token=` query-parameter authentication.
+- Enforced fail-closed AES-256-GCM encryption for stored accounts, strict path/dangling-symlink validation (`resolveInsideDir`), SOOP WebSocket host validation, SRT/ASS subtitle sanitization, and 0 known npm dependency vulnerabilities.
+
 ## [1.6.0] - 2026-11-24
 
 ### Added

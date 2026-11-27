@@ -70,6 +70,14 @@ function collectAssets(assetsDir) {
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
+function requireArg(argv, index, flag) {
+  const val = argv[index];
+  if (val === undefined) {
+    throw new Error(`Missing value for ${flag}`);
+  }
+  return val;
+}
+
 function parseArgs(argv) {
   const root = path.resolve(__dirname, '..');
   const opts = {
@@ -81,11 +89,11 @@ function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--version') opts.version = argv[++i] || '';
-    else if (arg === '--changelog') opts.changelog = path.resolve(root, argv[++i] || 'CHANGELOG.md');
-    else if (arg === '--assets-dir') opts.assetsDir = path.resolve(root, argv[++i] || '');
-    else if (arg === '--out') opts.out = path.resolve(root, argv[++i] || '');
-    else if (arg === '--repo') opts.repo = argv[++i] || DEFAULT_REPO;
+    if (arg === '--version') opts.version = requireArg(argv, ++i, arg);
+    else if (arg === '--changelog') opts.changelog = path.resolve(root, requireArg(argv, ++i, arg));
+    else if (arg === '--assets-dir') opts.assetsDir = path.resolve(root, requireArg(argv, ++i, arg));
+    else if (arg === '--out') opts.out = path.resolve(root, requireArg(argv, ++i, arg));
+    else if (arg === '--repo') opts.repo = requireArg(argv, ++i, arg);
     else throw new Error(`Unknown CLI argument: ${arg}`);
   }
   return opts;

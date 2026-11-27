@@ -4,7 +4,9 @@
 //
 // Output is JSON on stdout. Exits non-zero if user is not live.
 
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env'), quiet: true });
+if (!process.env.QUIET_LOGS) process.env.QUIET_LOGS = '1';
 const {
   normalizeUsername,
   fetchApiLive,
@@ -12,6 +14,7 @@ const {
   extractStreamUrls,
   buildSummary,
 } = require('./lib/room');
+const { safeError } = require('./lib/utils');
 
 async function main() {
   const username = normalizeUsername(process.argv[2]);
@@ -30,7 +33,7 @@ async function main() {
     const out = buildSummary(username, apiData, streams);
     console.log(JSON.stringify(out, null, 2));
   } catch (err) {
-    console.error('Error:', err?.message || err);
+    console.error('Error:', safeError(err));
     process.exit(2);
   }
 }

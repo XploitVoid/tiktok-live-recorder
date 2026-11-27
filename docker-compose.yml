@@ -13,14 +13,20 @@ services:
       # Persist recordings to the host machine
       - ./recordings:/app/recordings
 
-      # Optional: Mount your local .env file for secrets
-      # - ./.env:/app/.env
+      # Optional: Mount your local .env file read-only for secrets
+      # - ./.env:/app/.env:ro
 
       # Optional: If you want to persist the watchlist and accounts across container rebuilds,
-      # create empty files on your host FIRST (touch watchlist.json accounts.json) then uncomment:
+      # create valid UTF-8 (no BOM) JSON files on your host FIRST before starting Docker:
+      #   Linux/macOS: printf '{}\n' > watchlist.json && printf '[]\n' > accounts.json
+      #   PowerShell:  Set-Content -Encoding utf8NoBOM watchlist.json '{}'; Set-Content -Encoding utf8NoBOM accounts.json '[]'
+      # Ensure permissions allow UID 1000 (container node user) to read/write (e.g. chown 1000:1000 accounts.json watchlist.json .accounts.key && chmod 600 .accounts.key)
+      # and persist your encryption key (.accounts.key or ACCOUNTS_SECRET in environment), then uncomment:
       # - ./watchlist.json:/app/watchlist.json
       # - ./accounts.json:/app/accounts.json
+      # - ./.accounts.key:/app/.accounts.key
     environment:
       - HOST=0.0.0.0
       # Recommended whenever exposing beyond localhost:
       # - APP_TOKEN=change-me-to-a-long-random-secret
+      # - ACCOUNTS_SECRET=change-me-to-preserve-encrypted-accounts-across-rebuilds
